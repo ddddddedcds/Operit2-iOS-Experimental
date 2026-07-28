@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::{
     AudioPlaybackHost, BluetoothHost, BrowserAutomationHost, BrowserSessionHost,
-    ComposeDslWebViewHost, FileSystemHost, HostEnvironmentDescriptor, HostRuntimeEventHost,
+    ComposeDslWebViewHost, DeviceAutomationHost, FileSystemHost, HostEnvironmentDescriptor, HostRuntimeEventHost,
     HostRuntimeEventSchedulerHost, HostSecretStore, HttpHost, LocalInferenceHost,
     ManagedRuntimeHost, RuntimeSqliteHost, RuntimeStorageHost, SystemOperationHost, TerminalHost,
     TtsPlaybackHost, TtsSynthesisHost, WebVisitHost,
@@ -50,6 +50,7 @@ pub struct HostManager {
     pub hostSecretStore: Option<Arc<dyn HostSecretStore>>,
     pub hostRuntimeEventHost: Option<Arc<dyn HostRuntimeEventHost>>,
     pub hostRuntimeEventSchedulerHost: Option<Arc<dyn HostRuntimeEventSchedulerHost>>,
+    pub deviceAutomationHost: Option<Arc<dyn DeviceAutomationHost>>,
     pub hostEnvironment: HostEnvironmentDescriptor,
     pub coreCommandExecutor: Option<CoreCommandExecutor>,
 }
@@ -77,6 +78,7 @@ impl HostManager {
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
+            deviceAutomationHost: None,
             hostEnvironment: HostEnvironmentDescriptor::android(),
             coreCommandExecutor: None,
         }
@@ -106,6 +108,7 @@ impl HostManager {
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
+            deviceAutomationHost: None,
             hostEnvironment,
             coreCommandExecutor: None,
         }
@@ -138,6 +141,7 @@ impl HostManager {
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
+            deviceAutomationHost: None,
             hostEnvironment,
             coreCommandExecutor: None,
         }
@@ -171,6 +175,7 @@ impl HostManager {
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
+            deviceAutomationHost: None,
             hostEnvironment,
             coreCommandExecutor: None,
         }
@@ -208,6 +213,7 @@ impl HostManager {
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
+            deviceAutomationHost: None,
             hostEnvironment,
             coreCommandExecutor: None,
         }
@@ -319,6 +325,16 @@ impl HostManager {
         hostRuntimeEventSchedulerHost: Arc<dyn HostRuntimeEventSchedulerHost>,
     ) -> Self {
         self.hostRuntimeEventSchedulerHost = Some(hostRuntimeEventSchedulerHost);
+        self
+    }
+
+    /// Adds a device-automation host that drives on-device UI through the jailbreak bridge.
+    #[allow(non_snake_case)]
+    pub fn withDeviceAutomationHost(
+        mut self,
+        deviceAutomationHost: Arc<dyn DeviceAutomationHost>,
+    ) -> Self {
+        self.deviceAutomationHost = Some(deviceAutomationHost);
         self
     }
 }

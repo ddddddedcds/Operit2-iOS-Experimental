@@ -1,0 +1,10 @@
+# Rust build output
+/target
+
+# theos (tweak) build output
+tweak/.theos/
+
+# Built distribution artifacts (produced by build_deb.sh / theos, not source)
+deb/files/usr/bin/
+deb/files/Library/MobileSubstrate/DynamicLibraries/*.dylib
+*.deb

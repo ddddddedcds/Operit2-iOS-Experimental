@@ -1,0 +1,54 @@
+#!/bin/bash
+# Run as root on the jailbroken device after `dpkg -i`.
+set -u
+JB=/var/jb
+
+echo "== Operit2 iOS substrate install =="
+
+echo "== socket / log directories =="
+mkdir -p /var/jb/var/mobile/.operit 2>/dev/null || true
+chown -R mobile:mobile /var/jb/var/mobile/.operit 2>/dev/null || true
+mkdir -p /var/jb/var/mobile/.operit/logs 2>/dev/null || true
+chown -R mobile:mobile /var/jb/var/mobile/.operit/logs 2>/dev/null || true
+
+echo "== agent daemon permissions (runs as mobile via LaunchDaemon) =="
+chown mobile:mobile /var/jb/usr/bin/operit_agent_daemon 2>/dev/null || true
+chmod 0755 /var/jb/usr/bin/operit_agent_daemon 2>/dev/null || true
+ldid -S /var/jb/usr/bin/operit_agent_daemon 2>/dev/null || true
+
+echo "== load agent daemon (LaunchDaemon, RunAtLoad+KeepAlive) =="
+launchctl load /var/jb/Library/LaunchDaemons/ai.operit.agent.plist 2>/dev/null || \
+  launchctl bootstrap system /var/jb/Library/LaunchDaemons/ai.operit.agent.plist 2>/dev/null || true
+
+echo "== reload SpringBoard so the control tweak takes effect =="
+if command -v sbreload >/dev/null 2>&1; then
+  sbreload 2>/dev/null || true
+else
+  echo "（未找到 sbreload，请手动 respring / 注销以使 SpringBoard tweak 生效）"
+fi
+
+echo "== frontend app install (sign + register) =="
+APP=/var/jb/Applications/Runner.app
+if [ -d "$APP" ]; then
+  echo "   signing app executables (ad-hoc, best-effort) ..."
+  for bin in "$APP/Runner" \
+             "$APP/Frameworks/Flutter.framework/Flutter" \
+             "$APP/Frameworks/App.framework/App" \
+             "$APP/Frameworks/objective_c.framework/objective_c"; do
+    [ -f "$bin" ] && ldid -S "$bin" 2>/dev/null || true
+  done
+  # sign any top-level swift/shim dylibs (e.g. libswift_*.dylib)
+  find "$APP/Frameworks" -maxdepth 1 -name "*.dylib" -type f -exec ldid -S {} \; 2>/dev/null || true
+  # ownership/perms like a normal rootless system app
+  chown -R root:wheel "$APP" 2>/dev/null || true
+  find "$APP" -type d -exec chmod 0755 {} \; 2>/dev/null || true
+  chmod 0755 "$APP/Runner" 2>/dev/null || true
+  # rebuild icon cache so the app appears on the home screen
+  if command -v uicache >/dev/null 2>&1; then uicache 2>/dev/null || true; fi
+  echo "   app registered at $APP"
+else
+  echo "   (no bundled app found at $APP; frontend not included in this deb)"
+fi
+
+echo "Operit2 iOS substrate installed. Daemon log: /var/jb/var/mobile/.operit/logs/agent.log"
+exit 0

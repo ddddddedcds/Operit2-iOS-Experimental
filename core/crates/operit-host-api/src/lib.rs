@@ -330,6 +330,87 @@ impl HostEnvironmentDescriptor {
             workspaceRoots: Vec::new(),
         }
     }
+
+    /// Builds the iOS host descriptor. Device automation is provided through a
+    /// jailbreak tweak reachable over a local Unix socket; the app itself stays
+    /// sandboxed but can drive system-level UI actions through that bridge.
+    pub fn ios() -> Self {
+        Self {
+            id: "ios".to_string(),
+            displayName: "iOS".to_string(),
+            platform: HostPlatform::Ios,
+            privilege: HostPrivilege::Root,
+            isolation: HostIsolation::None,
+            pathStyleDescriptionEn:
+                "Use iOS app container paths or absolute paths exposed by the host bridge."
+                    .to_string(),
+            pathStyleDescriptionCn: "使用 iOS 应用容器路径，或 Host bridge 暴露的绝对路径。".to_string(),
+            examplePaths: vec!["Documents/".to_string(), "tmp/".to_string()],
+            usesEnvironmentParameter: false,
+            environmentParameterDescriptionEn: String::new(),
+            environmentParameterDescriptionCn: String::new(),
+            capabilities: vec![
+                "fs.read".to_string(),
+                "fs.write".to_string(),
+                "fs.search".to_string(),
+                "fs.archive".to_string(),
+                "http.request".to_string(),
+                "web.visit".to_string(),
+                "terminal.pty".to_string(),
+                "audio.playback".to_string(),
+                "music.playback".to_string(),
+                "tts.synthesis".to_string(),
+                "tts.playback".to_string(),
+                "runtime.process".to_string(),
+                "runtime.storage".to_string(),
+                "runtime.sqlite".to_string(),
+                "device.screen.capture".to_string(),
+                "device.input.tap".to_string(),
+                "device.input.swipe".to_string(),
+                "device.input.long_press".to_string(),
+                "device.input.type".to_string(),
+                "device.app.launch".to_string(),
+                "device.app.home".to_string(),
+                "device.app.back".to_string(),
+            ],
+            structuredCapabilities: hostCapabilities(&[
+                "fs.read",
+                "fs.write",
+                "fs.search",
+                "fs.archive",
+                "http.request",
+                "web.visit",
+                "terminal.pty",
+                "audio.playback",
+                "music.playback",
+                "tts.synthesis",
+                "tts.playback",
+                "runtime.process",
+                "runtime.storage",
+                "runtime.sqlite",
+                "device.screen.capture",
+                "device.input.tap",
+                "device.input.swipe",
+                "device.input.long_press",
+                "device.input.type",
+                "device.app.launch",
+                "device.app.home",
+                "device.app.back",
+            ]),
+            onboardingRequirements: vec![HostOnboardingRequirement {
+                id: "ios.tweak".to_string(),
+                title: "越狱 tweak 已加载".to_string(),
+                description: "设备自动化依赖 operit-sb / operit-app 越狱 tweak 通过 Unix socket 提供屏幕截图与点按能力；未越狱环境不可用。".to_string(),
+                capabilityIds: vec![
+                    "device.screen.capture".to_string(),
+                    "device.input.tap".to_string(),
+                ],
+                status: HostRequirementStatus::Missing,
+                action: HostRequirementAction::HostManaged,
+            }],
+            workspaceRoots: Vec::new(),
+        }
+    }
 }
 
 impl Default for HostEnvironmentDescriptor {
@@ -576,6 +657,54 @@ fn defaultHostCapabilities() -> Vec<HostCapability> {
             displayName: "低功耗蓝牙".to_string(),
             scope: CapabilityScope::Device,
             operations: vec![CapabilityOperation::Read, CapabilityOperation::Connect],
+        },
+        HostCapability {
+            id: "device.screen.capture".to_string(),
+            displayName: "屏幕截图".to_string(),
+            scope: CapabilityScope::Device,
+            operations: vec![CapabilityOperation::Read],
+        },
+        HostCapability {
+            id: "device.input.tap".to_string(),
+            displayName: "点按".to_string(),
+            scope: CapabilityScope::Device,
+            operations: vec![CapabilityOperation::Execute],
+        },
+        HostCapability {
+            id: "device.input.swipe".to_string(),
+            displayName: "滑动".to_string(),
+            scope: CapabilityScope::Device,
+            operations: vec![CapabilityOperation::Execute],
+        },
+        HostCapability {
+            id: "device.input.long_press".to_string(),
+            displayName: "长按".to_string(),
+            scope: CapabilityScope::Device,
+            operations: vec![CapabilityOperation::Execute],
+        },
+        HostCapability {
+            id: "device.input.type".to_string(),
+            displayName: "文本输入".to_string(),
+            scope: CapabilityScope::Device,
+            operations: vec![CapabilityOperation::Execute, CapabilityOperation::Write],
+        },
+        HostCapability {
+            id: "device.app.launch".to_string(),
+            displayName: "启动应用".to_string(),
+            scope: CapabilityScope::Device,
+            operations: vec![CapabilityOperation::Execute],
+        },
+        HostCapability {
+            id: "device.app.home".to_string(),
+            displayName: "返回主屏".to_string(),
+            scope: CapabilityScope::Device,
+            operations: vec![CapabilityOperation::Execute],
+        },
+        HostCapability {
+            id: "device.app.back".to_string(),
+            displayName: "返回上一级".to_string(),
+            scope: CapabilityScope::Device,
+            operations: vec![CapabilityOperation::Execute],
         },
     ]
 }
@@ -1899,6 +2028,63 @@ pub trait LocalInferenceHost: Send + Sync {
     ) -> HostResult<LocalTtsInferenceHostResponse>;
 }
 
+/// A normalized screen coordinate in `[0, 1] x [0, 1]`, origin at top-left.
+///
+/// This matches the protocol used by the jailbreak device bridge, which keeps
+/// callers free of device pixel density (@2x/@3x) math.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NormalizedPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// PNG capture of the current device screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceScreenshot {
+    pub imagePng: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Drives on-device UI automation through the jailbreak device bridge.
+///
+/// Implementations reach a SpringBoard tweak over a local Unix socket; the
+/// Flutter app stays sandboxed and only forwards normalized commands.
+pub trait DeviceAutomationHost: Send + Sync {
+    /// Captures the current device screen as PNG.
+    fn captureScreenshot(&self) -> HostResult<DeviceScreenshot>;
+
+    /// Taps once at a normalized point.
+    fn tap(&self, point: NormalizedPoint) -> HostResult<()>;
+
+    /// Swipes from `start` to `end` (both normalized) over `durationMs`.
+    fn swipe(
+        &self,
+        start: NormalizedPoint,
+        end: NormalizedPoint,
+        durationMs: u64,
+    ) -> HostResult<()>;
+
+    /// Long presses at a normalized point for `durationMs`.
+    fn longPress(&self, point: NormalizedPoint, durationMs: u64) -> HostResult<()>;
+
+    /// Types `text` into the currently focused text field.
+    fn typeText(&self, text: &str) -> HostResult<()>;
+
+    /// Launches an app by bundle identifier.
+    fn launchApp(&self, bundleId: &str) -> HostResult<()>;
+
+    /// Returns to the home screen.
+    fn pressHome(&self) -> HostResult<()>;
+
+    /// Performs the platform back navigation (iOS: left-edge swipe).
+    fn pressBack(&self) -> HostResult<()>;
+
+    /// Returns the frontmost application as `bundleId|displayName`,
+    /// so the agent loop can tell which app is currently on screen
+    /// (e.g. distinguish the Operit host app from the target app).
+    fn frontmost_app(&self) -> HostResult<String>;
+}
 pub trait SystemOperationHost: Send + Sync {
     fn getSystemLanguageCode(&self) -> HostResult<String>;
     fn toast(&self, message: &str) -> HostResult<()>;

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- DISABLE the iOS sandbox entirely. iOS forces a sandbox on all third-party
+         apps and ad-hoc signing can't normally carry private entitlements — but with
+         AppSync Unified (amfid patch) installed on the device, these private keys ARE
+         honored, giving the app full filesystem access: it can write its container
+         AND reach /var/jb/var/mobile/.operit/agent.sock (daemon control channel).
+         Without AppSync this is stripped and the app falls back to the standard
+         (container-only, no /var/jb) sandbox. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+    <key>com.apple.private.security.container-required</key>
+    <false/>
+    <!-- Required for Flutter/Impeller Metal rendering on iOS. Without these the
+         kernel System Policy denies AGXDeviceUserClient / IOSurfaceRootUserClient
+         and the Flutter engine aborts at launch (SIGABRT). This is a standard
+         (non-private) entitlement, honored even under plain ad-hoc signing. -->
+    <key>com.apple.security.iokit-user-client-class</key>
+    <array>
+        <string>AGXDeviceUserClient</string>
+        <string>IOSurfaceRootUserClient</string>
+    </array>
+    <!-- Allow loading the ad-hoc signed embedded frameworks (Flutter.framework,
+         App.framework, libswift_Concurrency, objective_c.framework). -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>get-task-allow</key>
+    <true/>
+</dict>
+</plist>

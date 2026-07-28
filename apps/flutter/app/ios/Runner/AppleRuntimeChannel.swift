@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreBluetooth
 import CoreMedia
+import Darwin
 import Flutter
 import Foundation
 import Network
@@ -118,6 +119,16 @@ final class AppleRuntimeChannel: NSObject {
       remotePairFinish(call: call, result: result)
     case "ownerSystemCaptureScreenshot":
       ownerSystemCaptureScreenshot(result: result)
+    case "ownerSystemDeviceAgentPing":
+      ownerSystemDeviceAgentPing(result: result)
+    case "ownerSystemDeviceAgentStatus":
+      ownerSystemDeviceAgentStatus(result: result)
+    case "ownerSystemDeviceAgentStart":
+      ownerSystemDeviceAgentStart(result: result)
+    case "ownerSystemDeviceAgentStop":
+      ownerSystemDeviceAgentStop(result: result)
+    case "ownerSystemDeviceAgentGoal":
+      ownerSystemDeviceAgentGoal(call: call, result: result)
     case "ownerSystemRecognizeText":
       ownerSystemRecognizeText(call: call, result: result)
     case "ownerAudioPlay":
@@ -141,8 +152,18 @@ final class AppleRuntimeChannel: NSObject {
     if let handle = handle {
       return handle
     }
-    guard let runtimeRoot = configuredRuntimeRoot,
-          let workspaceRoot = configuredWorkspaceRoot else {
+    // Fall back to the platform default storage roots when the Flutter side has
+    // not configured them yet. Without this, any runtime call issued before the
+    // onboarding storage step (for example fetching the provider catalog) throws
+    // "Runtime and workspace roots are not configured" and hard-crashes onboarding.
+    var runtimeRoot = configuredRuntimeRoot
+    var workspaceRoot = configuredWorkspaceRoot
+    if runtimeRoot == nil || workspaceRoot == nil {
+      let defaults = defaultStorageRoots()
+      if runtimeRoot == nil { runtimeRoot = defaults.runtime }
+      if workspaceRoot == nil { workspaceRoot = defaults.workspace }
+    }
+    guard let runtimeRoot, let workspaceRoot else {
       throw RuntimeChannelError.createFailed("Runtime and workspace roots are not configured")
     }
     guard let created = operit_flutter_bridge_create_with_storage_roots(
@@ -153,6 +174,8 @@ final class AppleRuntimeChannel: NSObject {
       throw RuntimeChannelError.createFailed(error)
     }
     handle = created
+    configuredRuntimeRoot = runtimeRoot
+    configuredWorkspaceRoot = workspaceRoot
     installHostEventMonitoring()
     return created
   }
@@ -363,13 +386,19 @@ final class AppleRuntimeChannel: NSObject {
   }
 
   /// Returns the default Apple runtime and workspace roots.
+  /// This app is installed no-sandbox (container-required=false), so the system
+  /// never creates a per-app container UUID directory. The original
+  /// applicationSupportDirectory path therefore does not exist and the Rust core
+  /// panics on create_dir_all().unwrap(). Use a fixed, always-writable path under
+  /// /var/mobile/.operit and pre-create it before handing it to the runtime.
   private func defaultStorageRoots() -> (runtime: URL, workspace: URL) {
-    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-      .appendingPathComponent("Operit2", isDirectory: true)
-    return (
-      base.appendingPathComponent("runtime", isDirectory: true),
-      base.appendingPathComponent("workspaces", isDirectory: true)
-    )
+    let base = URL(fileURLWithPath: "/var/mobile/.operit/operit2", isDirectory: true)
+    let runtime = base.appendingPathComponent("runtime", isDirectory: true)
+    let workspace = base.appendingPathComponent("workspaces", isDirectory: true)
+    for url in [base, runtime, workspace] {
+      try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+    return (runtime, workspace)
   }
 
   /// Resolves one required Flutter-provided storage root.
@@ -636,10 +665,141 @@ final class AppleRuntimeChannel: NSObject {
 
   private func ownerSystemCaptureScreenshot(result: @escaping FlutterResult) {
     #if os(iOS)
-    result(FlutterError(code: "OWNER_SYSTEM_CAPTURE_SCREENSHOT_ERROR", message: "iOS screenshot capture is not available to this native host", details: nil))
+    // On iOS the screenshot is produced by the Operit jailbreak SpringBoard tweak
+    // (operit-sb) over its Unix socket; the sandboxed app cannot capture the screen
+    // directly. The Rust host at hosts/ios/src/device_automation.rs drives the same
+    // socket. See deb/DEBIAN/postinst for how the tweak is loaded on a rootless jailbreak.
+    workQueue.async {
+      do {
+        let reply = try Self.operitSendLine("screenshot", socketPath: Self.operitDeviceSocketPath)
+        guard reply.hasPrefix("OK|screenshot") else {
+          throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: reply])
+        }
+        // tweak replies: "OK|screenshot <bytes> -> <path>"
+        guard let path = reply.components(separatedBy: "->").last?.trimmingCharacters(in: .whitespaces) else {
+          throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "screenshot: no path in response"])
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let (width, height) = Self.pngSize(data)
+        DispatchQueue.main.async {
+          // Field names/types MUST match the generated Dart model
+          // RuntimeHostInteractionSystemCaptureScreenshotResponse (CoreProxyModels.g.dart),
+          // produced by operit-core-proxy from the Rust DeviceScreenshot struct. The
+          // generated file only exists after the full iOS build (xcframework toolchain).
+          result([
+            "imagePng": data.base64EncodedString(),
+            "width": width,
+            "height": height,
+          ])
+        }
+      } catch {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "OWNER_SYSTEM_CAPTURE_SCREENSHOT_ERROR", message: error.localizedDescription, details: nil))
+        }
+      }
+    }
     #else
     result(FlutterError(code: "OWNER_SYSTEM_CAPTURE_SCREENSHOT_ERROR", message: "macOS screenshot capture is handled by the Rust system host", details: nil))
     #endif
+  }
+
+  // MARK: - Operit jailbreak device daemon bridge (iOS)
+
+  private static let operitDeviceSocketPath = "/var/jb/var/mobile/.operit/operit.sock"
+  private static let operitAgentSocketPath = "/var/jb/var/mobile/.operit/agent.sock"
+
+  /// Sends one line command to a local Unix socket and returns the full reply (read to EOF).
+  private static func operitSendLine(_ command: String, socketPath: String) throws -> String {
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = [UInt8](socketPath.utf8)
+    withUnsafeMutableBytes(of: &addr.sun_path) { ptr in
+      pathBytes.withUnsafeBytes { src in
+        ptr.copyBytes(from: src)
+      }
+    }
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    if fd < 0 {
+      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "socket() failed"])
+    }
+    defer { close(fd) }
+    let connected = withUnsafePointer(to: addr) { ptr in
+      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+        connect(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    if connected < 0 {
+      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "connect \(socketPath) failed"])
+    }
+    let cmdData = [UInt8](command.utf8)
+    let sent = cmdData.withUnsafeBytes { write(fd, $0.baseAddress, cmdData.count) }
+    if sent < 0 {
+      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "write failed"])
+    }
+    var newline: UInt8 = 10
+    _ = withUnsafeBytes(of: &newline) { write(fd, $0.baseAddress, 1) }
+    var reply = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+      let capacity = buffer.count
+      let n = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, capacity) }
+      if n <= 0 { break }
+      reply.append(buffer, count: n)
+    }
+    guard let text = String(data: reply, encoding: .utf8) else {
+      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "invalid utf8 reply"])
+    }
+    return text
+  }
+
+  /// Extracts width/height from a PNG IHDR block (bytes 16..24 after the 8-byte signature).
+  private static func pngSize(_ data: Data) -> (UInt32, UInt32) {
+    guard data.count >= 24, data[1] == 0x50, data[2] == 0x4E, data[3] == 0x47 else {
+      return (0, 0)
+    }
+    let w = (UInt32(data[16]) << 24) | (UInt32(data[17]) << 16) | (UInt32(data[18]) << 8) | UInt32(data[19])
+    let h = (UInt32(data[20]) << 24) | (UInt32(data[21]) << 16) | (UInt32(data[22]) << 8) | UInt32(data[23])
+    return (w, h)
+  }
+
+  private func ownerSystemDeviceAgentPing(result: @escaping FlutterResult) {
+    deviceAgentControl(command: "ping", result: result)
+  }
+
+  private func ownerSystemDeviceAgentStatus(result: @escaping FlutterResult) {
+    deviceAgentControl(command: "status", result: result)
+  }
+
+  private func ownerSystemDeviceAgentStart(result: @escaping FlutterResult) {
+    deviceAgentControl(command: "start", result: result)
+  }
+
+  private func ownerSystemDeviceAgentStop(result: @escaping FlutterResult) {
+    deviceAgentControl(command: "stop", result: result)
+  }
+
+  private func ownerSystemDeviceAgentGoal(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any],
+          let goal = args["goal"] as? String, !goal.isEmpty else {
+      result(FlutterError(code: "INVALID_ARGS", message: "ownerSystemDeviceAgentGoal expects a non-empty goal", details: nil))
+      return
+    }
+    deviceAgentControl(command: "goal \(goal)", result: result)
+  }
+
+  private func deviceAgentControl(command: String, result: @escaping FlutterResult) {
+    workQueue.async {
+      do {
+        let reply = try Self.operitSendLine(command, socketPath: Self.operitAgentSocketPath)
+        DispatchQueue.main.async {
+          result(reply.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+      } catch {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "DEVICE_AGENT_ERROR", message: error.localizedDescription, details: nil))
+        }
+      }
+    }
   }
 
   private func ownerSystemRecognizeText(call: FlutterMethodCall, result: @escaping FlutterResult) {
