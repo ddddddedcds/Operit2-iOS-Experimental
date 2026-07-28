@@ -1,0 +1,28 @@
+---
+triple:          'arm64e-apple-darwin'
+binary-path:     '/Users/mac/WorkBuddy/operit2-src/hosts/ios/tweak/.theos/obj/debug/arm64e/operit-app.dylib'
+relocations:
+  - { offset: 0x1E, size: 0x8, addend: 0x0, symName: __logosLocalCtor_901ed790, symObjAddr: 0x0, symBinAddr: 0x4000, symSize: 0x438 }
+  - { offset: 0x37, size: 0x8, addend: 0x0, symName: _g_oc_logpath, symObjAddr: 0x2130, symBinAddr: 0xC158, symSize: 0x0 }
+  - { offset: 0xAA, size: 0x8, addend: 0x0, symName: _g_sockpath_app, symObjAddr: 0xA600, symBinAddr: 0xC170, symSize: 0x0 }
+  - { offset: 0xBF, size: 0x8, addend: 0x0, symName: _g_frontpath, symObjAddr: 0x2138, symBinAddr: 0xC160, symSize: 0x0 }
+  - { offset: 0xE2, size: 0x8, addend: 0x0, symName: _g_appfd, symObjAddr: 0x2140, symBinAddr: 0xC168, symSize: 0x0 }
+  - { offset: 0x1AF1, size: 0x8, addend: 0x0, symName: __logosLocalCtor_901ed790, symObjAddr: 0x0, symBinAddr: 0x4000, symSize: 0x438 }
+  - { offset: 0x1B7F, size: 0x8, addend: 0x0, symName: _oc_log, symObjAddr: 0x438, symBinAddr: 0x4438, symSize: 0x17C }
+  - { offset: 0x1BEC, size: 0x8, addend: 0x0, symName: _write_front_pid, symObjAddr: 0x5B4, symBinAddr: 0x45B4, symSize: 0x88 }
+  - { offset: 0x1C1E, size: 0x8, addend: 0x0, symName: ____logosLocalCtor_901ed790_block_invoke, symObjAddr: 0x63C, symBinAddr: 0x463C, symSize: 0x58 }
+  - { offset: 0x1C54, size: 0x8, addend: 0x0, symName: ____logosLocalCtor_901ed790_block_invoke_2, symObjAddr: 0x694, symBinAddr: 0x4694, symSize: 0x58 }
+  - { offset: 0x1C8A, size: 0x8, addend: 0x0, symName: _clear_front_pid_if_mine, symObjAddr: 0x6EC, symBinAddr: 0x46EC, symSize: 0xC0 }
+  - { offset: 0x1CBC, size: 0x8, addend: 0x0, symName: ____logosLocalCtor_901ed790_block_invoke_3, symObjAddr: 0x7AC, symBinAddr: 0x47AC, symSize: 0x54 }
+  - { offset: 0x1CF2, size: 0x8, addend: 0x0, symName: _app_cleanup, symObjAddr: 0x800, symBinAddr: 0x4800, symSize: 0x74 }
+  - { offset: 0x1D07, size: 0x8, addend: 0x0, symName: _app_server_thread, symObjAddr: 0x874, symBinAddr: 0x4874, symSize: 0x1A8 }
+  - { offset: 0x1D7B, size: 0x8, addend: 0x0, symName: _app_read_request, symObjAddr: 0xA1C, symBinAddr: 0x4A1C, symSize: 0x1E8 }
+  - { offset: 0x1DFC, size: 0x8, addend: 0x0, symName: _app_type_text, symObjAddr: 0xC04, symBinAddr: 0x4C04, symSize: 0x1B4 }
+  - { offset: 0x1E4B, size: 0x8, addend: 0x0, symName: ___Block_byref_object_copy_, symObjAddr: 0xDB8, symBinAddr: 0x4DB8, symSize: 0x58 }
+  - { offset: 0x1E6F, size: 0x8, addend: 0x0, symName: ___Block_byref_object_dispose_, symObjAddr: 0xE10, symBinAddr: 0x4E10, symSize: 0x30 }
+  - { offset: 0x1E8B, size: 0x8, addend: 0x0, symName: ___app_type_text_block_invoke, symObjAddr: 0xE40, symBinAddr: 0x4E40, symSize: 0x74C }
+  - { offset: 0x1F5E, size: 0x8, addend: 0x0, symName: _all_windows, symObjAddr: 0x158C, symBinAddr: 0x558C, symSize: 0x2D0 }
+  - { offset: 0x1FAB, size: 0x8, addend: 0x0, symName: _find_first_responder, symObjAddr: 0x185C, symBinAddr: 0x585C, symSize: 0x25C }
+  - { offset: 0x1FFE, size: 0x8, addend: 0x0, symName: ___copy_helper_block_e8_32s40r, symObjAddr: 0x1AB8, symBinAddr: 0x5AB8, symSize: 0x5C }
+  - { offset: 0x2022, size: 0x8, addend: 0x0, symName: ___destroy_helper_block_e8_32s40r, symObjAddr: 0x1B14, symBinAddr: 0x5B14, symSize: 0x44 }
+...

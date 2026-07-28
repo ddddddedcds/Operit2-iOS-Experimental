@@ -1,0 +1,31 @@
+#!/bin/bash
+# Run as root on the jailbroken device after `dpkg -i`.
+set -u
+JB=/var/jb
+
+echo "== Operit2 iOS substrate install =="
+
+echo "== socket / log directories =="
+mkdir -p /var/jb/var/mobile/.operit 2>/dev/null || true
+chown -R mobile:mobile /var/jb/var/mobile/.operit 2>/dev/null || true
+mkdir -p /var/jb/var/mobile/.operit/logs 2>/dev/null || true
+chown -R mobile:mobile /var/jb/var/mobile/.operit/logs 2>/dev/null || true
+
+echo "== agent daemon permissions (runs as mobile via LaunchDaemon) =="
+chown mobile:mobile /var/jb/usr/bin/operit_agent_daemon 2>/dev/null || true
+chmod 0755 /var/jb/usr/bin/operit_agent_daemon 2>/dev/null || true
+ldid -S /var/jb/usr/bin/operit_agent_daemon 2>/dev/null || true
+
+echo "== load agent daemon (LaunchDaemon, RunAtLoad+KeepAlive) =="
+launchctl load /var/jb/Library/LaunchDaemons/ai.operit.agent.plist 2>/dev/null || \
+  launchctl bootstrap system /var/jb/Library/LaunchDaemons/ai.operit.agent.plist 2>/dev/null || true
+
+echo "== reload SpringBoard so the control tweak takes effect =="
+if command -v sbreload >/dev/null 2>&1; then
+  sbreload 2>/dev/null || true
+else
+  echo "（未找到 sbreload，请手动 respring / 注销以使 SpringBoard tweak 生效）"
+fi
+
+echo "Operit2 iOS substrate installed. Daemon log: /var/jb/var/mobile/.operit/logs/agent.log"
+exit 0

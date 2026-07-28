@@ -26,6 +26,16 @@ pub use operit_host_apple_native::{
 pub use runtime::IosManagedRuntimeHost;
 pub use terminal::IosTerminalHost;
 
+#[cfg(target_os = "ios")]
+pub mod device_automation;
+#[cfg(target_os = "ios")]
+pub use device_automation::IosDeviceAutomationHost;
+
+#[cfg(target_os = "ios")]
+pub mod device_agent;
+#[cfg(target_os = "ios")]
+pub use device_agent::run_device_agent_loop;
+
 /// Creates the iOS-owned runtime host manager for explicit storage roots.
 #[cfg(target_os = "ios")]
 pub fn createRuntimeHostManager(
@@ -48,4 +58,5 @@ pub fn createRuntimeHostManager(
     .withHostSecretStore(hostSecretStore)
     .withHostRuntimeEventSchedulerHost(Arc::new(IosHostRuntimeEventSchedulerHost::new()))
     .withHostRuntimeTaskSchedulerHost(Arc::new(IosHostRuntimeTaskSchedulerHost::new()))
+    .withDeviceAutomationHost(Arc::new(IosDeviceAutomationHost::new()))
 }
