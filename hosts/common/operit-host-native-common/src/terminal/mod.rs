@@ -553,45 +553,60 @@ fn createPtySession(
     })
 }
 
+/// Writes a small bash rc file that sets PROMPT_COMMAND to emit the Operit prompt
+/// marker, and returns its path so the shell can be launched with `--rcfile`.
+/// This avoids relying on the inherited environment, which (a) portable_pty on iOS
+/// does not reliably forward into the spawned process and (b) `login -f` strips
+/// entirely. Reading the marker from an rc file makes the prompt fire regardless
+/// of how the shell was launched. Returns None on non-iOS (env injection is used).
+#[cfg(target_os = "ios")]
+fn write_pty_rc_file() -> Option<std::path::PathBuf> {
+    let dir = std::path::Path::new("/var/jb/var/mobile/.operit");
+    let _ = std::fs::create_dir_all(dir);
+    let rc = dir.join(".operit_bashrc");
+    let body = r#"__operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status""#;
+    if std::fs::write(&rc, format!("{}\n", body)).is_ok() {
+        Some(rc)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+fn write_pty_rc_file() -> Option<std::path::PathBuf> {
+    None
+}
+
 fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
     #[cfg(target_os = "ios")]
     let shell = ios_pty_shell();
     #[cfg(not(target_os = "ios"))]
     let shell = "bash".to_string();
 
-    // On iOS, spawning an interactive shell directly inside an app process often
-    // fails to acquire a controlling TTY/session leader, causing bash to exit
-    // immediately after the prompt. Use `login -f mobile` as a wrapper when
-    // available; it sets up the session/TTY environment before exec'ing the shell.
-    let mut command;
-    #[cfg(target_os = "ios")]
-    {
-        let login_path = "/var/jb/usr/bin/login";
-        if std::path::Path::new(login_path).exists() {
-            command = CommandBuilder::new(login_path);
-            command.arg("-f");
-            command.arg("mobile");
-            command.arg(shell.as_str());
-        } else {
-            command = CommandBuilder::new(shell.as_str());
+    let mut command = CommandBuilder::new(shell.as_str());
+    command.arg("--noprofile");
+    // Inject PROMPT_COMMAND via an --rcfile the shell reads at startup (does NOT
+    // rely on the inherited environment, which portable_pty/iOS drops and `login`
+    // strips). Using --rcfile makes the prompt marker fire in every launch mode.
+    match write_pty_rc_file() {
+        Some(rc) => {
+            command.arg("--rcfile");
+            command.arg(rc);
+        }
+        None => {
+            command.arg("--norc");
+            command.env(
+                "PROMPT_COMMAND",
+                r#"__operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status""#,
+            );
         }
     }
-    #[cfg(not(target_os = "ios"))]
-    {
-        command = CommandBuilder::new(shell.as_str());
-    }
-    command.arg("--noprofile");
-    command.arg("--norc");
     command.arg("-i");
     command.cwd(workingDir);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command.env("LANG", "C.UTF-8");
     command.env("PS1", "$PWD $ ");
-    command.env(
-        "PROMPT_COMMAND",
-        r#"__operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status""#,
-    );
     let mut path = std::env::var("PATH").unwrap_or_else(|_| {
         "/usr/bin:/bin:/usr/sbin:/sbin".to_string()
     });
