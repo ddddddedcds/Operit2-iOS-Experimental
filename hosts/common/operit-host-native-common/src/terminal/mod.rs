@@ -515,7 +515,11 @@ fn createPtySession(
 }
 
 fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
-    let mut command = CommandBuilder::new("bash");
+    #[cfg(target_os = "ios")]
+    let shell = ios_pty_shell();
+    #[cfg(not(target_os = "ios"))]
+    let shell = "bash".to_string();
+    let mut command = CommandBuilder::new(shell.as_str());
     command.arg("--noprofile");
     command.arg("--norc");
     command.arg("-i");
@@ -528,7 +532,45 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
         "PROMPT_COMMAND",
         r#"__operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status""#,
     );
+    let mut path = std::env::var("PATH").unwrap_or_else(|_| {
+        "/usr/bin:/bin:/usr/sbin:/sbin".to_string()
+    });
+    for dir in [
+        "/var/jb/bin",
+        "/var/jb/usr/bin",
+        "/var/jb/sbin",
+        "/var/jb/usr/sbin",
+    ] {
+        if std::path::Path::new(dir).is_dir() {
+            path.push(':');
+            path.push_str(dir);
+        }
+    }
+    command.env("PATH", path);
+    #[cfg(target_os = "ios")]
+    {
+        command.env("HOME", "/var/mobile");
+        command.env("USER", "mobile");
+        command.env("LOGNAME", "mobile");
+        command.env("SHELL", shell.as_str());
+    }
     command
+}
+
+/// Resolves the best available login shell on a jailbroken iOS device.
+#[cfg(target_os = "ios")]
+fn ios_pty_shell() -> String {
+    for candidate in [
+        "/var/jb/bin/bash",
+        "/bin/bash",
+        "/var/jb/bin/sh",
+        "/bin/sh",
+    ] {
+        if std::path::Path::new(candidate).exists() {
+            return candidate.to_string();
+        }
+    }
+    "bash".to_string()
 }
 
 #[allow(non_snake_case)]

@@ -86,6 +86,8 @@ use operit_host_apple_native::{
     AppleHostRuntimeEventHost as NativeHostRuntimeEventHost,
     AppleTerminalHost as NativeTerminalHost,
 };
+#[cfg(target_os = "ios")]
+use operit_host_native_common::NativePtyTerminalHost as NativeTerminalHost;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 use operit_host_linux_native::{
     LinuxAudioPlaybackHost as NativeAudioPlaybackHost, LinuxBluetoothHost as NativeBluetoothHost,
@@ -1791,6 +1793,7 @@ fn create_local_core(
     ))));
     context = context
         .withHostRuntimeEventSchedulerHost(Arc::new(NativeHostRuntimeEventSchedulerHost::new()));
+    context = context.withTerminalHost(Arc::new(NativeTerminalHost::new()));
     let application = OperitApplication::newWithContext(context);
     Ok(LocalCoreProxy::new(application))
 }
@@ -2020,6 +2023,7 @@ fn create_local_core(
     )));
     context = context
         .withHostRuntimeEventSchedulerHost(Arc::new(NativeHostRuntimeEventSchedulerHost::new()));
+    context = context.withTerminalHost(Arc::new(NativeTerminalHost::new()));
     let application = OperitApplication::newWithContext(context);
     Ok(LocalCoreProxy::new(application))
 }
