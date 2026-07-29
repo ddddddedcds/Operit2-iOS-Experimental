@@ -227,7 +227,7 @@ def main() -> int:
     )
 
     generate_dart_proxy_artifacts()
-    dart_pub_get(enforce_lockfile=True, env=env)
+    dart_pub_get(enforce_lockfile=False, env=env)
     run(["rustup", "target", "add", "wasm32-unknown-unknown"])
     stage_web_access_source()
     reset_dir(WEB_ACCESS_BUNDLE_DIR)
