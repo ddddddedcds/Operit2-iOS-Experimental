@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use operit_host_api::HostManager::HostManager;
 use operit_host_api::{
     BrowserSessionCommand, BrowserSessionCommandResult, BrowserSessionHost, BrowserSessionInfo,
-    BrowserSessionSnapshot,
+    BrowserSessionSnapshot, HostError, HostResult,
 };
 use operit_util::stream::HotStream::MutableSharedStreamImpl;
 use operit_util::stream::Stream::Stream;
@@ -238,15 +238,74 @@ fn runtime_browser_session_snapshot(
     }
 }
 
+/// Fallback browser session host used when no native browser backend is
+/// configured for the current platform (e.g. iOS). Every operation fails with a
+/// clear "not supported" error instead of panicking on a missing host.
+struct DisabledBrowserSessionHost;
+
+impl BrowserSessionHost for DisabledBrowserSessionHost {
+    fn listBrowserSessions(&self) -> HostResult<Vec<BrowserSessionInfo>> {
+        Err(HostError::new(
+            "browser sessions are not supported on this platform",
+        ))
+    }
+
+    fn createBrowserSession(
+        &self,
+        _initialUrl: &str,
+        _userAgent: Option<&str>,
+        _headers: BTreeMap<String, String>,
+    ) -> HostResult<BrowserSessionInfo> {
+        Err(HostError::new(
+            "browser sessions are not supported on this platform",
+        ))
+    }
+
+    fn updateBrowserSession(
+        &self,
+        _sessionId: &str,
+        _userAgent: Option<&str>,
+        _headers: BTreeMap<String, String>,
+    ) -> HostResult<BrowserSessionInfo> {
+        Err(HostError::new(
+            "browser sessions are not supported on this platform",
+        ))
+    }
+
+    fn submitBrowserCommand(
+        &self,
+        _command: BrowserSessionCommand,
+    ) -> HostResult<BrowserSessionCommandResult> {
+        Err(HostError::new(
+            "browser sessions are not supported on this platform",
+        ))
+    }
+
+    fn getBrowserSessionSnapshot(&self, _sessionId: &str) -> HostResult<BrowserSessionSnapshot> {
+        Err(HostError::new(
+            "browser sessions are not supported on this platform",
+        ))
+    }
+
+    fn closeBrowserSession(
+        &self,
+        _sessionId: &str,
+    ) -> HostResult<BrowserSessionCommandResult> {
+        Err(HostError::new(
+            "browser sessions are not supported on this platform",
+        ))
+    }
+}
+
 impl RuntimeBrowserService {
     /// Creates the browser service facade.
     #[allow(non_snake_case)]
     pub fn getInstance(context: &HostManager) -> Self {
         Self {
-            browserSessionHost: context
-                .browserSessionHost
-                .clone()
-                .expect("BrowserSessionHost must be configured for RuntimeBrowserService"),
+        browserSessionHost: context
+            .browserSessionHost
+            .clone()
+            .unwrap_or_else(|| Arc::new(DisabledBrowserSessionHost)),
         }
     }
 
