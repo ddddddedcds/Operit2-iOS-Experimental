@@ -458,6 +458,11 @@ fn createPtySession(
     rows: u16,
     cols: u16,
 ) -> HostResult<PtySession> {
+    // Best-effort: make sure the working directory exists so spawning the
+    // shell never fails on a missing path (e.g. a freshly created playground
+    // dir). Existing dirs are a no-op; permission failures are ignored and
+    // will surface naturally when spawn_command tries to chdir.
+    let _ = std::fs::create_dir_all(&workingDir);
     let ptySystem = native_pty_system();
     let pair = ptySystem
         .openpty(ptySize(rows, cols))

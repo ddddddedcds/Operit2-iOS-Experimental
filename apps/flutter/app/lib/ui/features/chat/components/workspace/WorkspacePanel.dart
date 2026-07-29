@@ -3,6 +3,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:path/path.dart' as p;
+
 import 'package:flutter/material.dart';
 import 'package:operit2/core/browser/BrowserSessions.dart';
 import 'package:operit2/core/bridge/ProxyCoreRuntimeBridge.dart';
@@ -360,9 +362,13 @@ class _WorkspacePanelState extends State<WorkspacePanel> {
 
   Future<String> _manualTerminalWorkingDirectory() async {
     if (!widget.hasBoundWorkspace) {
-      return const GeneratedCoreProxyClients(
+      // Land in an isolated playground dir under HOME so a careless `rm -rf`
+      // only wipes this sandbox, not the whole device. The Rust PTY host
+      // creates it on demand if it does not exist yet.
+      final root = await const GeneratedCoreProxyClients(
         ProxyCoreRuntimeBridge(),
       ).application.operitRootPath();
+      return '${p.dirname(root)}/operit-dev';
     }
     final workspaceDirectory = widget.workspacePath?.trim();
     if (workspaceDirectory == null || workspaceDirectory.isEmpty) {
