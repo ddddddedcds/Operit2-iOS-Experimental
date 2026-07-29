@@ -150,6 +150,10 @@ final class AppleRuntimeChannel: NSObject {
       ownerLocalInference(call: call, result: result)
     case "syncDaemonConfig":
       syncDaemonConfig(call: call, result: result)
+    case "hostOnboardingPermissionSnapshot":
+      hostOnboardingPermissionSnapshot(result: result)
+    case "hostOnboardingRequestPermission":
+      hostOnboardingRequestPermission(result: result)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -841,6 +845,21 @@ final class AppleRuntimeChannel: NSObject {
         }
       }
     }
+  }
+
+  // MARK: - Host onboarding permissions (iOS)
+  // On jailbroken iOS, capabilities are pre-granted by the app's entitlements at
+  // install time; there are no runtime TCC prompts to satisfy. These handlers
+  // exist so the "系统授权" panel never hits FlutterMethodNotImplemented (which
+  // would crash the panel if onboardingRequirements is ever populated for iOS).
+  private func hostOnboardingPermissionSnapshot(result: @escaping FlutterResult) {
+    // Empty snapshot: no per-requirement runtime status to report.
+    result([String: [String: String]]())
+  }
+
+  private func hostOnboardingRequestPermission(result: @escaping FlutterResult) {
+    // Nothing to request on iOS; entitlements already grant everything.
+    result(nil)
   }
 
   // MARK: - Operit jailbreak device daemon bridge (iOS)

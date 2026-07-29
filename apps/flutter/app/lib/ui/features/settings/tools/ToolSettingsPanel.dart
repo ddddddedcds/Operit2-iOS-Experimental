@@ -118,10 +118,12 @@ class _ToolSettingsPanelState extends State<ToolSettingsPanel> {
             _SectionCard(
               title: '系统授权',
               children: <Widget>[
-                _HostAuthorizationList(
-                  requirements: data.hostRequirements,
-                  onRequest: _requestHostAuthorization,
-                ),
+                Platform.isIOS
+                    ? const _IosJailbreakGrants()
+                    : _HostAuthorizationList(
+                        requirements: data.hostRequirements,
+                        onRequest: _requestHostAuthorization,
+                      ),
               ],
             ),
             _SectionCard(
@@ -262,6 +264,111 @@ class _HostAuthorizationList extends StatelessWidget {
     );
   }
 }
+
+/// Read-only list of capabilities pre-granted to the app by jailbreak
+/// entitlements on iOS. There are no runtime TCC prompts to satisfy, so the
+/// "系统授权" panel shows these as facts instead of requestable items.
+class _IosJailbreakGrants extends StatelessWidget {
+  const _IosJailbreakGrants();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Text(
+          '越狱环境已在安装时通过 entitlements 授予以下系统权限，无需运行时授权：',
+          style: textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 8),
+        for (final grant in _iosJailbreakGrants)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Icon(Icons.check_circle_outline, color: colorScheme.primary),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        grant.title,
+                        style: textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        grant.description,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '已授予',
+                        style: textTheme.labelMedium?.copyWith(
+                          color: colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _IosJailbreakGrant {
+  const _IosJailbreakGrant({
+    required this.title,
+    required this.description,
+  });
+
+  final String title;
+  final String description;
+}
+
+const List<_IosJailbreakGrant> _iosJailbreakGrants = <_IosJailbreakGrant>[
+  _IosJailbreakGrant(
+    title: '应用沙盒',
+    description:
+        '已由越狱 entitlements 关闭（no-sandbox / container-required=false），文件系统完全访问，可访问 /var/jb 下的 daemon 控制通道。',
+  ),
+  _IosJailbreakGrant(
+    title: '本地网络',
+    description:
+        '已授权（network.client / network.server），支持局域网设备发现与 Web Access。',
+  ),
+  _IosJailbreakGrant(
+    title: '库校验',
+    description:
+        '已关闭（cs.disable-library-validation），可加载未签名动态库（Flutter/越狱插件）。',
+  ),
+  _IosJailbreakGrant(
+    title: 'IOKit 用户客户端',
+    description:
+        '已授权（AGXDeviceUserClient / IOSurfaceRootUserClient），Metal 渲染与底层硬件访问。',
+  ),
+  _IosJailbreakGrant(
+    title: '钥匙串',
+    description: '已授权（keychain-access-groups），API 凭据可安全存储。',
+  ),
+  _IosJailbreakGrant(
+    title: '系统无障碍',
+    description:
+        '随附 tweak 的越狱 entitlements 已授予（tcc.allow / accessibility），支撑截图与界面控制。',
+  ),
+];
 
 class _HostAuthorizationTile extends StatelessWidget {
   const _HostAuthorizationTile({
