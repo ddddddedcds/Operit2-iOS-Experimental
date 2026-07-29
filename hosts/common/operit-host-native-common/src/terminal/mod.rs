@@ -583,25 +583,47 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
     #[cfg(not(target_os = "ios"))]
     let shell = "bash".to_string();
 
-    let mut command = CommandBuilder::new(shell.as_str());
-    command.arg("--noprofile");
-    // Inject PROMPT_COMMAND via an --rcfile the shell reads at startup (does NOT
-    // rely on the inherited environment, which portable_pty/iOS drops and `login`
-    // strips). Using --rcfile makes the prompt marker fire in every launch mode.
+    // Build the shell argument list.
+    let mut shell_args: Vec<String> = Vec::new();
+    shell_args.push("--noprofile".to_string());
+    // iOS injects PROMPT_COMMAND via an --rcfile the shell reads at startup (does
+    // NOT rely on the inherited environment, which portable_pty/iOS drops and
+    // `login` strips). Non-iOS falls back to the PROMPT_COMMAND env var.
+    let mut prompt_env: Option<String> = None;
     match write_pty_rc_file() {
         Some(rc) => {
-            command.arg("--rcfile");
-            command.arg(rc);
+            shell_args.push("--rcfile".to_string());
+            shell_args.push(rc.to_string_lossy().into_owned());
         }
         None => {
-            command.arg("--norc");
-            command.env(
-                "PROMPT_COMMAND",
-                r#"__operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status""#,
+            shell_args.push("--norc".to_string());
+            prompt_env = Some(
+                r#"__operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status""#
+                    .to_string(),
             );
         }
     }
-    command.arg("-i");
+    shell_args.push("-i".to_string());
+
+    // On iOS, spawning bash directly inside the app process fails to acquire a
+    // controlling TTY/session, so bash exits immediately. Wrap it with `script`,
+    // which allocates a real PTY and a session for the child process.
+    #[cfg(target_os = "ios")]
+    let (program, base_args) = match ios_script_path() {
+        Some(script) => {
+            let mut args = vec!["-q".to_string(), "/dev/null".to_string(), shell.clone()];
+            args.extend(shell_args.iter().cloned());
+            (script, args)
+        }
+        None => (shell.clone(), shell_args.clone()),
+    };
+    #[cfg(not(target_os = "ios"))]
+    let (program, base_args) = (shell.clone(), shell_args.clone());
+
+    let mut command = CommandBuilder::new(program.as_str());
+    for a in &base_args {
+        command.arg(a.as_str());
+    }
     command.cwd(workingDir);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
@@ -622,6 +644,9 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
         }
     }
     command.env("PATH", path);
+    if let Some(p) = prompt_env {
+        command.env("PROMPT_COMMAND", p);
+    }
     #[cfg(target_os = "ios")]
     {
         command.env("HOME", "/var/mobile");
@@ -646,6 +671,23 @@ fn ios_pty_shell() -> String {
         }
     }
     "bash".to_string()
+}
+
+/// Resolves the `script` binary used to wrap the shell so it gets a real PTY
+/// and session (direct spawn inside the app process fails on iOS).
+#[cfg(target_os = "ios")]
+fn ios_script_path() -> Option<String> {
+    for candidate in [
+        "/var/jb/usr/bin/script",
+        "/usr/bin/script",
+        "/var/jb/bin/script",
+        "/bin/script",
+    ] {
+        if std::path::Path::new(candidate).exists() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
 }
 
 #[allow(non_snake_case)]
