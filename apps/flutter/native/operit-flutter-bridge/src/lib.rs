@@ -973,14 +973,23 @@ impl OperitFlutterBridge {
                 .to_string();
             }
         };
+        let event_args = match operit_link::toCoreValue(serde_json::json!({
+            "event": eventValue,
+        })) {
+            Ok(value) => value,
+            Err(error) => {
+                return serde_json::json!({
+                    "ok": false,
+                    "error": format!("runtime event arguments must convert to CoreValue: {error}"),
+                })
+                .to_string();
+            }
+        };
         let response = self.call(CoreCallRequest::new(
             format!("runtime-event-{}", current_time_millis_u64()),
             "services.runtimeEventIngressService",
             "ingestEvent",
-            operit_link::toCoreValue(serde_json::json!({
-                "event": eventValue,
-            }))
-            .expect("runtime event arguments must convert to CoreValue"),
+            event_args,
         ));
         match response.result {
             Ok(value) => serde_json::json!({"ok": true, "result": value}).to_string(),
@@ -2115,6 +2124,26 @@ pub unsafe extern "C" fn operit_flutter_bridge_create_with_storage_roots(
     runtime_root: *const c_char,
     workspace_root: *const c_char,
 ) -> *mut OperitFlutterBridge {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Write;
+        std::panic::set_hook(Box::new(|info| {
+            let mut msg = info.to_string();
+            if let Some(loc) = info.location() {
+                msg = format!("{} (at {}:{})", msg, loc.file(), loc.line());
+            }
+            for path in [
+                "/var/mobile/.operit_panic.log",
+                "/tmp/.operit_panic.log",
+            ] {
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| writeln!(f, "{}", msg));
+            }
+        }));
+    }
     if runtime_root.is_null() {
         set_last_create_error("runtime storage root pointer is null".to_string());
         return std::ptr::null_mut();
