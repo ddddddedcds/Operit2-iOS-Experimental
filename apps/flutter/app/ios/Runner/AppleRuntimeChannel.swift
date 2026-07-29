@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreLocation
 import CoreBluetooth
 import CoreMedia
 import Darwin
@@ -121,6 +122,8 @@ final class AppleRuntimeChannel: NSObject {
       ownerSystemCaptureScreenshot(result: result)
     case "captureScreenDirect":
       captureScreenDirect(result: result)
+    case "getCurrentLocation":
+      getCurrentLocation(result: result)
     case "ownerSystemDeviceAgentPing":
       ownerSystemDeviceAgentPing(result: result)
     case "ownerSystemDeviceAgentStatus":
@@ -750,6 +753,94 @@ final class AppleRuntimeChannel: NSObject {
     #else
     result(FlutterError(code: "SCREEN_CAPTURE_ERROR", message: "screen capture is only available on iOS", details: nil))
     #endif
+  }
+
+  private func getCurrentLocation(result: @escaping FlutterResult) {
+    #if os(iOS)
+    DispatchQueue.main.async {
+      _ = OneShotLocationFetcher(result: result)
+    }
+    #else
+    result(FlutterError(code: "LOCATION_ERROR", message: "location is only available on iOS", details: nil))
+    #endif
+  }
+
+  /// One-shot CoreLocation fetcher retained until first fix or timeout.
+  private class OneShotLocationFetcher: NSObject, CLLocationManagerDelegate {
+    let manager: CLLocationManager
+    let result: FlutterResult
+    var finished = false
+    static var active: [OneShotLocationFetcher] = []
+
+    init(result: @escaping FlutterResult) {
+      self.result = result
+      self.manager = CLLocationManager()
+      super.init()
+      manager.delegate = self
+      manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+      manager.requestWhenInUseAuthorization()
+      OneShotLocationFetcher.active.append(self)
+      // If permission was already decided in a previous run, the request above
+      // does NOT re-fire locationManagerDidChangeAuthorization. Act on the
+      // current status immediately; only .notDetermined waits for the callback.
+      switch manager.authorizationStatus {
+      case .authorizedWhenInUse, .authorizedAlways:
+        manager.requestLocation()
+      case .denied, .restricted:
+        complete(error: "location permission denied")
+      default:
+        break
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+        self?.complete(error: "location request timed out")
+      }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+      switch manager.authorizationStatus {
+      case .authorizedWhenInUse, .authorizedAlways:
+        manager.requestLocation()
+      case .denied, .restricted:
+        complete(error: "location permission denied")
+      default:
+        break
+      }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+      guard let loc = locations.first, !finished else { return }
+      let lat = loc.coordinate.latitude
+      let lon = loc.coordinate.longitude
+      let acc = loc.horizontalAccuracy
+      let content = "当前位置\n纬度: \(String(format: "%.6f", lat))\n经度: \(String(format: "%.6f", lon))\n精度: \(String(format: "%.0f", acc)) 米\n时间: \(loc.timestamp)\n"
+      let fileName = "operit_location_\(Int64(Date().timeIntervalSince1970 * 1000)).txt"
+      let fileURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(fileName)
+      do {
+        try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        complete(path: fileURL.path, latitude: lat, longitude: lon)
+      } catch {
+        complete(error: error.localizedDescription)
+      }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+      complete(error: error.localizedDescription)
+    }
+
+    private func complete(path: String? = nil, latitude: Double = 0, longitude: Double = 0, error: String? = nil) {
+      guard !finished else { return }
+      finished = true
+      manager.stopUpdatingLocation()
+      manager.delegate = nil
+      OneShotLocationFetcher.active.removeAll { $0 === self }
+      DispatchQueue.main.async {
+        if let path = path {
+          self.result(["path": path, "latitude": latitude, "longitude": longitude])
+        } else {
+          self.result(FlutterError(code: "LOCATION_ERROR", message: error ?? "unknown location error", details: nil))
+        }
+      }
+    }
   }
 
   // MARK: - Operit jailbreak device daemon bridge (iOS)

@@ -13,6 +13,7 @@
   "attachmentFile": "File",
   "attachmentScreenContent": "Screen content",
   "attachmentScreenContentUnavailable": "Screen capture failed or is unavailable on this device",
+  "attachmentLocationUnavailable": "Location unavailable or permission denied",
   "attachmentNotifications": "Current notifications",
   "attachmentLocation": "Current location",
   "attachmentPackage": "Package",

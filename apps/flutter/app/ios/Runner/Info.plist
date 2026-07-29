@@ -49,6 +49,12 @@
 	<string>Operit2 uses the local network to discover and connect to nearby Operit devices for Web Access.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Operit2 records speech for text recognition.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Operit2 uses the camera to capture photos you attach to a chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Operit2 accesses your photo library to attach photos to a chat.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Operit2 reads your current location to attach it to a chat.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_operit._tcp</string>

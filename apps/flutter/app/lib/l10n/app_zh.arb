@@ -13,6 +13,7 @@
   "attachmentFile": "文件",
   "attachmentScreenContent": "屏幕内容",
   "attachmentScreenContentUnavailable": "截屏失败或当前设备不可用",
+  "attachmentLocationUnavailable": "定位失败或被拒绝授权",
   "attachmentNotifications": "当前通知",
   "attachmentLocation": "当前位置",
   "attachmentPackage": "包",

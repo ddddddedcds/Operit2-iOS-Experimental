@@ -1,6 +1,6 @@
 Package: ai.operit
 Name: Operit2 (device automation, rootless)
-Version: 0.3.27
+Version: 0.3.28
 Architecture: iphoneos-arm64
 Description: Operit2 iOS device-automation substrate for rootless jailbreaks (Dopamine/ElleKit), with the Operit2 Flutter UI bundled in. SpringBoard control tweak (screenshot/launch/home/tap/swipe/longpress/type/front) + per-app injected dylib (type injection into focused field) + resident agent daemon (operit_agent_daemon) running as a LaunchDaemon. The daemon hosts the visual agent loop (screenshot -> autoglm-phone VLM -> normalized 0-999 coords -> device actions) and is driven over /var/jb/var/mobile/.operit/agent.sock. The UI app installs to /var/jb/Applications/Runner.app (ad-hoc signed on install; AppSync Unified also works).
 Maintainer: operit2-ios <local@example.com>

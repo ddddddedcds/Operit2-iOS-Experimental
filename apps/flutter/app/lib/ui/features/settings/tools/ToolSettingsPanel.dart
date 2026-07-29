@@ -2,6 +2,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:io';
 
 import '../../../../core/bridge/ProxyCoreRuntimeBridge.dart';
 import '../../../../core/proxy/generated/CoreProxyClients.g.dart';
@@ -378,7 +379,9 @@ class _PermissionChain extends StatelessWidget {
         _ChainStep(
           index: '0',
           title: '应用运行隔离',
-          value: '${data.host.isolation}',
+          value: Platform.isIOS
+              ? '${data.host.isolation}（iOS 越狱：应用沙盒已关闭）'
+              : '${data.host.isolation}',
         ),
         _ChainStep(
           index: '1',
@@ -612,7 +615,7 @@ _ModeSummary _modeFor(core_proxy.AiPermissionMode mode) {
       ),
     core_proxy.AiPermissionMode.full => const _ModeSummary(
         label: '完整权限',
-        description: 'AI 可以读写当前工作区，并关闭应用内沙盒。',
+        description: 'AI 可读写当前工作区。iOS 上应用沙盒已由越狱 entitlements 关闭，此选项不再额外改变沙盒状态。',
       ),
   };
 }

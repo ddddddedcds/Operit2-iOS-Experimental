@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../../../l10n/generated/app_localizations.dart';
 import '../../../main/MainLayoutController.dart';
@@ -403,14 +404,11 @@ class _AIChatScreenState extends State<AIChatScreen>
   }
 
   Future<void> _handleAttachImage() async {
-    const imageGroup = XTypeGroup(
-      label: 'image',
-      extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'heic'],
-    );
-    final files = await openFiles(
-      acceptedTypeGroups: const <XTypeGroup>[imageGroup],
-    );
-    await _handleSelectedAttachmentFiles(files);
+    final picker = ImagePicker();
+    final xfile = await picker.pickImage(source: ImageSource.gallery);
+    if (xfile != null) {
+      await _handleAttachmentPaths([xfile.path]);
+    }
   }
 
   Future<void> _handleAttachFile() async {
@@ -439,7 +437,15 @@ class _AIChatScreenState extends State<AIChatScreen>
   }
 
   void _handleTakePhoto() {
-    _showLocalToast(AppLocalizations.of(context)!.attachmentCameraUnavailable);
+    _takePhoto();
+  }
+
+  Future<void> _takePhoto() async {
+    final picker = ImagePicker();
+    final xfile = await picker.pickImage(source: ImageSource.camera);
+    if (xfile != null) {
+      await _handleAttachmentPaths([xfile.path]);
+    }
   }
 
   Future<void> _captureScreenDirect() async {
@@ -449,6 +455,19 @@ class _AIChatScreenState extends State<AIChatScreen>
     if (path == null || path.isEmpty) {
       _showLocalToast(
         AppLocalizations.of(context)!.attachmentScreenContentUnavailable,
+      );
+      return;
+    }
+    await _handleAttachmentPaths([path]);
+  }
+
+  Future<void> _handleGetLocation() async {
+    final result = await const MethodChannel('operit/runtime')
+        .invokeMethod<Map<dynamic, dynamic>>('getCurrentLocation');
+    final path = result?['path'] as String?;
+    if (path == null || path.isEmpty) {
+      _showLocalToast(
+        AppLocalizations.of(context)!.attachmentLocationUnavailable,
       );
       return;
     }
@@ -1329,7 +1348,7 @@ class _AIChatScreenState extends State<AIChatScreen>
             });
           },
           onAttachLocation: () {
-            _handleSpecialAttachment('location_capture').catchError((
+            _handleGetLocation().catchError((
               Object error,
               StackTrace stackTrace,
             ) {
