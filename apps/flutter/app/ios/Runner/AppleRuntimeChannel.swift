@@ -119,6 +119,8 @@ final class AppleRuntimeChannel: NSObject {
       remotePairFinish(call: call, result: result)
     case "ownerSystemCaptureScreenshot":
       ownerSystemCaptureScreenshot(result: result)
+    case "captureScreenDirect":
+      captureScreenDirect(result: result)
     case "ownerSystemDeviceAgentPing":
       ownerSystemDeviceAgentPing(result: result)
     case "ownerSystemDeviceAgentStatus":
@@ -702,6 +704,51 @@ final class AppleRuntimeChannel: NSObject {
     }
     #else
     result(FlutterError(code: "OWNER_SYSTEM_CAPTURE_SCREENSHOT_ERROR", message: "macOS screenshot capture is handled by the Rust system host", details: nil))
+    #endif
+  }
+
+  /// Captures the full device screen using the private UIImage
+  /// `_UICreateScreenUIImage()` API, entirely in-process — no jailbreak
+  /// tweak socket (operit.sock) and no device-automation daemon. This is the
+  /// user-facing "screen content" attachment on iOS after we dropped the
+  /// host-interaction screenshot path ("our automation").
+  private func captureScreenDirect(result: @escaping FlutterResult) {
+    #if os(iOS)
+    workQueue.async {
+      let image: UIImage? = {
+        let selector = NSSelectorFromString("_UICreateScreenUIImage")
+        guard UIImage.responds(to: selector) else { return nil }
+        return UIImage.perform(selector).takeRetainedValue() as? UIImage
+      }()
+      guard let image else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "SCREEN_CAPTURE_ERROR", message: "private screenshot API unavailable on this device", details: nil))
+        }
+        return
+      }
+      guard let pngData = image.pngData() else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "SCREEN_CAPTURE_ERROR", message: "failed to encode screenshot to PNG", details: nil))
+        }
+        return
+      }
+      let fileName = "operit_screen_\(Int64(Date().timeIntervalSince1970 * 1000)).png"
+      let fileURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(fileName)
+      do {
+        try pngData.write(to: fileURL)
+        let width = Int(image.size.width * image.scale)
+        let height = Int(image.size.height * image.scale)
+        DispatchQueue.main.async {
+          result(["path": fileURL.path, "width": width, "height": height])
+        }
+      } catch {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "SCREEN_CAPTURE_ERROR", message: error.localizedDescription, details: nil))
+        }
+      }
+    }
+    #else
+    result(FlutterError(code: "SCREEN_CAPTURE_ERROR", message: "screen capture is only available on iOS", details: nil))
     #endif
   }
 

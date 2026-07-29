@@ -3,6 +3,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../../../../l10n/generated/app_localizations.dart';
@@ -439,6 +440,19 @@ class _AIChatScreenState extends State<AIChatScreen>
 
   void _handleTakePhoto() {
     _showLocalToast(AppLocalizations.of(context)!.attachmentCameraUnavailable);
+  }
+
+  Future<void> _captureScreenDirect() async {
+    final result = await const MethodChannel('operit/runtime')
+        .invokeMethod<Map<dynamic, dynamic>>('captureScreenDirect');
+    final path = result?['path'] as String?;
+    if (path == null || path.isEmpty) {
+      _showLocalToast(
+        AppLocalizations.of(context)!.attachmentScreenContentUnavailable,
+      );
+      return;
+    }
+    await _handleAttachmentPaths([path]);
   }
 
   void _handleAttachMemory() {
@@ -1292,12 +1306,15 @@ class _AIChatScreenState extends State<AIChatScreen>
             });
           },
           onAttachScreenContent: () {
-            _handleSpecialAttachment('screen_capture').catchError((
+            _captureScreenDirect().catchError((
               Object error,
               StackTrace stackTrace,
             ) {
               debugPrint(
-                'Failed to attach screen content: $error\n$stackTrace',
+                'Failed to capture screen: $error\n$stackTrace',
+              );
+              _showLocalToast(
+                AppLocalizations.of(context)!.attachmentScreenContentUnavailable,
               );
               return null;
             });

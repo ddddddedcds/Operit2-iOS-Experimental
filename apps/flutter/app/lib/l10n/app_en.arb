@@ -12,6 +12,7 @@
   "attachmentMemory": "Memory",
   "attachmentFile": "File",
   "attachmentScreenContent": "Screen content",
+  "attachmentScreenContentUnavailable": "Screen capture failed or is unavailable on this device",
   "attachmentNotifications": "Current notifications",
   "attachmentLocation": "Current location",
   "attachmentPackage": "Package",

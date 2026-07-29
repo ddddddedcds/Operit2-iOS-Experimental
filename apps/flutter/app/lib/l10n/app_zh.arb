@@ -12,6 +12,7 @@
   "attachmentMemory": "记忆",
   "attachmentFile": "文件",
   "attachmentScreenContent": "屏幕内容",
+  "attachmentScreenContentUnavailable": "截屏失败或当前设备不可用",
   "attachmentNotifications": "当前通知",
   "attachmentLocation": "当前位置",
   "attachmentPackage": "包",
