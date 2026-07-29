@@ -494,6 +494,14 @@ fn createPtySession(
         log_terminal_error(&format!("spawn_command failed: {}", e));
         toHostError(e)
     })?;
+    // Defensive: on iOS the spawned shell sometimes exits immediately due to
+    // PTY/session-leader issues. Detect that early instead of letting Dart find
+    // an empty session list.
+    if let Ok(Some(status)) = child.try_wait() {
+        let msg = format!("spawned shell exited immediately with status: {:?}", status);
+        log_terminal_error(&msg);
+        return Err(HostError::new(msg));
+    }
     let mut reader = pair.master.try_clone_reader().map_err(toHostError)?;
     let writer = Arc::new(Mutex::new(pair.master.take_writer().map_err(toHostError)?));
     let output = Arc::new(Mutex::new(VecDeque::new()));
@@ -550,7 +558,28 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
     let shell = ios_pty_shell();
     #[cfg(not(target_os = "ios"))]
     let shell = "bash".to_string();
-    let mut command = CommandBuilder::new(shell.as_str());
+
+    // On iOS, spawning an interactive shell directly inside an app process often
+    // fails to acquire a controlling TTY/session leader, causing bash to exit
+    // immediately after the prompt. Use `login -f mobile` as a wrapper when
+    // available; it sets up the session/TTY environment before exec'ing the shell.
+    let mut command;
+    #[cfg(target_os = "ios")]
+    {
+        let login_path = "/var/jb/usr/bin/login";
+        if std::path::Path::new(login_path).exists() {
+            command = CommandBuilder::new(login_path);
+            command.arg("-f");
+            command.arg("mobile");
+            command.arg(shell.as_str());
+        } else {
+            command = CommandBuilder::new(shell.as_str());
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        command = CommandBuilder::new(shell.as_str());
+    }
     command.arg("--noprofile");
     command.arg("--norc");
     command.arg("-i");

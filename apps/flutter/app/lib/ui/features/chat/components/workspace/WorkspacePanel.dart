@@ -336,7 +336,11 @@ class _WorkspacePanelState extends State<WorkspacePanel> {
         columns: 80,
       );
       final sessions = await _terminalSessions.listSessions();
-      final session = sessions.firstWhere((item) => item.sessionId == sessionId);
+      final sessionIndex = sessions.indexWhere((item) => item.sessionId == sessionId);
+      if (sessionIndex == -1) {
+        throw StateError('Terminal session disappeared (shell exited immediately?)');
+      }
+      final session = sessions[sessionIndex];
       if (!mounted) {
         return;
       }
