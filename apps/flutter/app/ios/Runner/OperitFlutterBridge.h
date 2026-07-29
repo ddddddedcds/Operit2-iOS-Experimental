@@ -52,5 +52,10 @@ char *operit_flutter_bridge_remote_pair_finish(
 );
 char *operit_flutter_bridge_emit_runtime_event(void *handle, const char *event_json);
 void operit_flutter_bridge_free_string(char *value);
+void operit_flutter_bridge_sync_daemon_config(
+    const char *api_key,
+    const char *provider,
+    const char *base_url,
+    const char *model);
 
 #endif
