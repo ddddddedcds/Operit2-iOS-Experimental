@@ -1971,6 +1971,7 @@ dependencies = [
  "operit-host-api",
  "operit-host-apple-native",
  "operit-host-linux-native",
+ "operit-host-native-common",
  "operit-host-ohos-native",
  "operit-host-web",
  "operit-host-windows-native",
