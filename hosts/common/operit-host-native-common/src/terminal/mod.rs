@@ -531,7 +531,7 @@ fn createPtySession(
             }
         }
     });
-    if let Err(error) = waitForInitialPtyPrompt(commandOutput.clone(), Duration::from_millis(10000))
+    if let Err(error) = waitForInitialPtyPrompt(commandOutput.clone(), &mut child, Duration::from_millis(10000))
     {
         let _ = child.kill();
         log_terminal_error(&format!("waitForInitialPtyPrompt failed: {}", error));
@@ -769,7 +769,11 @@ fn clearPtyCommandOutput(output: &PtyCommandOutput) -> HostResult<()> {
 }
 
 #[allow(non_snake_case)]
-fn waitForInitialPtyPrompt(output: PtyCommandOutput, timeout: Duration) -> HostResult<()> {
+fn waitForInitialPtyPrompt(
+    output: PtyCommandOutput,
+    child: &mut Box<dyn portable_pty::Child + Send + Sync>,
+    timeout: Duration,
+) -> HostResult<()> {
     let deadline = Instant::now() + timeout;
     let mut collected = Vec::new();
     let mut promptSeenAt = None;
@@ -782,10 +786,30 @@ fn waitForInitialPtyPrompt(output: PtyCommandOutput, timeout: Duration) -> HostR
         if findLastPtyPromptMarker(&collected)?.is_some() && promptSeenAt.is_none() {
             promptSeenAt = Some(Instant::now());
         }
+        // Fallback for iOS: portable_pty's posix_spawn does not reliably surface
+        // the OSC prompt marker, so if the shell emitted ANY output and is still
+        // alive we treat it as ready and open the terminal anyway.
+        if promptSeenAt.is_none()
+            && !collected.is_empty()
+            && child.try_wait().ok().flatten().is_none()
+        {
+            promptSeenAt = Some(Instant::now());
+        }
         if promptSeenAt.is_some_and(|seenAt| seenAt.elapsed() >= quietPeriod) {
             return Ok(());
         }
         if Instant::now() >= deadline {
+            let child_alive = child.try_wait().ok().flatten().is_none();
+            let hex: String = collected
+                .iter()
+                .take(256)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            log_terminal_error(&format!(
+                "waitForInitialPtyPrompt timeout; child_alive={}; first bytes: {}",
+                child_alive, hex
+            ));
             return Err(HostError::new("Timed out waiting for terminal prompt"));
         }
     }
@@ -824,11 +848,14 @@ fn executePtyCommandInSession(
             });
         }
         if Instant::now() >= deadline {
+            let got_output = !collected.is_empty();
             let output = ptyCommandOutputText(&collected, command, None);
             return Ok(SessionCommandResult {
                 output,
                 exitCode: -1,
-                timedOut: true,
+                // If the shell produced output we treat the command as completed
+                // even without the OSC marker (iOS portable_pty case).
+                timedOut: !got_output,
                 workingDir: None,
             });
         }
