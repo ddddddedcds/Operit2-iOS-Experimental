@@ -1,6 +1,7 @@
 // ignore_for_file: file_names
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../../core/bridge/ProxyCoreRuntimeBridge.dart';
 import '../../../../core/link/CoreLinkProtocol.dart';
@@ -147,24 +148,26 @@ class _ModelSettingsPanelState extends State<ModelSettingsPanel> {
         );
     final provider = await widget.clients.preferencesModelConfigManager
         .getProviderProfile(providerId: providerId);
-    await widget.clients.preferencesModelConfigManager.updateProviderProfile(
-      provider: core_proxy.ProviderProfile(
-        id: provider.id,
-        name: provider.name,
-        providerTypeId: provider.providerTypeId,
-        providerType: provider.providerType,
-        endpoint: provider.endpoint,
-        apiKey: result.apiKey,
-        useMultipleApiKeys: provider.useMultipleApiKeys,
-        apiKeyPool: provider.apiKeyPool,
-        currentKeyIndex: provider.currentKeyIndex,
-        keyRotationMode: provider.keyRotationMode,
-        customHeaders: result.customHeaders,
-        requestLimitPerMinute: result.requestLimitPerMinute,
-        maxConcurrentRequests: result.maxConcurrentRequests,
-        models: provider.models,
-      ),
+    final saved = core_proxy.ProviderProfile(
+      id: provider.id,
+      name: provider.name,
+      providerTypeId: provider.providerTypeId,
+      providerType: provider.providerType,
+      endpoint: provider.endpoint,
+      apiKey: result.apiKey,
+      useMultipleApiKeys: provider.useMultipleApiKeys,
+      apiKeyPool: provider.apiKeyPool,
+      currentKeyIndex: provider.currentKeyIndex,
+      keyRotationMode: provider.keyRotationMode,
+      customHeaders: result.customHeaders,
+      requestLimitPerMinute: result.requestLimitPerMinute,
+      maxConcurrentRequests: result.maxConcurrentRequests,
+      models: provider.models,
     );
+    await widget.clients.preferencesModelConfigManager.updateProviderProfile(
+      provider: saved,
+    );
+    await _syncDaemonConfig(saved);
     _expandedProviderIds.add(providerId);
     _reload();
   }
@@ -188,25 +191,48 @@ class _ModelSettingsPanelState extends State<ModelSettingsPanel> {
       return;
     }
     final saveResult = result as _ProviderEditSaveResult;
-    await widget.clients.preferencesModelConfigManager.updateProviderProfile(
-      provider: core_proxy.ProviderProfile(
-        id: provider.id,
-        name: saveResult.name,
-        providerTypeId: provider.providerTypeId,
-        providerType: provider.providerType,
-        endpoint: saveResult.endpoint,
-        apiKey: saveResult.apiKey,
-        useMultipleApiKeys: provider.useMultipleApiKeys,
-        apiKeyPool: provider.apiKeyPool,
-        currentKeyIndex: provider.currentKeyIndex,
-        keyRotationMode: provider.keyRotationMode,
-        customHeaders: saveResult.customHeaders,
-        requestLimitPerMinute: saveResult.requestLimitPerMinute,
-        maxConcurrentRequests: saveResult.maxConcurrentRequests,
-        models: provider.models,
-      ),
+    final saved = core_proxy.ProviderProfile(
+      id: provider.id,
+      name: saveResult.name,
+      providerTypeId: provider.providerTypeId,
+      providerType: provider.providerType,
+      endpoint: saveResult.endpoint,
+      apiKey: saveResult.apiKey,
+      useMultipleApiKeys: provider.useMultipleApiKeys,
+      apiKeyPool: provider.apiKeyPool,
+      currentKeyIndex: provider.currentKeyIndex,
+      keyRotationMode: provider.keyRotationMode,
+      customHeaders: saveResult.customHeaders,
+      requestLimitPerMinute: saveResult.requestLimitPerMinute,
+      maxConcurrentRequests: saveResult.maxConcurrentRequests,
+      models: provider.models,
     );
+    await widget.clients.preferencesModelConfigManager.updateProviderProfile(
+      provider: saved,
+    );
+    await _syncDaemonConfig(saved);
     _reload();
+  }
+
+  /// Mirrors the just-saved provider credentials into the jailbreak
+  /// device-agent daemon's shared config.plist, so the daemon (a separate
+  /// process that only reads that fixed file) picks up the key the user
+  /// configured in the App — no manual file editing on disk.
+  Future<void> _syncDaemonConfig(core_proxy.ProviderProfile provider) async {
+    try {
+      await const MethodChannel('operit/runtime').invokeMethod<void>(
+        'syncDaemonConfig',
+        <String, String>{
+          'apiKey': provider.apiKey,
+          'provider': provider.providerTypeId.toLowerCase(),
+          'baseUrl': provider.endpoint,
+          'model': provider.models.isNotEmpty ? provider.models.first.id : '',
+        },
+      );
+    } catch (_) {
+      // Non-fatal: App-side settings are still saved; only the daemon won't
+      // see the key until the user edits the provider again.
+    }
   }
 
   Future<void> _deleteProvider(core_proxy.ProviderProfile provider) async {

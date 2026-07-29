@@ -143,6 +143,8 @@ final class AppleRuntimeChannel: NSObject {
       ownerTtsPlayback(call: call, result: result)
     case "ownerLocalInference":
       ownerLocalInference(call: call, result: result)
+    case "syncDaemonConfig":
+      syncDaemonConfig(call: call, result: result)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -900,6 +902,31 @@ final class AppleRuntimeChannel: NSObject {
         }
       }
     }
+  }
+
+  /// Mirrors the App's model-settings credentials into the jailbreak device
+  /// daemon's shared config.plist, so the daemon (a separate process that only
+  /// reads that fixed file) picks up the key typed in the App — no manual file
+  /// editing on disk.
+  private func syncDaemonConfig(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any] else {
+      result(FlutterError(code: "INVALID_ARGS", message: "syncDaemonConfig expects arguments", details: nil))
+      return
+    }
+    let apiKey = (args["apiKey"] as? String) ?? ""
+    let provider = (args["provider"] as? String) ?? ""
+    let baseUrl = (args["baseUrl"] as? String) ?? ""
+    let model = (args["model"] as? String) ?? ""
+    apiKey.withCString { ak in
+      provider.withCString { pk in
+        baseUrl.withCString { bk in
+          model.withCString { mk in
+            operit_flutter_bridge_sync_daemon_config(ak, pk, bk, mk)
+          }
+        }
+      }
+    }
+    result(nil)
   }
 
   /// Handles owner-host system speech playback commands.

@@ -71,8 +71,6 @@ use operit_host_android_native::{
 use operit_host_api::SystemOperationHost;
 #[cfg(target_os = "ios")]
 use operit_host_apple_native::AppleLocalInferenceHost as NativeLocalInferenceHost;
-#[cfg(target_os = "ios")]
-use operit_host_ios_native::IosTerminalHost;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use operit_host_apple_native::{
     AppleAudioPlaybackHost as NativeAudioPlaybackHost, AppleBluetoothHost as NativeBluetoothHost,
@@ -2022,10 +2020,6 @@ fn create_local_core(
     )));
     context = context
         .withHostRuntimeEventSchedulerHost(Arc::new(NativeHostRuntimeEventSchedulerHost::new()));
-    #[cfg(target_os = "ios")]
-    {
-        context = context.withTerminalHost(Arc::new(IosTerminalHost::new()));
-    }
     let application = OperitApplication::newWithContext(context);
     Ok(LocalCoreProxy::new(application))
 }
@@ -3238,6 +3232,67 @@ pub unsafe extern "C" fn operit_flutter_bridge_free_bytes(value: OperitByteBuffe
             value.ptr, value.len,
         )));
     }
+}
+
+/// Syncs the App-configured LLM credentials into the Operit2 device-agent
+/// daemon's shared `config.plist`, so the jailbreak daemon (which runs as a
+/// separate process and only reads that fixed file) picks up the key the user
+/// typed in the App's model settings panel — without anyone hand-editing the
+/// file on disk. iOS only; no-op on other platforms.
+#[cfg(target_os = "ios")]
+#[no_mangle]
+pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
+    api_key: *const c_char,
+    provider: *const c_char,
+    base_url: *const c_char,
+    model: *const c_char,
+) {
+    let read = |p: *const c_char| -> String {
+        if p.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
+    };
+    let api_key = read(api_key);
+    let provider = read(provider);
+    let base_url = read(base_url);
+    let model = read(model);
+    // Never overwrite the daemon config with an empty key; an empty key means
+    // the user cleared the field or this provider has no credential.
+    if api_key.trim().is_empty() {
+        return;
+    }
+    let dir = "/var/jb/var/mobile/.operit";
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let path = format!("{dir}/config.plist");
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n\
+<dict>\n\
+\t<key>apiKey</key>\n\t<string>{}</string>\n\
+\t<key>apiProvider</key>\n\t<string>{}</string>\n\
+\t<key>apiBaseUrl</key>\n\t<string>{}</string>\n\
+\t<key>apiModel</key>\n\t<string>{}</string>\n\
+</dict>\n\
+</plist>\n",
+        escape_plist(&api_key),
+        escape_plist(&provider),
+        escape_plist(&base_url),
+        escape_plist(&model),
+    );
+    let _ = std::fs::write(path, xml);
+}
+
+#[cfg(target_os = "ios")]
+fn escape_plist(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn json_to_ptr(value: &impl serde::Serialize) -> *mut c_char {

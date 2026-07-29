@@ -50,9 +50,6 @@ operit-host-ohos-native = { path = "../../../../hosts/ohos" }
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 operit-host-apple-native = { path = "../../../../hosts/apple" }
 
-[target.'cfg(target_os = "ios")'.dependencies]
-operit-host-ios-native = { path = "../../../../hosts/ios" }
-
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
