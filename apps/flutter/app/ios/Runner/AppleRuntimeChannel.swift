@@ -787,7 +787,13 @@ final class AppleRuntimeChannel: NSObject {
       // If permission was already decided in a previous run, the request above
       // does NOT re-fire locationManagerDidChangeAuthorization. Act on the
       // current status immediately; only .notDetermined waits for the callback.
-      switch manager.authorizationStatus {
+      let status: CLAuthorizationStatus
+      if #available(iOS 14.0, *) {
+        status = manager.authorizationStatus
+      } else {
+        status = CLLocationManager.authorizationStatus()
+      }
+      switch status {
       case .authorizedWhenInUse, .authorizedAlways:
         manager.requestLocation()
       case .denied, .restricted:
@@ -800,8 +806,10 @@ final class AppleRuntimeChannel: NSObject {
       }
     }
 
+    @available(iOS 14.0, *)
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-      switch manager.authorizationStatus {
+      let status = manager.authorizationStatus
+      switch status {
       case .authorizedWhenInUse, .authorizedAlways:
         manager.requestLocation()
       case .denied, .restricted:
