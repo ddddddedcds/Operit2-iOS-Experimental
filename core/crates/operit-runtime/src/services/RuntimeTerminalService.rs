@@ -5,7 +5,11 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use operit_host_api::{TerminalHost, TerminalSessionListEntry};
+use operit_host_api::{
+    HiddenTerminalCommandOutput, HostError, HostResult, TerminalCloseOutput, TerminalCommandOutput,
+    TerminalHost, TerminalInfo, TerminalInputOutput, TerminalScreenOutput, TerminalSessionInfo,
+    TerminalSessionListEntry,
+};
 use operit_store::{
     PreferencesDataStore::{mutableStateFlow, MutableStateFlow, StateFlow},
     RuntimeStorePaths::RuntimeStorePaths,
@@ -170,7 +174,7 @@ impl RuntimeTerminalService {
             terminalHost: context
                 .terminalHost
                 .clone()
-                .expect("TerminalHost must be configured for RuntimeTerminalService"),
+                .unwrap_or_else(|| Arc::new(DisabledTerminalHost)),
             context: context.clone(),
         }
     }
@@ -346,4 +350,121 @@ fn terminal_vfs(context: &HostManager) -> Result<VisualFileSystem, String> {
         })?,
         PathMapper::new(runtimeStoreRoot, workspaceCollectionRoot),
     ))
+}
+
+/// No-op terminal host used when no platform backend is configured (e.g. iOS).
+/// All operations fail gracefully instead of panicking on a missing host.
+struct DisabledTerminalHost;
+
+impl TerminalHost for DisabledTerminalHost {
+    fn terminalInfo(&self) -> HostResult<TerminalInfo> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn startPtySession(
+        &self,
+        _sessionName: &str,
+        _terminalType: &str,
+        _workingDir: &str,
+        _rows: u16,
+        _cols: u16,
+    ) -> HostResult<String> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn readPtySession(&self, _sessionId: &str) -> HostResult<Vec<u8>> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn writePtySession(&self, _sessionId: &str, _data: &[u8]) -> HostResult<usize> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn resizePtySession(&self, _sessionId: &str, _rows: u16, _cols: u16) -> HostResult<()> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn pollPtyExitCode(&self, _sessionId: &str) -> HostResult<Option<i32>> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn closePtySession(&self, _sessionId: &str) -> HostResult<()> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn listSessions(&self) -> HostResult<Vec<TerminalSessionListEntry>> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn createOrGetSession(
+        &self,
+        _sessionName: &str,
+        _terminalType: &str,
+    ) -> HostResult<TerminalSessionInfo> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn executeInSession(
+        &self,
+        _sessionId: &str,
+        _command: &str,
+        _timeoutMs: u64,
+    ) -> HostResult<TerminalCommandOutput> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn executeHiddenCommand(
+        &self,
+        _command: &str,
+        _terminalType: &str,
+        _executorKey: &str,
+        _timeoutMs: u64,
+    ) -> HostResult<HiddenTerminalCommandOutput> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn inputInSession(
+        &self,
+        _sessionId: &str,
+        _input: Option<&str>,
+        _control: Option<&str>,
+    ) -> HostResult<TerminalInputOutput> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn closeSession(&self, _sessionId: &str) -> HostResult<TerminalCloseOutput> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
+
+    fn getSessionScreen(&self, _sessionId: &str) -> HostResult<TerminalScreenOutput> {
+        Err(HostError::new(
+            "terminal sessions are not supported on this platform",
+        ))
+    }
 }
