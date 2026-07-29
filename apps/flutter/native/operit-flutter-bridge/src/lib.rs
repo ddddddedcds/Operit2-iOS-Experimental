@@ -987,8 +987,8 @@ impl OperitFlutterBridge {
         };
         let response = self.call(CoreCallRequest::new(
             format!("runtime-event-{}", current_time_millis_u64()),
-            "services.runtimeEventIngressService",
-            "ingestEvent",
+            "application",
+            "ingestRuntimeEvent",
             event_args,
         ));
         match response.result {

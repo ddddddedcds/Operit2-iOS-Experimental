@@ -34,5 +34,15 @@
     <true/>
     <key>get-task-allow</key>
     <true/>
+    <!-- Keychain access. Without application-identifier + keychain-access-groups the
+         app hits securityd error -34018 ("Client has neither application-identifier nor
+         keychain-access-groups entitlements") at launch -> uncaught NSException -> silent
+         SIGABRT right after Flutter startup. Honored under AppSync Unified ad-hoc sign. -->
+    <key>application-identifier</key>
+    <string>com.ai.assistance.operit2</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.ai.assistance.operit2</string>
+    </array>
 </dict>
 </plist>

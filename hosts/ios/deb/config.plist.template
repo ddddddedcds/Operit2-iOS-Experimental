@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 智谱 BigModel API key（autoglm-phone 视觉智能体）。必填，留空则 daemon 无法跑任务 -->
+    <key>apiKey</key>
+    <string>YOUR_ZHIPU_API_KEY</string>
+
+    <!-- 供应商：填 zhipu 走官方 autoglm-phone 端点；填 custom 走下面 apiBaseUrl -->
+    <key>apiProvider</key>
+    <string>zhipu</string>
+
+    <!-- 仅 apiProvider=custom 时生效；zhipu 下可省略 -->
+    <key>apiBaseUrl</key>
+    <string>https://open.bigmodel.cn/api/paas/v4</string>
+
+    <!-- 模型名；留空默认 autoglm-phone -->
+    <key>apiModel</key>
+    <string>autoglm-phone</string>
+</dict>
+</plist>
