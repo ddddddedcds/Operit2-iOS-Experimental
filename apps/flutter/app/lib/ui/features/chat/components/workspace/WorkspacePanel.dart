@@ -344,7 +344,13 @@ class _WorkspacePanelState extends State<WorkspacePanel> {
       _openTerminalSessionTab(session);
     } catch (error, stackTrace) {
       debugPrint('Failed to create terminal session: $error\n$stackTrace');
-      _showTerminalNotSupportedToast();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('终端启动失败: $error'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
     }
   }
 

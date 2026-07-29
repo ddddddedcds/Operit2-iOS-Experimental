@@ -451,6 +451,25 @@ struct SessionCommandResult {
 }
 
 #[allow(non_snake_case)]
+/// Append a diagnostic line to a device-side log so terminal spawn failures
+/// can be inspected without a debugger. The path lives under the jailbroken
+/// root (var/jb prefix).
+fn log_terminal_error(msg: &str) {
+    let dir = std::path::Path::new("/var/jb/var/mobile/.operit");
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("terminal-error.log"))
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = f.write_all(format!("[{}] {}\n", ts, msg).as_bytes());
+    }
+}
+
 fn createPtySession(
     sessionName: String,
     terminalType: String,
@@ -466,9 +485,15 @@ fn createPtySession(
     let ptySystem = native_pty_system();
     let pair = ptySystem
         .openpty(ptySize(rows, cols))
-        .map_err(toHostError)?;
+        .map_err(|e| {
+            log_terminal_error(&format!("openpty failed: {}", e));
+            toHostError(e)
+        })?;
     let command = posixPtyCommand(&workingDir);
-    let mut child = pair.slave.spawn_command(command).map_err(toHostError)?;
+    let mut child = pair.slave.spawn_command(command).map_err(|e| {
+        log_terminal_error(&format!("spawn_command failed: {}", e));
+        toHostError(e)
+    })?;
     let mut reader = pair.master.try_clone_reader().map_err(toHostError)?;
     let writer = Arc::new(Mutex::new(pair.master.take_writer().map_err(toHostError)?));
     let output = Arc::new(Mutex::new(VecDeque::new()));
@@ -501,6 +526,7 @@ fn createPtySession(
     if let Err(error) = waitForInitialPtyPrompt(commandOutput.clone(), Duration::from_millis(10000))
     {
         let _ = child.kill();
+        log_terminal_error(&format!("waitForInitialPtyPrompt failed: {}", error));
         return Err(error);
     }
     clearPtyCommandOutput(&commandOutput)?;
