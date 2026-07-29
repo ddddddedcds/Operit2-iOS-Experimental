@@ -170,6 +170,18 @@ abstract class AppLocalizations {
   /// **'Screen content'**
   String get attachmentScreenContent;
 
+  /// No description provided for @attachmentScreenContentUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Screen capture failed or is unavailable on this device'**
+  String get attachmentScreenContentUnavailable;
+
+  /// No description provided for @attachmentLocationUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Location unavailable or permission denied'**
+  String get attachmentLocationUnavailable;
+
   /// No description provided for @attachmentNotifications.
   ///
   /// In en, this message translates to:

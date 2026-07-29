@@ -319,22 +319,43 @@ class _WorkspacePanelState extends State<WorkspacePanel> {
 
   /// Creates and opens a manual terminal session using the host-declared type.
   Future<void> _createAndOpenTerminalSession() async {
-    final terminalType = await _terminalSessions.defaultTerminalType();
-    final workingDirectory = await _manualTerminalWorkingDirectory();
-    final sessionId = await _terminalSessions.startPtySession(
-      sessionName: _nextManualTerminalSessionName(),
-      terminalType: terminalType,
-      workingDirectory: workingDirectory,
-      rows: 24,
-      columns: 80,
-    );
-    final sessions = await _terminalSessions.listSessions();
-    final session = sessions.firstWhere((item) => item.sessionId == sessionId);
+    try {
+      final terminalType = await _terminalSessions.defaultTerminalType();
+      if (terminalType.isEmpty) {
+        _showTerminalNotSupportedToast();
+        return;
+      }
+      final workingDirectory = await _manualTerminalWorkingDirectory();
+      final sessionId = await _terminalSessions.startPtySession(
+        sessionName: _nextManualTerminalSessionName(),
+        terminalType: terminalType,
+        workingDirectory: workingDirectory,
+        rows: 24,
+        columns: 80,
+      );
+      final sessions = await _terminalSessions.listSessions();
+      final session = sessions.firstWhere((item) => item.sessionId == sessionId);
+      if (!mounted) {
+        return;
+      }
+      _updateTerminalSessionEntries(sessions);
+      _openTerminalSessionTab(session);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to create terminal session: $error\n$stackTrace');
+      _showTerminalNotSupportedToast();
+    }
+  }
+
+  void _showTerminalNotSupportedToast() {
     if (!mounted) {
       return;
     }
-    _updateTerminalSessionEntries(sessions);
-    _openTerminalSessionTab(session);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('终端在此平台上不可用'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<String> _manualTerminalWorkingDirectory() async {

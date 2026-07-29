@@ -1,5 +1,7 @@
 // ignore_for_file: file_names
 
+import 'package:flutter/foundation.dart';
+
 import 'package:operit2/core/bridge/ProxyCoreRuntimeBridge.dart';
 import 'package:operit2/core/proxy/generated/CoreProxyClients.g.dart';
 import 'package:operit2/core/proxy/generated/CoreProxyModels.g.dart'
@@ -84,10 +86,15 @@ class WorkspaceTerminalSessions {
       _clients.servicesRuntimeTerminalService;
 
   Future<List<WorkspaceTerminalSessionInfo>> listSessions() async {
-    final sessions = await _terminal.terminalSessionsFlowSnapshot();
-    return sessions
-        .map(WorkspaceTerminalSessionInfo.fromCore)
-        .toList(growable: false);
+    try {
+      final sessions = await _terminal.terminalSessionsFlowSnapshot();
+      return sessions
+          .map(WorkspaceTerminalSessionInfo.fromCore)
+          .toList(growable: false);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to list terminal sessions: $error\n$stackTrace');
+      return const <WorkspaceTerminalSessionInfo>[];
+    }
   }
 
   Stream<List<WorkspaceTerminalSessionInfo>> watchSessions() {
@@ -95,12 +102,19 @@ class WorkspaceTerminalSessions {
       (sessions) => sessions
           .map(WorkspaceTerminalSessionInfo.fromCore)
           .toList(growable: false),
-    );
+    ).handleError((Object error, StackTrace stackTrace) {
+      debugPrint('Failed to watch terminal sessions: $error\n$stackTrace');
+    });
   }
 
   /// Returns the host-declared terminal type for manual PTY creation.
-  Future<String> defaultTerminalType() {
-    return _terminal.defaultTerminalType();
+  Future<String> defaultTerminalType() async {
+    try {
+      return await _terminal.defaultTerminalType();
+    } catch (error, stackTrace) {
+      debugPrint('Failed to get default terminal type: $error\n$stackTrace');
+      return '';
+    }
   }
 
   /// Starts a typed PTY session.

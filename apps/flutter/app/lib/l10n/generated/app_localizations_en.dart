@@ -45,6 +45,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get attachmentScreenContent => 'Screen content';
 
   @override
+  String get attachmentScreenContentUnavailable =>
+      'Screen capture failed or is unavailable on this device';
+
+  @override
+  String get attachmentLocationUnavailable =>
+      'Location unavailable or permission denied';
+
+  @override
   String get attachmentNotifications => 'Current notifications';
 
   @override

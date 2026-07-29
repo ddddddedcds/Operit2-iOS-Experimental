@@ -449,26 +449,28 @@ class _AIChatScreenState extends State<AIChatScreen>
   }
 
   Future<void> _captureScreenDirect() async {
-    final result = await const MethodChannel('operit/runtime')
-        .invokeMethod<Map<dynamic, dynamic>>('captureScreenDirect');
-    final path = result?['path'] as String?;
-    if (path == null || path.isEmpty) {
-      _showLocalToast(
-        AppLocalizations.of(context)!.attachmentScreenContentUnavailable,
-      );
-      return;
+    final l10n = AppLocalizations.of(context)!;
+    try {
+      final result = await const MethodChannel('operit/runtime')
+          .invokeMethod<Map<dynamic, dynamic>>('captureScreenDirect');
+      final path = result?['path'] as String?;
+      if (path == null || path.isEmpty) {
+        _showLocalToast(l10n.attachmentScreenContentUnavailable);
+        return;
+      }
+      await _handleAttachmentPaths([path]);
+    } catch (error) {
+      _showLocalToast(l10n.attachmentScreenContentUnavailable);
     }
-    await _handleAttachmentPaths([path]);
   }
 
   Future<void> _handleGetLocation() async {
+    final l10n = AppLocalizations.of(context)!;
     final result = await const MethodChannel('operit/runtime')
         .invokeMethod<Map<dynamic, dynamic>>('getCurrentLocation');
     final path = result?['path'] as String?;
     if (path == null || path.isEmpty) {
-      _showLocalToast(
-        AppLocalizations.of(context)!.attachmentLocationUnavailable,
-      );
+      _showLocalToast(l10n.attachmentLocationUnavailable);
       return;
     }
     await _handleAttachmentPaths([path]);
@@ -1325,6 +1327,7 @@ class _AIChatScreenState extends State<AIChatScreen>
             });
           },
           onAttachScreenContent: () {
+            final l10n = AppLocalizations.of(context)!;
             _captureScreenDirect().catchError((
               Object error,
               StackTrace stackTrace,
@@ -1332,9 +1335,7 @@ class _AIChatScreenState extends State<AIChatScreen>
               debugPrint(
                 'Failed to capture screen: $error\n$stackTrace',
               );
-              _showLocalToast(
-                AppLocalizations.of(context)!.attachmentScreenContentUnavailable,
-              );
+              _showLocalToast(l10n.attachmentScreenContentUnavailable);
               return null;
             });
           },

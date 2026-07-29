@@ -45,6 +45,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get attachmentScreenContent => '屏幕内容';
 
   @override
+  String get attachmentScreenContentUnavailable => '截屏失败或当前设备不可用';
+
+  @override
+  String get attachmentLocationUnavailable => '定位失败或被拒绝授权';
+
+  @override
   String get attachmentNotifications => '当前通知';
 
   @override

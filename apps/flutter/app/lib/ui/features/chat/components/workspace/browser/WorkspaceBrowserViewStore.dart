@@ -384,9 +384,18 @@ class WorkspaceBrowserViewStore extends ChangeNotifier {
   /// Loads local stores and attaches every existing Core browser session.
   Future<void> _load() async {
     await stores.load();
-    final sessions = await _sessions.listSessions();
-    for (final session in sessions) {
-      await _attachSession(session, select: session.active);
+    try {
+      final sessions = await _sessions.listSessions();
+      for (final session in sessions) {
+        await _attachSession(session, select: session.active);
+      }
+    } catch (error, stackTrace) {
+      ClientLogger.w(
+        'Failed to list browser sessions: $error',
+        tag: _logTag,
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 

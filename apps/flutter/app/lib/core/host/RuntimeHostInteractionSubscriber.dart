@@ -132,15 +132,13 @@ class RuntimeHostInteractionSubscriber {
       try {
         await _respondOwnerHostInteraction(request.requestId, response);
       } catch (respondError, respondStackTrace) {
-        FlutterError.reportError(
-          FlutterErrorDetails(
-            exception: respondError,
-            stack: respondStackTrace,
-            library: 'runtime host interaction subscriber',
-            context: ErrorDescription(
-              'responding owner host interaction error',
-            ),
-          ),
+        // Swallow respond errors (e.g. request already timed out on the host)
+        // to avoid global unhandled-error dialogs.
+        ClientLogger.w(
+          'Failed to respond owner host interaction: $respondError',
+          tag: 'RuntimeHostInteractionSubscriber',
+          error: respondError,
+          stackTrace: respondStackTrace,
         );
       }
       _recordBrowserInteractHostResponseTiming(
@@ -149,13 +147,13 @@ class RuntimeHostInteractionSubscriber {
         roundTripElapsedUs: eventStopwatch.elapsedMicroseconds,
         failed: true,
       );
-      FlutterError.reportError(
-        FlutterErrorDetails(
-          exception: error,
-          stack: stackTrace,
-          library: 'runtime host interaction subscriber',
-          context: ErrorDescription('handling owner host interaction event'),
-        ),
+      // Errors are already returned to the host via the error response above;
+      // do not surface them as global unhandled errors in the UI.
+      ClientLogger.w(
+        'Owner host interaction failed: $error',
+        tag: 'RuntimeHostInteractionSubscriber',
+        error: error,
+        stackTrace: stackTrace,
       );
     }
   }
