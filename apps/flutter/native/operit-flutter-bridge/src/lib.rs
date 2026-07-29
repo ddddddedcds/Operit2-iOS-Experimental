@@ -71,6 +71,8 @@ use operit_host_android_native::{
 use operit_host_api::SystemOperationHost;
 #[cfg(target_os = "ios")]
 use operit_host_apple_native::AppleLocalInferenceHost as NativeLocalInferenceHost;
+#[cfg(target_os = "ios")]
+use operit_host_ios_native::IosTerminalHost;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use operit_host_apple_native::{
     AppleAudioPlaybackHost as NativeAudioPlaybackHost, AppleBluetoothHost as NativeBluetoothHost,
@@ -2020,6 +2022,10 @@ fn create_local_core(
     )));
     context = context
         .withHostRuntimeEventSchedulerHost(Arc::new(NativeHostRuntimeEventSchedulerHost::new()));
+    #[cfg(target_os = "ios")]
+    {
+        context = context.withTerminalHost(Arc::new(IosTerminalHost::new()));
+    }
     let application = OperitApplication::newWithContext(context);
     Ok(LocalCoreProxy::new(application))
 }

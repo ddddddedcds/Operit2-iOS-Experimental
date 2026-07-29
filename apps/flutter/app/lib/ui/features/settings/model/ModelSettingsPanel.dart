@@ -2692,8 +2692,9 @@ String _providerTypeLocalName(AppLocalizations l10n, String providerTypeId) {
     'LLAMA_CPP' => l10n.settingsModelProviderTypeLlamaCpp,
     'PPINFRA' => l10n.settingsModelProviderTypePpinfra,
     'NOVITA' => l10n.settingsModelProviderTypeNovita,
+    'LOCAL_MODEL' => 'Local Models',
     'OTHER' => l10n.settingsModelProviderTypeOther,
-    _ => throw UnsupportedError('missing provider type i18n: $providerTypeId'),
+    _ => providerTypeId,
   };
 }
 
