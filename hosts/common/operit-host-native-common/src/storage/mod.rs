@@ -29,6 +29,7 @@ impl NativeRuntimeStorageHost {
         match segments.as_slice() {
             ["runtime", rest @ ..] => Ok(joinSegments(&self.runtimeRoot, rest)),
             ["workspaces", rest @ ..] => Ok(joinSegments(&self.workspaceRoot, rest)),
+            ["secure", rest @ ..] => Ok(joinSegments(&self.runtimeRoot.join("secure"), rest)),
             _ => Err(HostError::new(format!(
                 "Runtime storage path must start with runtime/ or workspaces/: {path}"
             ))),
@@ -36,6 +37,9 @@ impl NativeRuntimeStorageHost {
     }
 
     fn storagePathForPhysical(&self, path: &Path) -> HostResult<String> {
+        if let Ok(relative) = path.strip_prefix(self.runtimeRoot.join("secure")) {
+            return Ok(prefixedPath("secure", relative));
+        }
         if let Ok(relative) = path.strip_prefix(&self.runtimeRoot) {
             return Ok(prefixedPath("runtime", relative));
         }
