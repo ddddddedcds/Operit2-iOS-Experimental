@@ -327,6 +327,32 @@ const superAdmin = (function () {
     }
 
     /**
+     * Safely reads terminal environment info. Falls back to a POSIX descriptor
+     * when the host does not register get_terminal_info (e.g. iOS jailbreak).
+     */
+    async function getTerminalEnvironment(): Promise<TerminalInfoResultData> {
+        try {
+            return await Tools.System.terminal.info();
+        }
+        catch (error: any) {
+            const message = error?.message ? String(error.message) : String(error);
+            if (message.includes("Tool not found")) {
+                return {
+                    platform: "posix",
+                    defaultType: "posix" as TerminalType,
+                    types: [{
+                        terminalType: "posix" as TerminalType,
+                        available: true,
+                        description: "POSIX bash terminal (fallback)"
+                    }],
+                    toString: () => "POSIX bash terminal (posix)"
+                } as TerminalInfoResultData;
+            }
+            throw error;
+        }
+    }
+
+    /**
      * Saves oversized terminal output to a temporary file and returns its summary.
      */
     async function persistTerminalOutputIfTooLong(command: string, result: any): Promise<PersistedTerminalOutput | null> {
@@ -368,7 +394,7 @@ const superAdmin = (function () {
             const command = params.command;
             const background = params.background;
             const timeoutMs = params.timeoutMs;
-            const terminalEnvironment = await Tools.System.terminal.info();
+            const terminalEnvironment = await getTerminalEnvironment();
             console.log(`执行终端命令: ${command}`);
             const isBackground = background === "true";
             let timeout;
@@ -446,7 +472,7 @@ const superAdmin = (function () {
      * Executes a command through the shared terminal implementation for Bash tools.
      */
     async function bash(params: TerminalParams) {
-        const terminalEnvironment = await Tools.System.terminal.info();
+        const terminalEnvironment = await getTerminalEnvironment();
         switch (terminalEnvironment.platform) {
             case "windows":
             case "android":
@@ -482,14 +508,17 @@ const superAdmin = (function () {
      * bash screen, instead of spawning an empty session that reads blank.
      */
     async function resolveSessionForTool(rawSessionId: string): Promise<string> {
-        try {
-            await Tools.System.terminal.screen(rawSessionId);
-            return rawSessionId;
+        // 纯数字 id 视为真实 sessionId，先探测是否存活；存活就直接用。
+        if (/^\d+$/.test(rawSessionId)) {
+            try {
+                await Tools.System.terminal.screen(rawSessionId);
+                return rawSessionId;
+            }
+            catch (e) {
+                // 数字 id 无效，继续落到默认 bash session
+            }
         }
-        catch (e) {
-            // not a live numeric sessionId; create-or-get one keyed by the raw string
-        }
-        const terminalEnvironment = await Tools.System.terminal.info();
+        const terminalEnvironment = await getTerminalEnvironment();
         let type: TerminalCommandType = "posix";
         switch (terminalEnvironment.platform) {
             case "windows": type = "powershell"; break;
@@ -500,8 +529,8 @@ const superAdmin = (function () {
             case "macos": type = "posix"; break;
             default: type = "posix";
         }
-        // rawSessionId 不是有效数字 id：落到 bash 默认 session（名字与 bash() 一致，
-        // createOrGet 会复用真实 bash 屏，避免建空 session 读到空屏）
+        // 非数字名字（如 default/main/operit2）或无效数字 id：落到 bash 默认 session
+        //（名字与 bash() 一致，createOrGet 会复用真实 bash 屏，避免读到空/未初始化屏）
         const session = await Tools.System.terminal.create(getDefaultTerminalSessionName(type), type as TerminalType);
         return session.sessionId;
     }
