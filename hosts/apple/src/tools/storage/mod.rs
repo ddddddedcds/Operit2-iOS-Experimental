@@ -45,7 +45,8 @@ impl AppleRuntimeStorageHost {
     }
 
     fn resolve(&self, path: &str) -> HostResult<PathBuf> {
-        let normalized = normalizeStoragePath(path)?;
+        let path = toVirtualStoragePath(path, &self.runtimeRoot, &self.workspaceRoot)?;
+        let normalized = normalizeStoragePath(&path)?;
         let segments = normalized.iter().map(String::as_str).collect::<Vec<_>>();
         match segments.as_slice() {
             ["runtime", rest @ ..] => Ok(joinSegments(&self.runtimeRoot, rest)),
@@ -243,6 +244,37 @@ fn prefixedPath(prefix: &str, relative: &Path) -> String {
     } else {
         format!("{prefix}/{relative}")
     }
+}
+
+/// Converts an absolute physical path back into a virtual runtime-storage path.
+/// Callers sometimes pass absolute paths (e.g. LocalModelDownload's
+/// storagePathString) even though the host contract expects `runtime/...` or
+/// `workspaces/...`. Accepting those paths avoids breaking downstream code
+/// while still rejecting paths that escape the configured roots.
+#[allow(non_snake_case)]
+fn toVirtualStoragePath(
+    path: &str,
+    runtimeRoot: &Path,
+    workspaceRoot: &Path,
+) -> HostResult<String> {
+    let trimmed = path.trim();
+    let as_path = Path::new(trimmed);
+    if !as_path.is_absolute() {
+        return Ok(trimmed.to_string());
+    }
+    let secure_root = runtimeRoot.join("secure");
+    if let Ok(relative) = as_path.strip_prefix(&secure_root) {
+        return Ok(prefixedPath("secure", relative));
+    }
+    if let Ok(relative) = as_path.strip_prefix(runtimeRoot) {
+        return Ok(prefixedPath("runtime", relative));
+    }
+    if let Ok(relative) = as_path.strip_prefix(workspaceRoot) {
+        return Ok(prefixedPath("workspaces", relative));
+    }
+    Err(HostError::new(format!(
+        "Runtime storage path is outside configured roots: {path}"
+    )))
 }
 
 struct RusqliteRuntimeConnection {
