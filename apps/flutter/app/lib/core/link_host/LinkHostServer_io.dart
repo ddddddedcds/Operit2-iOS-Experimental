@@ -103,10 +103,18 @@ class LinkHostServer extends ChangeNotifier {
     }
     final shutdownToken = _shutdownToken;
     final baseUrl = this.baseUrl;
-    if (shutdownToken != null && baseUrl != null) {
-      await _requestNativeWebAccessClose(baseUrl, shutdownToken);
+    // Best-effort native teardown. The local link-host state must be reset
+    // regardless of whether the native server close succeeds, otherwise the
+    // settings panel would surface "web access close failed" and leave the UI
+    // stuck in a half-stopped state.
+    try {
+      if (shutdownToken != null && baseUrl != null) {
+        await _requestNativeWebAccessClose(baseUrl, shutdownToken);
+      }
+      await _stopNativeWebAccessServer();
+    } catch (error, stack) {
+      debugPrint('LinkHostServer.stop native close failed: $error\n$stack');
     }
-    await _stopNativeWebAccessServer();
     _running = false;
     _pairingCodePoller?.cancel();
     _pairingCodePoller = null;

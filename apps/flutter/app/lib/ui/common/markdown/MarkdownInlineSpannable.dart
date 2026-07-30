@@ -168,7 +168,7 @@ TextSpan buildMarkdownInlineSpannableFromMarkdownNodes({
 
 MarkdownInlineSegment _segmentFromMarkdownNode(MarkdownNodeStable node) {
   return MarkdownInlineSegment(
-    text: node.content,
+    text: _sanitizeUtf16(node.content),
     nodeType: _inlineTypeName(node.type),
     children: <MarkdownInlineSegment>[
       for (final child in node.children) _segmentFromMarkdownNode(child),
@@ -292,21 +292,28 @@ List<MarkdownInlineSegment> parseInlineSegments(String text) {
   while (index < text.length) {
     final marker = _nextMarker(text, index);
     if (marker == null) {
-      segments.add(MarkdownInlineSegment(text: text.substring(index)));
+      segments.add(
+        MarkdownInlineSegment(text: _sanitizeUtf16(text.substring(index))),
+      );
       break;
     }
     if (marker.start > index) {
       segments.add(
-        MarkdownInlineSegment(text: text.substring(index, marker.start)),
+        MarkdownInlineSegment(
+          text: _sanitizeUtf16(text.substring(index, marker.start)),
+        ),
       );
     }
     final close = text.indexOf(marker.close, marker.start + marker.open.length);
     if (close < 0) {
-      segments.add(MarkdownInlineSegment(text: text.substring(marker.start)));
+      segments.add(
+        MarkdownInlineSegment(text: _sanitizeUtf16(text.substring(marker.start))),
+      );
       break;
     }
     if (marker.nodeType == 'Link') {
-      final rawLink = text.substring(marker.start, close + marker.close.length);
+      final rawLink =
+          _sanitizeUtf16(text.substring(marker.start, close + marker.close.length));
       segments.add(
         MarkdownInlineSegment(
           text: rawLink,
@@ -317,7 +324,8 @@ List<MarkdownInlineSegment> parseInlineSegments(String text) {
       index = close + marker.close.length;
       continue;
     }
-    final inner = text.substring(marker.start + marker.open.length, close);
+    final inner =
+        _sanitizeUtf16(text.substring(marker.start + marker.open.length, close));
     segments.add(
       MarkdownInlineSegment(
         text: inner,
@@ -408,4 +416,49 @@ class _InlineMarker {
       start: value,
     );
   }
+}
+
+/// Removes orphaned UTF-16 surrogate code units so the text is safe to hand to
+/// [TextSpan], which throws on invalid UTF-16. Terminal/tool output may carry
+/// raw bytes that decode into lone surrogates (e.g. a truncated multi-byte
+/// sequence), which would otherwise crash markdown rendering with a
+/// `TextSpan.build` exception.
+String _sanitizeUtf16(String text) {
+  if (text.isEmpty) {
+    return text;
+  }
+  final length = text.length;
+  var hasSurrogate = false;
+  for (var i = 0; i < length; i++) {
+    final unit = text.codeUnitAt(i);
+    if (unit >= 0xD800 && unit <= 0xDFFF) {
+      hasSurrogate = true;
+      break;
+    }
+  }
+  if (!hasSurrogate) {
+    return text;
+  }
+
+  final buffer = StringBuffer();
+  for (var i = 0; i < length; i++) {
+    final unit = text.codeUnitAt(i);
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+      // High surrogate: keep it only with a following low surrogate.
+      if (i + 1 < length) {
+        final next = text.codeUnitAt(i + 1);
+        if (next >= 0xDC00 && next <= 0xDFFF) {
+          buffer.writeCharCode(unit);
+          buffer.writeCharCode(next);
+          i++; // low surrogate consumed
+          continue;
+        }
+      }
+      continue; // lone high surrogate -> drop
+    } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+      continue; // low surrogate without preceding high -> drop
+    }
+    buffer.writeCharCode(unit);
+  }
+  return buffer.toString();
 }
