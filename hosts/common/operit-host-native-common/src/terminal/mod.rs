@@ -605,19 +605,11 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
     }
     shell_args.push("-i".to_string());
 
-    // On iOS, spawning bash directly inside the app process fails to acquire a
-    // controlling TTY/session, so bash exits immediately. Wrap it with `script`,
-    // which allocates a real PTY and a session for the child process.
-    #[cfg(target_os = "ios")]
-    let (program, base_args) = match ios_script_path() {
-        Some(script) => {
-            let mut args = vec!["-q".to_string(), "/dev/null".to_string(), shell.clone()];
-            args.extend(shell_args.iter().cloned());
-            (script, args)
-        }
-        None => (shell.clone(), shell_args.clone()),
-    };
-    #[cfg(not(target_os = "ios"))]
+    // portable-pty's spawn_command defaults to controlling_tty=true, which
+    // performs setsid()+TIOCSCTTY to give the shell a real controlling terminal.
+    // Wrapping with `script` was attempted on iOS but `script` itself requires a
+    // real outer TTY to work, which the app process does not provide; the direct
+    // spawn via portable-pty is the correct path.
     let (program, base_args) = (shell.clone(), shell_args.clone());
 
     let mut command = CommandBuilder::new(program.as_str());
