@@ -474,6 +474,36 @@ const superAdmin = (function () {
      * @param sessionId - Target session ID.
      * @param timeoutMs - Optional timeout in milliseconds, with a minimum of 3000ms.
      */
+    /**
+     * Resolves a terminal session for the screen/input/wait tools.
+     * Accepts either an existing numeric sessionId or a free-form name.
+     * If the id does not point to a live session, creates (or reuses) a
+     * session keyed by that name so the call does not fail with
+     * "Terminal session does not exist".
+     */
+    async function resolveSessionForTool(rawSessionId: string): Promise<string> {
+        try {
+            await Tools.System.terminal.screen(rawSessionId);
+            return rawSessionId;
+        }
+        catch (e) {
+            // not a live numeric sessionId; create-or-get one keyed by the raw string
+        }
+        const terminalEnvironment = await Tools.System.terminal.info();
+        let type: TerminalCommandType = "posix";
+        switch (terminalEnvironment.platform) {
+            case "windows": type = "powershell"; break;
+            case "android": type = "bash"; break;
+            case "linux": type = "linux"; break;
+            case "ios":
+            case "posix":
+            case "macos": type = "posix"; break;
+            default: type = "posix";
+        }
+        const session = await Tools.System.terminal.create(rawSessionId, type as TerminalType);
+        return session.sessionId;
+    }
+
     async function terminal_wait(params: TerminalWaitParams) {
         try {
             const timeoutMs = params.timeoutMs;
@@ -485,7 +515,7 @@ const superAdmin = (function () {
                 }
                 timeout = parsedTimeout;
             }
-            const sessionId = params.sessionId;
+            const sessionId = await resolveSessionForTool(params.sessionId);
             const marker = `__OPERIT_TERMINAL_WAIT_DONE_${Date.now()}_${Math.floor(Math.random() * 1000000)}__`;
             const waitCommand = `printf '${marker}\\n'`;
             const startedAt = Date.now();
@@ -519,7 +549,7 @@ const superAdmin = (function () {
      */
     async function get_screen(params: TerminalSessionParams) {
         try {
-            const sessionId = params.sessionId;
+            const sessionId = await resolveSessionForTool(params.sessionId);
             const result = await Tools.System.terminal.screen(sessionId);
             return {
                 sessionId: result.sessionId,
@@ -547,7 +577,7 @@ const superAdmin = (function () {
             if (params.input === undefined && params.control === undefined) {
                 throw new Error("input和control至少需要提供一个");
             }
-            const sessionId = params.sessionId;
+            const sessionId = await resolveSessionForTool(params.sessionId);
             const result = await Tools.System.terminal.input(sessionId, {
                 input: params.input,
                 control: params.control
