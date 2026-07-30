@@ -619,7 +619,12 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
     command.cwd(workingDir);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
-    command.env("LANG", "C.UTF-8");
+    // NOTE: do NOT set LANG=C.UTF-8 here. GNU bash 5.2.x on iOS segfaults
+    // (SIGSEGV) when started with a UTF-8 locale, which manifested as the
+    // terminal "shell exited immediately". C locale avoids the mbrtowc path
+    // and bash stays alive; UTF-8 byte streams are still rendered fine by the
+    // terminal UI, only bash-internal character width may be slightly off.
+    command.env("LANG", "C");
     command.env("PS1", "$PWD $ ");
     let mut path = std::env::var("PATH").unwrap_or_else(|_| {
         "/usr/bin:/bin:/usr/sbin:/sbin".to_string()
