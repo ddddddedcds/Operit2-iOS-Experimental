@@ -92,7 +92,7 @@ impl SystemOperationHost for AppleSystemOperationHost {
         {
             let domain = non_blank(namespace, "namespace")?;
             let key = non_blank(setting, "setting")?;
-            let status = Command::new("defaults")
+            let status = Command::new(resolve_bin("defaults"))
                 .args(["write", &domain, &key, value])
                 .status()
                 .map_err(|error| {
@@ -570,8 +570,34 @@ fn collect_app_names(dir: &Path, packages: &mut Vec<String>) -> HostResult<()> {
     Ok(())
 }
 
+/// Resolves a system binary name to an absolute path before spawning.
+///
+/// On iOS (rootless jailbreak) many system binaries live under /var/jb/usr/bin
+/// (and /var/jb/bin), but the app's process PATH frequently lacks /var/jb/usr/bin,
+/// so a bare `Command::new("defaults")` fails with ENOENT even though the binary
+/// exists (e.g. `defaults` -> /var/jb/usr/bin/defaults). Prefer the jailbreak
+/// prefixes on iOS; fall back to normal PATH lookup otherwise.
+fn resolve_bin(program: &str) -> String {
+    if program.contains('/') {
+        return program.to_string();
+    }
+    #[cfg(target_os = "ios")]
+    {
+        for cand in [
+            format!("/var/jb/usr/bin/{program}"),
+            format!("/var/jb/bin/{program}"),
+        ] {
+            if Path::new(&cand).exists() {
+                return cand;
+            }
+        }
+    }
+    program.to_string()
+}
+
 fn run_command_output(program: &str, args: &[&str]) -> HostResult<String> {
-    let output = Command::new(program)
+    let program = resolve_bin(program);
+    let output = Command::new(&program)
         .args(args)
         .output()
         .map_err(|error| HostError::new(format!("Failed to run {program}: {error}")))?;

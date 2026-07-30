@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ const PTY_PROMPT_MARKER_PREFIX: &[u8] = b"\x1b]133;OperitPrompt=";
 const PTY_PROMPT_MARKER_END: u8 = 7;
 const COMMAND_CANCEL_SETTLE_TIMEOUT_MS: u64 = 3000;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct NativePtyTerminalHost {
     state: Arc<Mutex<TerminalState>>,
 }
@@ -63,9 +63,34 @@ impl Drop for PtySession {
     }
 }
 
+impl Default for NativePtyTerminalHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NativePtyTerminalHost {
+    /// All host instances share one process-wide terminal state so PTY sessions
+    /// created in any context (main runtime, AI-tool local proxy, ...) are
+    /// visible to every other context. This fixes "PTY session does not exist"
+    /// when the AI tool calls createOrGetSession on one host instance and later
+    /// exec/read on another — each fresh `NativePtyTerminalHost` used to own an
+    /// independent, empty session map.
     pub fn new() -> Self {
-        Self::default()
+        #[cfg(test)]
+        {
+            return Self {
+                state: Arc::new(Mutex::new(TerminalState::default())),
+            };
+        }
+        #[cfg(not(test))]
+        {
+            static SHARED_STATE: OnceLock<Arc<Mutex<TerminalState>>> = OnceLock::new();
+            let state = SHARED_STATE
+                .get_or_init(|| Arc::new(Mutex::new(TerminalState::default())))
+                .clone();
+            Self { state }
+        }
     }
 }
 
