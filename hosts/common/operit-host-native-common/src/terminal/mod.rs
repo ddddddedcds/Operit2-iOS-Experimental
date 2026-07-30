@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,6 @@ use operit_host_api::{
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use uuid::Uuid;
 
-static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 const PTY_OUTPUT_LIMIT: usize = 1024 * 1024;
 const PTY_PROMPT_MARKER_PREFIX: &[u8] = b"\x1b]133;OperitPrompt=";
 const PTY_PROMPT_MARKER_END: u8 = 7;
@@ -1616,11 +1616,32 @@ mod tests {
     use super::*;
     use operit_host_api::TerminalHost;
 
+    /// In test builds each `NativePtyTerminalHost` owns an independent
+    /// `TerminalState` (no process-wide singleton), so sessions created on one
+    /// instance must not be visible to another. This guards the `#[cfg(test)]`
+    /// branch in `NativePtyTerminalHost::new`.
+    #[test]
+    fn test_build_uses_independent_per_instance_state() {
+        let a = NativePtyTerminalHost::new();
+        let b = NativePtyTerminalHost::new();
+        let sa = a
+            .createOrGetSession("iso_a", "posix")
+            .expect("create session on a");
+        let sb = b
+            .createOrGetSession("iso_b", "posix")
+            .expect("create session on b");
+        // A session created on `a` must be invisible to `b` (and vice versa),
+        // proving the two instances do not share terminal state in tests.
+        assert!(b.getSessionScreen(&sa.sessionId).is_err());
+        assert!(a.getSessionScreen(&sb.sessionId).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn linux_command_block_completes_in_pty() {
         let host = NativePtyTerminalHost::new();
         let session = host
-            .createOrGetSession("linux_terminal_marker", "linux")
+            .createOrGetSession("linux_terminal_marker", "posix")
             .expect("create terminal session");
         let result = host
             .executeInSession(
@@ -1635,11 +1656,12 @@ mod tests {
         assert_eq!(result.output, "hello\ntty=yes");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn linux_screen_records_prompt_command_output_prompt() {
         let host = NativePtyTerminalHost::new();
         let session = host
-            .createOrGetSession("linux_terminal_screen", "linux")
+            .createOrGetSession("linux_terminal_screen", "posix")
             .expect("create terminal session");
         let workingDir = std::env::current_dir().unwrap().display().to_string();
         let prompt = format!("{workingDir} $ ");
@@ -1674,13 +1696,13 @@ mod tests {
     fn visible_linux_sessions_are_listed_as_pty() {
         let host = NativePtyTerminalHost::new();
         let created = host
-            .createOrGetSession("linux_visible_ai", "linux")
+            .createOrGetSession("linux_visible_ai", "posix")
             .expect("create visible terminal session");
         let manual = host
             .startPtySession(
-                "linux_visible_manual",
-                "linux",
-                &std::env::current_dir().unwrap().display().to_string(),
+            "linux_visible_manual",
+            "posix",
+            &std::env::current_dir().unwrap().display().to_string(),
                 24,
                 80,
             )
@@ -1697,16 +1719,16 @@ mod tests {
             .expect("manual terminal listed");
 
         assert_eq!(createdEntry.sessionKind, "pty");
-        assert_eq!(createdEntry.terminalType, "linux");
+        assert_eq!(createdEntry.terminalType, "posix");
         assert_eq!(manualEntry.sessionKind, "pty");
-        assert_eq!(manualEntry.terminalType, "linux");
+        assert_eq!(manualEntry.terminalType, "posix");
     }
 
     #[test]
     fn linux_pty_session_preserves_working_directory() {
         let host = NativePtyTerminalHost::new();
         let session = host
-            .createOrGetSession("linux_terminal_cwd", "linux")
+            .createOrGetSession("linux_terminal_cwd", "posix")
             .expect("create terminal session");
 
         let cdResult = host

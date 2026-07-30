@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -53,17 +52,7 @@ pub fn log_app_error(file: &str, line: u32, message: &str) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let line_text = format!("[{}][ERROR] {}:{} {}\n", ts, file, line, message);
-
-    if let Some(dir) = error_log_path().parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(error_log_path())
-    {
-        let _ = f.write_all(line_text.as_bytes());
-    }
+    append_error_log(&line_text);
 
     if let Some(holder) = HOST_LOG_SINK.get() {
         if let Ok(guard) = holder.read() {
@@ -88,6 +77,30 @@ pub fn getErrorLog(limit_lines: usize) -> String {
     }
 }
 
+/// Appends a single line to the on-device error log, rolling the file to
+/// `<log>.1` once it reaches `MAX_ERROR_LOG_BYTES` so it cannot grow without
+/// limit. Shared by `log_app_error` and `logHostError`.
+fn append_error_log(line: &str) {
+    if let Some(dir) = error_log_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    const MAX_ERROR_LOG_BYTES: u64 = 1_000_000;
+    if let Ok(meta) = std::fs::metadata(error_log_path()) {
+        if meta.len() >= MAX_ERROR_LOG_BYTES {
+            let backup = error_log_path().with_extension("log.1");
+            let _ = std::fs::remove_file(&backup);
+            let _ = std::fs::rename(error_log_path(), &backup);
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(error_log_path())
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 /// Writes a host error message through the installed host log sink and also
 /// persists it to the device error log. Tolerates a missing sink.
 pub fn logHostError(tag: &str, message: &str) {
@@ -96,17 +109,7 @@ pub fn logHostError(tag: &str, message: &str) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let line_text = format!("[{}][ERROR][{}] {}\n", ts, tag, message);
-
-    if let Some(dir) = error_log_path().parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(error_log_path())
-    {
-        let _ = f.write_all(line_text.as_bytes());
-    }
+    append_error_log(&line_text);
 
     if let Some(holder) = HOST_LOG_SINK.get() {
         if let Ok(guard) = holder.read() {
