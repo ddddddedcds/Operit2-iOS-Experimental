@@ -385,7 +385,7 @@ const superAdmin = (function () {
                 }
             }
             if (isBackground) {
-                const session = await Tools.System.terminal.create(getBackgroundTerminalSessionName(type), type);
+                const session = await Tools.System.terminal.create(getBackgroundTerminalSessionName(type), type as TerminalType);
                 const sessionId = session.sessionId;
                 /**
                  * Runs the background terminal command inside the created session.
@@ -407,7 +407,7 @@ const superAdmin = (function () {
                     terminalEnvironment
                 };
             }
-            const session = await Tools.System.terminal.create(getDefaultTerminalSessionName(type), type);
+            const session = await Tools.System.terminal.create(getDefaultTerminalSessionName(type), type as TerminalType);
             const sessionId = session.sessionId;
             const result = await Tools.System.terminal.exec(sessionId, command, timeout);
             const timedOut = result.timedOut === true;
