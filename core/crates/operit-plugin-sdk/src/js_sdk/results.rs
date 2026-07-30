@@ -323,6 +323,8 @@ pub enum TerminalType {
     Linux,
     #[serde(rename = "shell")]
     Shell,
+    #[serde(rename = "posix")]
+    Posix,
 }
 impl TerminalType {
     /// Returns the JavaScript terminal type literal.
@@ -332,6 +334,7 @@ impl TerminalType {
             Self::Bash => "bash",
             Self::Linux => "linux",
             Self::Shell => "shell",
+            Self::Posix => "posix",
         }
     }
 }

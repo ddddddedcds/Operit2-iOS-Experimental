@@ -370,7 +370,7 @@ fn validateTerminalTool(operation: TerminalToolOperation, tool: &AITool) -> Tool
 /// Converts the host terminal literal into the SDK terminal enum.
 #[allow(non_snake_case)]
 fn terminalType(value: &str) -> TerminalType {
-    TerminalType::try_from(value).expect("host returned an invalid terminal type")
+    TerminalType::try_from(value).unwrap_or(TerminalType::Posix)
 }
 
 #[allow(non_snake_case)]
