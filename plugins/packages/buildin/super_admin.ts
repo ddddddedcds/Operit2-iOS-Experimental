@@ -335,20 +335,19 @@ const superAdmin = (function () {
             return await Tools.System.terminal.info();
         }
         catch (error: any) {
-            const message = error?.message ? String(error.message) : String(error);
-            if (message.includes("Tool not found")) {
-                return {
-                    platform: "posix",
-                    defaultType: "posix" as TerminalType,
-                    types: [{
-                        terminalType: "posix" as TerminalType,
-                        available: true,
-                        description: "POSIX bash terminal (fallback)"
-                    }],
-                    toString: () => "POSIX bash terminal (posix)"
-                } as TerminalInfoResultData;
-            }
-            throw error;
+            // iOS 运行时未注册 get_terminal_info（抛"未注册"或其他异常），
+            // 任何错误都降级到 POSIX bash，避免异常冒泡被格式化成 [uninitialized]。
+            console.warn(`[terminal] getTerminalEnvironment fallback to posix: ${error?.message ?? error}`);
+            return {
+                platform: "posix",
+                defaultType: "posix" as TerminalType,
+                types: [{
+                    terminalType: "posix" as TerminalType,
+                    available: true,
+                    description: "POSIX bash terminal (fallback)"
+                }],
+                toString: () => "POSIX bash terminal (posix)"
+            } as TerminalInfoResultData;
         }
     }
 
@@ -518,17 +517,9 @@ const superAdmin = (function () {
                 // 数字 id 无效，继续落到默认 bash session
             }
         }
-        const terminalEnvironment = await getTerminalEnvironment();
-        let type: TerminalCommandType = "posix";
-        switch (terminalEnvironment.platform) {
-            case "windows": type = "powershell"; break;
-            case "android": type = "bash"; break;
-            case "linux": type = "linux"; break;
-            case "ios":
-            case "posix":
-            case "macos": type = "posix"; break;
-            default: type = "posix";
-        }
+        // iOS 上 terminal.info() 未注册，直接固定走 posix（bash 真实屏），
+        // 不再依赖 getTerminalEnvironment，避免异常冒泡成 [uninitialized]。
+        const type: TerminalCommandType = "posix";
         // 非数字名字（如 default/main/operit2）或无效数字 id：落到 bash 默认 session
         //（名字与 bash() 一致，createOrGet 会复用真实 bash 屏，避免读到空/未初始化屏）
         const session = await Tools.System.terminal.create(getDefaultTerminalSessionName(type), type as TerminalType);
