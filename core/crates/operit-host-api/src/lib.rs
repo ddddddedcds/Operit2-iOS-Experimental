@@ -6,6 +6,7 @@ pub mod TimeUtils;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -30,15 +31,90 @@ pub fn setHostLogSink(sink: HostLogSink) {
     *holder.write().expect("host log sink lock poisoned") = Some(sink);
 }
 
-/// Writes a host error message through the installed host log sink.
+/// Resolves the on-device error log file path for the current platform.
+fn error_log_path() -> std::path::PathBuf {
+    #[cfg(target_os = "ios")]
+    {
+        std::path::Path::new("/var/jb/var/mobile/.operit/operit-error.log").to_path_buf()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        std::env::temp_dir().join("operit-error.log")
+    }
+}
+
+/// Appends one structured error line to the on-device error log and, if a host
+/// log sink is installed, forwards it to Dart as well. Never panics: a missing
+/// sink or an unwritable file is tolerated so logging itself can never crash
+/// the host. This is the single choke point that records EVERY host error.
+pub fn log_app_error(file: &str, line: u32, message: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line_text = format!("[{}][ERROR] {}:{} {}\n", ts, file, line, message);
+
+    if let Some(dir) = error_log_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(error_log_path())
+    {
+        let _ = f.write_all(line_text.as_bytes());
+    }
+
+    if let Some(holder) = HOST_LOG_SINK.get() {
+        if let Ok(guard) = holder.read() {
+            if let Some(sink) = guard.clone() {
+                sink("HostError", &line_text);
+            }
+        }
+    }
+}
+
+/// Reads the most recent `limit_lines` entries from the on-device error log.
+/// Returns an empty string when the log does not yet exist. Exposed to the app
+/// so it can render an in-app error log page without SSH access.
+pub fn getErrorLog(limit_lines: usize) -> String {
+    match std::fs::read_to_string(error_log_path()) {
+        Ok(content) => {
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(limit_lines.max(1));
+            lines[start..].join("\n")
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// Writes a host error message through the installed host log sink and also
+/// persists it to the device error log. Tolerates a missing sink.
 pub fn logHostError(tag: &str, message: &str) {
-    let sink = HOST_LOG_SINK
-        .get_or_init(|| RwLock::new(None))
-        .read()
-        .expect("host log sink lock poisoned")
-        .clone()
-        .expect("host log sink must be installed before host errors are logged");
-    sink(tag, message);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line_text = format!("[{}][ERROR][{}] {}\n", ts, tag, message);
+
+    if let Some(dir) = error_log_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(error_log_path())
+    {
+        let _ = f.write_all(line_text.as_bytes());
+    }
+
+    if let Some(holder) = HOST_LOG_SINK.get() {
+        if let Ok(guard) = holder.read() {
+            if let Some(sink) = guard.clone() {
+                sink(tag, &line_text);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -837,11 +913,15 @@ pub struct HostError {
 }
 
 impl HostError {
-    /// Creates a host boundary error from a displayable message.
+    /// Creates a host boundary error from a displayable message. Every error
+    /// constructed here is recorded (device file + Dart sink) with its source
+    /// location, so a single misconfigured line is never a 12-hour mystery.
+    #[track_caller]
     pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
+        let message = message.into();
+        let loc = std::panic::Location::caller();
+        log_app_error(loc.file(), loc.line(), &message);
+        Self { message }
     }
 }
 
