@@ -450,11 +450,11 @@ struct SessionCommandResult {
     workingDir: Option<String>,
 }
 
-#[allow(non_snake_case)]
-/// Append a diagnostic line to a device-side log so terminal spawn failures
-/// can be inspected without a debugger. The path lives under the jailbroken
-/// root (var/jb prefix).
-fn log_terminal_error(msg: &str) {
+/// Device-side diagnostic log for the terminal host. Every line is prefixed
+/// with LEVEL, source location (file:line) and a unix timestamp so a failure
+/// can be pinpointed to the exact code path without a debugger. Written to
+/// /var/jb/var/mobile/.operit/terminal-error.log (jailbroken root path).
+fn log_terminal_diag(level: &str, file: &str, line: u32, msg: &str) {
     let dir = std::path::Path::new("/var/jb/var/mobile/.operit");
     let _ = std::fs::create_dir_all(dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -466,7 +466,29 @@ fn log_terminal_error(msg: &str) {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let _ = f.write_all(format!("[{}] {}\n", ts, msg).as_bytes());
+        let _ = f.write_all(format!("[{}] {} {}:{} {}\n", ts, level, file, line, msg).as_bytes());
+    }
+}
+
+macro_rules! term_err {
+    ($($arg:tt)*) => { log_terminal_diag("ERROR", file!(), line!(), &format!($($arg)*)) };
+}
+macro_rules! term_dbg {
+    ($($arg:tt)*) => { log_terminal_diag("DEBUG", file!(), line!(), &format!($($arg)*)) };
+}
+
+/// Render a portable_pty ExitStatus into a human-readable cause. This is what
+/// turns a generic "shell exited immediately" into
+/// "shell crashed: killed by signal Segmentation fault" — the distinction that
+/// was missing during the long LANG=C.UTF-8 SIGSEGV debugging cycle.
+fn describe_exit_status(status: &portable_pty::ExitStatus) -> String {
+    match status.signal() {
+        Some(sig) => format!(
+            "killed by signal {} (raw exit_code={})",
+            sig,
+            status.exit_code()
+        ),
+        None => format!("exited with code {}", status.exit_code()),
     }
 }
 
@@ -486,22 +508,37 @@ fn createPtySession(
     let pair = ptySystem
         .openpty(ptySize(rows, cols))
         .map_err(|e| {
-            log_terminal_error(&format!("openpty failed: {}", e));
+            term_err!("openpty failed: {}", e);
             toHostError(e)
         })?;
     let command = posixPtyCommand(&workingDir);
     let mut child = pair.slave.spawn_command(command).map_err(|e| {
-        log_terminal_error(&format!("spawn_command failed: {}", e));
+        term_err!("spawn_command failed: {}", e);
         toHostError(e)
     })?;
+    // Resolve the shell path we just launched, purely for diagnostic logging.
+    #[cfg(target_os = "ios")]
+    let shell_label = ios_pty_shell();
+    #[cfg(not(target_os = "ios"))]
+    let shell_label = "bash".to_string();
     // Defensive: on iOS the spawned shell sometimes exits immediately due to
-    // PTY/session-leader issues. Detect that early instead of letting Dart find
-    // an empty session list.
+    // PTY/session-leader issues (or, e.g., a locale it crashes on). Detect that
+    // early and report the exact cause instead of letting Dart show a generic
+    // "Terminal session disappeared".
     if let Ok(Some(status)) = child.try_wait() {
-        let msg = format!("spawned shell exited immediately with status: {:?}", status);
-        log_terminal_error(&msg);
+        let cause = describe_exit_status(&status);
+        let msg = format!(
+            "shell exited immediately after spawn: {}; shell={} cwd={}",
+            cause, shell_label, workingDir
+        );
+        term_err!("{}", msg);
         return Err(HostError::new(msg));
     }
+    term_dbg!(
+        "PTY shell spawned and alive; shell={} cwd={}",
+        shell_label,
+        workingDir
+    );
     let mut reader = pair.master.try_clone_reader().map_err(toHostError)?;
     let writer = Arc::new(Mutex::new(pair.master.take_writer().map_err(toHostError)?));
     let output = Arc::new(Mutex::new(VecDeque::new()));
@@ -534,7 +571,7 @@ fn createPtySession(
     if let Err(error) = waitForInitialPtyPrompt(commandOutput.clone(), &mut child, Duration::from_millis(10000))
     {
         let _ = child.kill();
-        log_terminal_error(&format!("waitForInitialPtyPrompt failed: {}", error));
+        term_err!("waitForInitialPtyPrompt failed: {}", error);
         return Err(error);
     }
     clearPtyCommandOutput(&commandOutput)?;
@@ -640,7 +677,8 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
             path.push_str(dir);
         }
     }
-    command.env("PATH", path);
+    let prompt_marker = prompt_env.is_some();
+    command.env("PATH", path.clone());
     if let Some(p) = prompt_env {
         command.env("PROMPT_COMMAND", p);
     }
@@ -651,6 +689,17 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
         command.env("LOGNAME", "mobile");
         command.env("SHELL", shell.as_str());
     }
+    term_dbg!(
+        "spawn env: shell={} cwd={} LANG={:?} TERM={:?} COLORTERM={:?} HOME={:?} PATH_LEN={} prompt_marker={}",
+        shell,
+        workingDir,
+        command.get_env("LANG"),
+        command.get_env("TERM"),
+        command.get_env("COLORTERM"),
+        command.get_env("HOME"),
+        path.len(),
+        prompt_marker
+    );
     command
 }
 
@@ -832,24 +881,38 @@ fn waitForInitialPtyPrompt(
             && !collected.is_empty()
             && child.try_wait().ok().flatten().is_none()
         {
+            term_dbg!(
+                "prompt marker not seen; treating shell as ready because output present and child alive (iOS fallback)"
+            );
             promptSeenAt = Some(Instant::now());
         }
         if promptSeenAt.is_some_and(|seenAt| seenAt.elapsed() >= quietPeriod) {
+            term_dbg!("PTY ready: prompt marker seen / fallback satisfied");
             return Ok(());
         }
         if Instant::now() >= deadline {
-            let child_alive = child.try_wait().ok().flatten().is_none();
+            let status = child.try_wait().ok().flatten();
+            let child_alive = status.is_none();
+            let cause = status
+                .as_ref()
+                .map(|s| describe_exit_status(s))
+                .unwrap_or_else(|| "still running".to_string());
             let hex: String = collected
                 .iter()
                 .take(256)
                 .map(|b| format!("{:02x}", b))
                 .collect::<Vec<_>>()
                 .join(" ");
-            log_terminal_error(&format!(
-                "waitForInitialPtyPrompt timeout; child_alive={}; first bytes: {}",
-                child_alive, hex
-            ));
-            return Err(HostError::new("Timed out waiting for terminal prompt"));
+            term_err!(
+                "waitForInitialPtyPrompt timeout; child_alive={}; child_status={}; first bytes: {}",
+                child_alive,
+                cause,
+                hex
+            );
+            return Err(HostError::new(format!(
+                "Timed out waiting for terminal prompt (child {})",
+                cause
+            )));
         }
     }
 }
