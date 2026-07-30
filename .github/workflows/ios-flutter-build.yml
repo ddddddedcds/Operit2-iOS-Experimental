@@ -108,7 +108,7 @@ jobs:
           path: |
             apps/web_access/build/bundle
             apps/flutter/app/assets/web_access
-          key: ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-web-access-${{ env.WEB_BUILD_CACHE_VERSION }}-${{ hashFiles('apps/flutter/app/.fvmrc', 'apps/flutter/app/pubspec.yaml', 'apps/flutter/app/pubspec.lock', 'apps/flutter/app/lib/**/*.dart', 'apps/flutter/app/hook/build.dart', 'apps/web_access/web/**', 'apps/flutter/native/operit-flutter-bridge/Cargo.lock', 'apps/flutter/native/operit-flutter-bridge/Cargo.toml', 'apps/flutter/native/operit-flutter-bridge/src/**', 'core/Cargo.lock', 'core/crates/**/*.rs', 'core/crates/**/Cargo.toml', 'hosts/web/Cargo.lock', 'hosts/web/Cargo.toml', 'hosts/web/src/**', 'plugins/packages/**', 'plugins/tools/**') }}
+          key: ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-web-access-${{ env.WEB_BUILD_CACHE_VERSION }}-${{ hashFiles('apps/flutter/app/.fvmrc', 'apps/flutter/app/pubspec.yaml', 'apps/flutter/app/pubspec.lock', 'apps/flutter/app/lib/**/*.dart', 'apps/flutter/app/hook/build.dart', 'apps/web_access/web/**', 'apps/flutter/native/operit-flutter-bridge/Cargo.lock', 'apps/flutter/native/operit-flutter-bridge/Cargo.toml', 'apps/flutter/native/operit-flutter-bridge/src/**', 'core/Cargo.lock', 'core/crates/**/*.rs', 'core/crates/**/Cargo.toml', 'hosts/web/Cargo.lock', 'hosts/web/Cargo.toml', 'hosts/web/src/**') }}
           restore-keys: |
             ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-web-access-${{ env.WEB_BUILD_CACHE_VERSION }}-
 
