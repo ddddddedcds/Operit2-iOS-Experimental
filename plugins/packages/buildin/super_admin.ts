@@ -477,9 +477,9 @@ const superAdmin = (function () {
     /**
      * Resolves a terminal session for the screen/input/wait tools.
      * Accepts either an existing numeric sessionId or a free-form name.
-     * If the id does not point to a live session, creates (or reuses) a
-     * session keyed by that name so the call does not fail with
-     * "Terminal session does not exist".
+     * If the id does not point to a live session, falls back to the bash
+     * default session (same name bash() uses) so createOrGet reuses the real
+     * bash screen, instead of spawning an empty session that reads blank.
      */
     async function resolveSessionForTool(rawSessionId: string): Promise<string> {
         try {
@@ -500,7 +500,9 @@ const superAdmin = (function () {
             case "macos": type = "posix"; break;
             default: type = "posix";
         }
-        const session = await Tools.System.terminal.create(rawSessionId, type as TerminalType);
+        // rawSessionId 不是有效数字 id：落到 bash 默认 session（名字与 bash() 一致，
+        // createOrGet 会复用真实 bash 屏，避免建空 session 读到空屏）
+        const session = await Tools.System.terminal.create(getDefaultTerminalSessionName(type), type as TerminalType);
         return session.sessionId;
     }
 
