@@ -6,6 +6,7 @@ import 'package:webview_all/webview_all.dart';
 
 import '../interactions/MessagePressShield.dart';
 import 'CanvasMonospaceCodeBlockBody.dart';
+import 'utf16_sanitize.dart';
 
 enum CodeBlockPreviewType { mermaid, html }
 
@@ -438,7 +439,7 @@ InlineSpan _highlightSyntaxLine(String line, String language) {
   };
   if (line.trimLeft().startsWith('//') || line.trimLeft().startsWith('%')) {
     return TextSpan(
-      text: line,
+      text: sanitizeUtf16(line),
       style: TextStyle(color: commentColor),
     );
   }
@@ -461,7 +462,7 @@ InlineSpan _highlightSyntaxLine(String line, String language) {
         : textColor;
     spans.add(
       TextSpan(
-        text: token,
+        text: sanitizeUtf16(token),
         style: TextStyle(color: color),
       ),
     );

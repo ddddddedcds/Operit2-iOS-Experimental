@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 
 import 'MarkdownCodeTypeface.dart';
+import 'utf16_sanitize.dart';
 
 class CanvasMonospaceCodeBlockBody extends StatelessWidget {
   const CanvasMonospaceCodeBlockBody({
@@ -25,7 +26,7 @@ class CanvasMonospaceCodeBlockBody extends StatelessWidget {
           for (var index = 0; index < lines.length; index++)
             _CodeLine(
               lineNumber: index + 1,
-              text: lines[index],
+              text: sanitizeUtf16(lines[index]),
               span:
                   highlightedLines == null || index >= highlightedLines!.length
                   ? null
