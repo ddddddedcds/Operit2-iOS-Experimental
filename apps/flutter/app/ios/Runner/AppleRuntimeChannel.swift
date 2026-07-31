@@ -16,8 +16,7 @@ final class AppleRuntimeChannel: NSObject {
   private var channel: FlutterMethodChannel
   private let workQueue = DispatchQueue(label: "operit.runtime.apple", qos: .userInitiated)
   private var ttsSynthesisActive: [String: (AVSpeechSynthesizer, TtsSynthesisDelegate)] = [:]
-  @available(iOS 14, *)
-  private var activePickers: [MediaPickerDelegate] = []
+  private var activePickers: [Any] = []
   private let fileInteractionDelegate = FileInteractionDelegate()
   private let watchQueue = DispatchQueue(label: "operit.runtime.apple.watch", qos: .utility)
   private let watchLock = NSLock()
@@ -1077,7 +1076,7 @@ final class AppleRuntimeChannel: NSObject {
   }
 
   private func ownerSystemRecognizeText(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard let payload = call.arguments as? [String: Any] else {
+    guard (call.arguments as? [String: Any]) != nil else {
       result(FlutterError(code: "INVALID_ARGS", message: "ownerSystemRecognizeText expects a payload", details: nil))
       return
     }
@@ -1268,7 +1267,7 @@ final class AppleRuntimeChannel: NSObject {
         let picker = PHPickerViewController(configuration: configuration)
         var delegate: MediaPickerDelegate!
         delegate = MediaPickerDelegate { [weak self] url, mediaType in
-          defer { self?.activePickers.removeAll { $0 === delegate } }
+          defer { self?.activePickers.removeAll { ($0 as? MediaPickerDelegate) === delegate } }
           guard let url = url else {
             result(nil)
             return
