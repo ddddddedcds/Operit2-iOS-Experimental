@@ -1,3 +1,16 @@
+# Project Statement / 项目声明
+
+This is **Operit2 (iOS, rootless) — unofficial / personal / AI-experimental**.
+
+- This project: https://github.com/ddddddedcds/Operit2
+- Adapted from the original work: https://github.com/AAswordman/Operit2
+- Original predecessor / idea source: https://github.com/AAswordman/Operit
+
+This package is **NOT an official release** of Operit2. It is an unofficial,
+personal adaptation that incorporates AI-assisted modifications. No original
+Operit/Operit2 source code is claimed as our own; all third-party and upstream
+attributions are preserved below.
+
 # Third-Party Software Acknowledgements / 第三方组件致谢
 
 Operit2 (iOS, rootless) integrates the following third-party open-source
@@ -16,6 +29,13 @@ components. We are grateful to their authors.
   delegated to the ios-mcp backend running on the device (localhost:8090).
   Declared as a package dependency (`com.witchan.ios-mcp`).
 
+- **Operit2** (original work) — the project this package is adapted from
+  https://github.com/AAswordman/Operit2
+
+- **Operit** (original predecessor / idea source) — the earlier project that
+  provided development ideas
+  https://github.com/AAswordman/Operit
+
 (The bundled Operit2 Flutter app also statically embeds the Flutter engine,
 the Dart runtime, and Python scientific frameworks (NumPy/SciPy). Their
 respective licenses are available in their upstream projects.)
@@ -23,10 +43,12 @@ respective licenses are available in their upstream projects.)
 ## Acknowledgements (感谢)
 
 Special thanks to **opa334** for **ElleKit**, the rootless hooking substrate
-that makes this tweak possible, and to **witchan** for **ios-mcp**, whose
+that makes this tweak possible; to **witchan** for **ios-mcp**, whose
 device-control MCP server powers Operit2's screenshot / OCR / automation
-layer. Operit2 would not function without these excellent open-source
-components.
+layer; and to **AAswordman** for the original **Operit2**
+(https://github.com/AAswordman/Operit2) and the earlier **Operit** project
+(https://github.com/AAswordman/Operit) that provided the development ideas.
+Operit2 would not exist without these excellent open-source works.
 
 ---
 
@@ -85,3 +107,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+# Disclaimer / 免责声明
+
+This tool is experimental and unstable. Use it at your own risk. The authors
+are not responsible for any data loss, property damage, system damage, or any
+other harm resulting from the installation or use of this package. So far no
+such incidents have been reported, but you assume all risks by using it.
