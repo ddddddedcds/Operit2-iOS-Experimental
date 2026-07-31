@@ -9,7 +9,7 @@ import os, io, tarfile, gzip, stat
 ROOT = os.path.dirname(os.path.abspath(__file__))
 FILES = os.path.join(ROOT, "files")
 DEBIAN = os.path.join(ROOT, "DEBIAN")
-OUT = os.path.join(ROOT, "operit2-ios_0.3.47_iphoneos-arm64.deb")
+OUT = os.path.join(ROOT, "operit2-ios_0.3.48_iphoneos-arm64.deb")
 
 # Rootless relocation done at PACKAGE time: prefix every data.tar member with
 # "var/jb/" so a plain `dpkg -i` (what Sileo/Filza invoke, WITHOUT --root=/var/jb)

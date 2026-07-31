@@ -163,7 +163,11 @@ class _StreamMarkdownRendererState extends State<StreamMarkdownRenderer> {
       return;
     }
     for (final event in events) {
-      _applyMarkdownEvent(event);
+      try {
+        _applyMarkdownEvent(event);
+      } catch (e) {
+        debugPrint('StreamMarkdownRenderer: ignored static markdown event error: $e');
+      }
     }
     _rendererState.eventBuilder.complete();
     _streamDone = true;
@@ -180,7 +184,11 @@ class _StreamMarkdownRendererState extends State<StreamMarkdownRenderer> {
   void _subscribe(Stream<Object> stream) {
     _subscription = stream.listen(
       (event) {
-        _applyMarkdownEvent(event);
+        try {
+          _applyMarkdownEvent(event);
+        } catch (e) {
+          debugPrint('StreamMarkdownRenderer: ignored markdown event error: $e');
+        }
         _renderTimer ??= Timer(_streamRenderInterval, _flushRenderNodes);
       },
       onDone: () {

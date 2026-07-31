@@ -2,6 +2,8 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import 'MarkdownNodeGrouper.dart';
 
 class StreamMarkdownRendererState {
@@ -226,7 +228,8 @@ class MarkdownEventNodeBuilder {
     }
     final node = _blocks[blockId];
     if (node == null) {
-      throw StateError('Missing markdown block $blockId');
+      debugPrint('StreamMarkdownRendererState: drop chunk for missing block $blockId');
+      return;
     }
     node.content.write(content);
     _xmlControllers[blockId]?.add(content);
@@ -238,7 +241,8 @@ class MarkdownEventNodeBuilder {
   }) {
     final controller = _xmlMarkdownControllers[parentBlockId];
     if (controller == null) {
-      throw StateError('Missing XML markdown stream for block $parentBlockId');
+      debugPrint('StreamMarkdownRendererState: drop xml event for missing block $parentBlockId');
+      return;
     }
     controller.add(event);
   }
@@ -253,7 +257,8 @@ class MarkdownEventNodeBuilder {
     }
     final block = _blocks[blockId];
     if (block == null) {
-      throw StateError('Missing markdown block $blockId for inline $inlineId');
+      debugPrint('StreamMarkdownRendererState: drop inline start for missing block $blockId');
+      return;
     }
     _finalizeInlineForBlock(blockId);
     final key = _inlineKey(blockId, inlineId);
@@ -281,7 +286,8 @@ class MarkdownEventNodeBuilder {
     }
     final block = _blocks[blockId];
     if (block == null) {
-      throw StateError('Missing markdown block $blockId for inline $inlineId');
+      debugPrint('StreamMarkdownRendererState: drop inline chunk for missing block $blockId');
+      return;
     }
     final key = _inlineKey(blockId, inlineId);
     final pending = _pendingInlines[key];

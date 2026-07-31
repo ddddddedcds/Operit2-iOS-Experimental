@@ -6,13 +6,18 @@ import Darwin
 import Flutter
 import Foundation
 import Network
-import Vision
+import PhotosUI
 import UIKit
+import UniformTypeIdentifiers
+import Vision
 
 final class AppleRuntimeChannel: NSObject {
   private static var shared: AppleRuntimeChannel?
   private var channel: FlutterMethodChannel
   private let workQueue = DispatchQueue(label: "operit.runtime.apple", qos: .userInitiated)
+  private var ttsSynthesisActive: [String: (AVSpeechSynthesizer, TtsSynthesisDelegate)] = [:]
+  private var activePickers: [MediaPickerDelegate] = [:]
+  private let fileInteractionDelegate = FileInteractionDelegate()
   private let watchQueue = DispatchQueue(label: "operit.runtime.apple.watch", qos: .utility)
   private let watchLock = NSLock()
   private var watchPumpRunning = false
@@ -154,6 +159,16 @@ final class AppleRuntimeChannel: NSObject {
       hostOnboardingPermissionSnapshot(result: result)
     case "hostOnboardingRequestPermission":
       hostOnboardingRequestPermission(result: result)
+    case "pickImage":
+      pickMedia(isVideo: false, result: result)
+    case "pickVideo":
+      pickMedia(isVideo: true, result: result)
+    case "ownerFileOpen":
+      ownerFileOpen(call: call, result: result)
+    case "ownerFileShare":
+      ownerFileShare(call: call, result: result)
+    case "ownerSystemLanguageCode":
+      ownerSystemLanguageCode(result: result)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -1138,8 +1153,224 @@ final class AppleRuntimeChannel: NSObject {
     }
   }
 
+  // MARK: - Owner TTS synthesize (offline to file)
+
   private func ownerTtsSynthesize(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    result(FlutterError(code: "OWNER_TTS_SYNTHESIZE_ERROR", message: "Apple TTS file synthesis is not implemented", details: nil))
+    guard let payload = call.arguments as? [String: Any],
+          let text = payload["text"] as? String, !text.isEmpty else {
+      result(FlutterError(code: "INVALID_ARGS", message: "ownerTtsSynthesize expects text", details: nil))
+      return
+    }
+    let voiceId = payload["voiceId"] as? String
+    let rate = Float(payload["rate"] as? Double ?? 0.5)
+    DispatchQueue.main.async { [weak self] in
+      self?.synthesizeSpeech(text: text, voiceId: voiceId, rate: rate, result: result)
+    }
+  }
+
+  private func synthesizeSpeech(text: String, voiceId: String?, rate: Float, result: @escaping FlutterResult) {
+    let fileName = "operit_tts_\(Int64(Date().timeIntervalSince1970 * 1000)).caf"
+    let fileURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(fileName)
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.playAndRecord, options: [.defaultToSpeaker])
+      try session.setActive(true)
+    } catch {
+      result(FlutterError(code: "OWNER_TTS_SYNTHESIZE_ERROR", message: "audio session: \(error.localizedDescription)", details: nil))
+      return
+    }
+    let engine = AVAudioEngine()
+    let outputFormat = engine.outputNode.outputFormat(forBus: 0)
+    guard let file = try? AVAudioFile(forWriting: fileURL, settings: outputFormat.settings) else {
+      result(FlutterError(code: "OWNER_TTS_SYNTHESIZE_ERROR", message: "cannot create audio file", details: nil))
+      return
+    }
+    engine.outputNode.installTap(onBus: 0, bufferSize: 4096, format: outputFormat) { buffer, _ in
+      try? file.write(from: buffer)
+    }
+    engine.prepare()
+    do {
+      try engine.start()
+    } catch {
+      result(FlutterError(code: "OWNER_TTS_SYNTHESIZE_ERROR", message: "engine start: \(error.localizedDescription)", details: nil))
+      return
+    }
+    let synthesizer = AVSpeechSynthesizer()
+    synthesizer.usesAuxiliaryAudioSession = true
+    let utterance = AVSpeechUtterance(string: text)
+    if let voiceId, let voice = AVSpeechSynthesisVoice(identifier: voiceId) {
+      utterance.voice = voice
+    }
+    utterance.rate = rate
+    let delegate = TtsSynthesisDelegate { [weak engine] in
+      engine?.stop()
+      engine?.outputNode.removeTap(onBus: 0)
+      try? session.setActive(false)
+      result(["audioPath": fileURL.path])
+    }
+    synthesizer.delegate = delegate
+    ttsSynthesisActive[fileURL.path] = (synthesizer, delegate)
+    synthesizer.speak(utterance)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+      guard let self else { return }
+      if let task = self.ttsSynthesisActive.removeValue(forKey: fileURL.path) {
+        task.0.stopSpeaking(at: .immediate)
+        engine.stop()
+        engine.outputNode.removeTap(onBus: 0)
+        try? session.setActive(false)
+        result(["audioPath": fileURL.path])
+      }
+    }
+  }
+
+  private class TtsSynthesisDelegate: NSObject, AVSpeechSynthesizerDelegate {
+    let onFinish: () -> Void
+    init(onFinish: @escaping () -> Void) { self.onFinish = onFinish }
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+      onFinish()
+    }
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+      onFinish()
+    }
+  }
+
+  // MARK: - Media / file pickers
+
+  private func topViewController() -> UIViewController? {
+    if #available(iOS 13.0, *) {
+      let scene = UIApplication.shared.connectedScenes
+        .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene
+      let window = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first
+      var root = window?.rootViewController
+      while let presented = root?.presentedViewController {
+        root = presented
+      }
+      return root
+    } else {
+      var root = UIApplication.shared.keyWindow?.rootViewController
+      while let presented = root?.presentedViewController {
+        root = presented
+      }
+      return root
+    }
+  }
+
+  private func pickMedia(isVideo: Bool, result: @escaping FlutterResult) {
+    #if os(iOS)
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      let configuration = PHPickerConfiguration()
+      configuration.filter = isVideo ? .videos : .images
+      configuration.selectionLimit = 1
+      let picker = PHPickerViewController(configuration: configuration)
+      var delegate: MediaPickerDelegate!
+      delegate = MediaPickerDelegate { [weak self] url, mediaType in
+        defer { self?.activePickers.removeAll { $0 === delegate } }
+        guard let url = url else {
+          result(nil)
+          return
+        }
+        let ext = mediaType == "video" ? "mp4" : "jpg"
+        let destName = "operit_bg_\(Int64(Date().timeIntervalSince1970 * 1000)).\(ext)"
+        let destURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(destName)
+        do {
+          if FileManager.default.fileExists(atPath: destURL.path) {
+            try FileManager.default.removeItem(at: destURL)
+          }
+          try FileManager.default.copyItem(at: url, to: destURL)
+          result(["path": destURL.path, "mediaType": mediaType])
+        } catch {
+          result(FlutterError(code: "PICK_MEDIA_ERROR", message: error.localizedDescription, details: nil))
+        }
+      }
+      self.activePickers.append(delegate)
+      picker.delegate = delegate
+      self.topViewController()?.present(picker, animated: true, completion: nil)
+    }
+    #else
+    result(FlutterError(code: "PICK_MEDIA_ERROR", message: "picker is only available on iOS", details: nil))
+    #endif
+  }
+
+  private class MediaPickerDelegate: NSObject, PHPickerViewControllerDelegate {
+    let completion: (URL?, String) -> Void
+    init(completion: @escaping (URL?, String) -> Void) { self.completion = completion }
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+      picker.dismiss(animated: true)
+      guard let item = results.first else {
+        completion(nil, "image")
+        return
+      }
+      let isVideo = item.itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
+      let typeId = isVideo ? UTType.movie.identifier : UTType.image.identifier
+      item.itemProvider.loadFileRepresentation(forTypeIdentifier: typeId) { url, _ in
+        self.completion(url, isVideo ? "video" : "image")
+      }
+    }
+  }
+
+  private func ownerFileOpen(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let payload = call.arguments as? [String: Any],
+          let path = payload["path"] as? String, !path.isEmpty else {
+      result(FlutterError(code: "INVALID_ARGS", message: "ownerFileOpen expects path", details: nil))
+      return
+    }
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      let url = URL(fileURLWithPath: path)
+      guard let vc = self.topViewController() else {
+        result(FlutterError(code: "FILE_OPEN_ERROR", message: "no root view controller", details: nil))
+        return
+      }
+      let controller = UIDocumentInteractionController(url: url)
+      self.fileInteractionDelegate.viewController = vc
+      controller.delegate = self.fileInteractionDelegate
+      if controller.presentOpenInMenu(from: vc.view.bounds, in: vc.view) {
+        result(nil)
+      } else {
+        result(FlutterError(code: "FILE_OPEN_ERROR", message: "cannot present open menu", details: nil))
+      }
+    }
+  }
+
+  private func ownerFileShare(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let payload = call.arguments as? [String: Any],
+          let path = payload["path"] as? String, !path.isEmpty else {
+      result(FlutterError(code: "INVALID_ARGS", message: "ownerFileShare expects path", details: nil))
+      return
+    }
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      let url = URL(fileURLWithPath: path)
+      guard let vc = self.topViewController() else {
+        result(FlutterError(code: "FILE_SHARE_ERROR", message: "no root view controller", details: nil))
+        return
+      }
+      let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+      if let popover = activity.popoverPresentationController {
+        popover.sourceView = vc.view
+        popover.sourceRect = vc.view.bounds
+      }
+      vc.present(activity, animated: true) {
+        result(nil)
+      }
+    }
+  }
+
+  private func ownerSystemLanguageCode(result: @escaping FlutterResult) {
+    #if os(iOS)
+    let code = Locale.preferredLanguages.first ?? "en"
+    result(["languageCode": code])
+    #else
+    result(FlutterError(code: "LANG_ERROR", message: "language code is only available on iOS", details: nil))
+    #endif
+  }
+
+  private class FileInteractionDelegate: NSObject, UIDocumentInteractionControllerDelegate {
+    weak var viewController: UIViewController?
+    func documentInteractionControllerViewControllerForPreview(_ controller: UIDocumentInteractionController) -> UIViewController {
+      return viewController ?? UIViewController()
+    }
   }
 
   /// Handles owner-host local inference commands.

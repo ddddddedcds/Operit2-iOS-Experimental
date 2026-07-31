@@ -23,12 +23,27 @@ impl AppleSystemOperationHost {
 
 impl SystemOperationHost for AppleSystemOperationHost {
     fn getSystemLanguageCode(&self) -> HostResult<String> {
-        let output = run_command_output("defaults", &["read", "-g", "AppleLocale"])?;
-        let value = output.trim().replace('_', "-");
-        if value.is_empty() {
-            return Err(HostError::new("AppleLocale is empty"));
+        #[cfg(target_os = "macos")]
+        {
+            let output = run_command_output("defaults", &["read", "-g", "AppleLocale"])?;
+            let value = output.trim().replace('_', "-");
+            if value.is_empty() {
+                return Err(HostError::new("AppleLocale is empty"));
+            }
+            Ok(value)
         }
-        Ok(value)
+        #[cfg(target_os = "ios")]
+        {
+            // iOS 没有 macOS 的 `defaults` 二进制，走原生等价来源，拿不到就兜底，
+            // 绝不返回 Err，否则 AUTO 语言解析在 iOS 上整体失效。
+            Ok(ios_system_language_code())
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+        {
+            Err(HostError::new(
+                "Apple system operation host is available only on iOS or macOS",
+            ))
+        }
     }
 
     fn toast(&self, message: &str) -> HostResult<()> {
@@ -593,6 +608,37 @@ fn resolve_bin(program: &str) -> String {
         }
     }
     program.to_string()
+}
+
+/// iOS 系统语言代码来源（不使用 macOS 的 `defaults` 二进制）。
+#[cfg(target_os = "ios")]
+fn ios_system_language_code() -> String {
+    // 1. 环境变量 LANG / LC_ALL, 形如 zh_CN.UTF-8 -> zh-CN
+    for var in ["LANG", "LC_ALL"] {
+        if let Ok(raw) = std::env::var(var) {
+            let code = raw.split('.').next().unwrap_or("").trim();
+            if !code.is_empty() {
+                return code.replace('_', "-");
+            }
+        }
+    }
+    // 2. 越狱环境下 .GlobalPreferences.plist 的 AppleLanguages[0]
+    let plist = "/var/mobile/Library/Preferences/.GlobalPreferences.plist";
+    if Path::new(plist).exists() {
+        if let Ok(out) = Command::new(resolve_bin("plutil"))
+            .args(["-extract", "AppleLanguages.0", "raw", plist])
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !s.is_empty() && !s.starts_with('{') {
+                    return s;
+                }
+            }
+        }
+    }
+    // 3. 兜底，保证 AUTO 语言解析在 iOS 上不崩
+    "en-US".to_string()
 }
 
 fn run_command_output(program: &str, args: &[&str]) -> HostResult<String> {

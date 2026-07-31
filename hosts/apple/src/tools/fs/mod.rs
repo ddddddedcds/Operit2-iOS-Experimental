@@ -420,17 +420,34 @@ impl FileSystemHost for AppleFileSystemHost {
 
     fn openFile(&self, path: &str) -> HostResult<()> {
         self.validateReadableFile(path)?;
-        let status = Command::new("open").arg(path).status().map_err(|error| {
-            HostError::new(format!(
-                "Failed to open Apple platform file request: {error}"
-            ))
-        })?;
-        if !status.success() {
-            return Err(HostError::new(format!(
-                "Apple platform open request exited with {status}"
-            )));
+        #[cfg(target_os = "macos")]
+        {
+            let status = Command::new("open").arg(path).status().map_err(|error| {
+                HostError::new(format!(
+                    "Failed to open Apple platform file request: {error}"
+                ))
+            })?;
+            if !status.success() {
+                return Err(HostError::new(format!(
+                    "Apple platform open request exited with {status}"
+                )));
+            }
+            Ok(())
         }
-        Ok(())
+        #[cfg(target_os = "ios")]
+        {
+            // iOS 文件打开由 Flutter owner UI 经 AppleRuntimeChannel ownerFileOpen 处理，
+            // 不允许走 macOS 的 `open` 二进制（iOS 上不存在）。
+            Err(HostError::new(format!(
+                "iOS file open must be initiated by the Flutter owner UI: {path}"
+            )))
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+        {
+            Err(HostError::new(
+                "Apple file open host is available only on iOS or macOS",
+            ))
+        }
     }
 
     fn shareFile(&self, path: &str, title: &str) -> HostResult<()> {

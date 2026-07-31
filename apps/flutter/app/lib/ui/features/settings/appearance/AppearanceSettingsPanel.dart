@@ -7,6 +7,7 @@ import 'dart:ui' as ui;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../../data/preferences/UserPreferencesManager.dart';
 import '../../../../l10n/generated/app_localizations.dart';
@@ -600,6 +601,20 @@ class AppearanceSettingsPanel extends StatelessWidget {
 }
 
 Future<void> _pickBackgroundImage(OperitThemeController themeController) async {
+  if (Platform.isIOS) {
+    final result = await const MethodChannel('operit/runtime')
+        .invokeMethod<Map<dynamic, dynamic>>('pickImage');
+    final path = result?['path'] as String?;
+    if (path == null || path.isEmpty) {
+      return;
+    }
+    await themeController.saveThemeSettings(
+      useBackgroundImage: true,
+      backgroundImageUri: path,
+      backgroundMediaType: UserPreferencesManager.MEDIA_TYPE_IMAGE,
+    );
+    return;
+  }
   const imageGroup = XTypeGroup(
     label: 'image',
     extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
@@ -616,6 +631,22 @@ Future<void> _pickBackgroundImage(OperitThemeController themeController) async {
 }
 
 Future<void> _pickBackgroundVideo(OperitThemeController themeController) async {
+  if (Platform.isIOS) {
+    final result = await const MethodChannel('operit/runtime')
+        .invokeMethod<Map<dynamic, dynamic>>('pickVideo');
+    final path = result?['path'] as String?;
+    if (path == null || path.isEmpty) {
+      return;
+    }
+    await themeController.saveThemeSettings(
+      useBackgroundImage: true,
+      backgroundImageUri: path,
+      backgroundMediaType: UserPreferencesManager.MEDIA_TYPE_VIDEO,
+      videoBackgroundMuted: true,
+      videoBackgroundLoop: true,
+    );
+    return;
+  }
   const videoGroup = XTypeGroup(
     label: 'video',
     extensions: <String>['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi'],
