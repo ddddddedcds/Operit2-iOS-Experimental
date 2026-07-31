@@ -177,3 +177,31 @@ operit2 cli web close
 cargo check --manifest-path apps/cli/Cargo.toml
 cargo run --manifest-path apps/cli/Cargo.toml --bin operit2 -- cli version
 ```
+
+---
+
+## iOS 越狱版说明（ddddddedcds fork）
+
+> 本仓库根 README 为上游 Operit Cli 文档。以下为 **iOS 越狱（rootless）构建** 的项目声明与免责说明，与 deb 包（`hosts/ios/deb`）内的 `DEBIAN/control` 简介、`THIRD_PARTY.md` 保持一致。
+
+**项目地址**
+- 本项目（fork）：https://github.com/ddddddedcds/Operit2
+- 改编自原作：https://github.com/AAswordman/Operit2
+- 前作 / 思路来源：https://github.com/AAswordman/Operit
+
+**声明**
+Operit2 (iOS, rootless) 是 **非官方、个人 + AI 实验性** 改编版本，并非 Operit2 的官方发布。它在原作基础上加入了 AI 辅助修改；不声称任何上游 / 第三方源码为己有。截图、OCR、触控输入与设备自动化能力委托给设备上运行的 ios-mcp 后端（localhost:8090）。
+
+**所用第三方开源组件（附 GitHub 地址，均未遗漏）**
+- **ElleKit** — rootless 注入库与加载器（by opa334） https://github.com/opa334/ElleKit
+- **ios-mcp** — AI 驱动 iOS 设备控制的 MCP 服务器（by witchan） https://github.com/witchan/ios-mcp
+- **Operit2**（原作） https://github.com/AAswordman/Operit2
+- **Operit**（前作 / 思路来源） https://github.com/AAswordman/Operit
+
+完整许可证见 deb 内 `THIRD_PARTY.md`（ElleKit: BSD 3-Clause © 2022 Évelyne Bélanger；ios-mcp: MIT © 2026 witchan）。
+
+**感谢（Acknowledgements）**
+特别感谢 **opa334** 的 ElleKit（rootless 注入基座）、**witchan** 的 ios-mcp（驱动截图 / OCR / 自动化层），以及 **AAswordman** 的原作 Operit2 与更早的 Operit 项目（提供开发思路）。没有这些优秀的开源作品就没有 Operit2。
+
+**免责声明（Disclaimer）**
+本工具为 **实验性、不稳定** 产品，使用风险自负。作者不对因安装或使用本包导致的任何数据丢失、财产损失、系统损坏或其他损害负责。迄今为止尚未报告过此类事件，但安装和使用即表示你承担全部风险。
