@@ -16,7 +16,8 @@ final class AppleRuntimeChannel: NSObject {
   private var channel: FlutterMethodChannel
   private let workQueue = DispatchQueue(label: "operit.runtime.apple", qos: .userInitiated)
   private var ttsSynthesisActive: [String: (AVSpeechSynthesizer, TtsSynthesisDelegate)] = [:]
-  private var activePickers: [MediaPickerDelegate] = [:]
+  @available(iOS 14, *)
+  private var activePickers: [MediaPickerDelegate] = []
   private let fileInteractionDelegate = FileInteractionDelegate()
   private let watchQueue = DispatchQueue(label: "operit.runtime.apple.watch", qos: .utility)
   private let watchLock = NSLock()
@@ -1076,10 +1077,8 @@ final class AppleRuntimeChannel: NSObject {
   }
 
   private func ownerSystemRecognizeText(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard let payload = call.arguments as? [String: Any],
-      let imagePath = payload["imagePath"] as? String
-    else {
-      result(FlutterError(code: "INVALID_ARGS", message: "ownerSystemRecognizeText expects imagePath", details: nil))
+    guard let payload = call.arguments as? [String: Any] else {
+      result(FlutterError(code: "INVALID_ARGS", message: "ownerSystemRecognizeText expects a payload", details: nil))
       return
     }
     workQueue.async {
@@ -1196,7 +1195,6 @@ final class AppleRuntimeChannel: NSObject {
       return
     }
     let synthesizer = AVSpeechSynthesizer()
-    synthesizer.usesAuxiliaryAudioSession = true
     let utterance = AVSpeechUtterance(string: text)
     if let voiceId, let voice = AVSpeechSynthesisVoice(identifier: voiceId) {
       utterance.voice = voice
@@ -1259,39 +1257,48 @@ final class AppleRuntimeChannel: NSObject {
     #if os(iOS)
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-      let configuration = PHPickerConfiguration()
-      configuration.filter = isVideo ? .videos : .images
-      configuration.selectionLimit = 1
-      let picker = PHPickerViewController(configuration: configuration)
-      var delegate: MediaPickerDelegate!
-      delegate = MediaPickerDelegate { [weak self] url, mediaType in
-        defer { self?.activePickers.removeAll { $0 === delegate } }
-        guard let url = url else {
-          result(nil)
-          return
-        }
-        let ext = mediaType == "video" ? "mp4" : "jpg"
-        let destName = "operit_bg_\(Int64(Date().timeIntervalSince1970 * 1000)).\(ext)"
-        let destURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(destName)
-        do {
-          if FileManager.default.fileExists(atPath: destURL.path) {
-            try FileManager.default.removeItem(at: destURL)
-          }
-          try FileManager.default.copyItem(at: url, to: destURL)
-          result(["path": destURL.path, "mediaType": mediaType])
-        } catch {
-          result(FlutterError(code: "PICK_MEDIA_ERROR", message: error.localizedDescription, details: nil))
-        }
+      guard let vc = self.topViewController() else {
+        result(FlutterError(code: "PICK_MEDIA_ERROR", message: "no root view controller", details: nil))
+        return
       }
-      self.activePickers.append(delegate)
-      picker.delegate = delegate
-      self.topViewController()?.present(picker, animated: true, completion: nil)
+      if #available(iOS 14, *) {
+        var configuration = PHPickerConfiguration()
+        configuration.filter = isVideo ? .videos : .images
+        configuration.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: configuration)
+        var delegate: MediaPickerDelegate!
+        delegate = MediaPickerDelegate { [weak self] url, mediaType in
+          defer { self?.activePickers.removeAll { $0 === delegate } }
+          guard let url = url else {
+            result(nil)
+            return
+          }
+          let ext = mediaType == "video" ? "mp4" : "jpg"
+          let destName = "operit_bg_\(Int64(Date().timeIntervalSince1970 * 1000)).\(ext)"
+          let destURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(destName)
+          do {
+            if FileManager.default.fileExists(atPath: destURL.path) {
+              try FileManager.default.removeItem(at: destURL)
+            }
+            try FileManager.default.copyItem(at: url, to: destURL)
+            result(["path": destURL.path, "mediaType": mediaType])
+          } catch {
+            result(FlutterError(code: "PICK_MEDIA_ERROR", message: error.localizedDescription, details: nil))
+          }
+        }
+        self.activePickers.append(delegate)
+        picker.delegate = delegate
+        vc.present(picker, animated: true, completion: nil)
+      } else {
+        result(FlutterError(code: "PICK_MEDIA_ERROR", message: "requires iOS 14+", details: nil))
+      }
     }
     #else
     result(FlutterError(code: "PICK_MEDIA_ERROR", message: "picker is only available on iOS", details: nil))
     #endif
   }
 
+  @available(iOS 14, *)
   private class MediaPickerDelegate: NSObject, PHPickerViewControllerDelegate {
     let completion: (URL?, String) -> Void
     init(completion: @escaping (URL?, String) -> Void) { self.completion = completion }
@@ -1325,7 +1332,7 @@ final class AppleRuntimeChannel: NSObject {
       let controller = UIDocumentInteractionController(url: url)
       self.fileInteractionDelegate.viewController = vc
       controller.delegate = self.fileInteractionDelegate
-      if controller.presentOpenInMenu(from: vc.view.bounds, in: vc.view) {
+      if controller.presentOpenInMenu(from: vc.view.bounds, in: vc.view, animated: true) {
         result(nil)
       } else {
         result(FlutterError(code: "FILE_OPEN_ERROR", message: "cannot present open menu", details: nil))
