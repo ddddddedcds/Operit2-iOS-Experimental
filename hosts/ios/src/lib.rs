@@ -18,17 +18,27 @@ pub use operit_host_apple_native::{
     AppleHttpHost as IosHttpHost, AppleLocalInferenceCommand as IosLocalInferenceCommand,
     AppleLocalInferenceHost as IosLocalInferenceHost, AppleMusicCommand as IosMusicCommand,
     AppleRuntimeStorageHost as IosRuntimeStorageHost,
-    AppleSystemOperationHost as IosSystemOperationHost,
     AppleTtsPlaybackCommand as IosTtsPlaybackCommand, AppleTtsPlaybackHost as IosTtsPlaybackHost,
     AppleTtsSynthesisHost as IosTtsSynthesisHost,
 };
 pub use runtime::IosManagedRuntimeHost;
 pub use terminal::IosTerminalHost;
 
+// `AppleSystemOperationHost` is wrapped as a newtype on iOS (see the `system_operation`
+// module) that routes screenshot/OCR through ios-mcp. On other targets keep the plain alias.
+#[cfg(not(target_os = "ios"))]
+pub use operit_host_apple_native::AppleSystemOperationHost as IosSystemOperationHost;
+
+#[cfg(target_os = "ios")]
+pub mod ios_mcp;
 #[cfg(target_os = "ios")]
 pub mod device_automation;
 #[cfg(target_os = "ios")]
 pub use device_automation::IosDeviceAutomationHost;
+#[cfg(target_os = "ios")]
+pub mod system_operation;
+#[cfg(target_os = "ios")]
+pub use system_operation::IosSystemOperationHost;
 
 #[cfg(target_os = "ios")]
 pub mod device_agent;

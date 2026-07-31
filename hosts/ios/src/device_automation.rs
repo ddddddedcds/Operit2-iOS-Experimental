@@ -1,11 +1,12 @@
 #![cfg(target_os = "ios")]
 
-//! iOS device-automation host backed by the Operit jailbreak SpringBoard tweak.
+//! iOS device-automation host.
 //!
-//! The (sandboxed) Flutter app cannot touch the screen directly; every UI action
-//! is forwarded over a local Unix socket to `operit-sb`, which performs the
-//! privileged work inside SpringBoard. Coordinates use the normalized `[0,1]`
-//! protocol so callers never deal with @2x/@3x pixel math.
+//! Device automation is delegated to the `ios-mcp` jailbreak tweak, which exposes
+//! screenshot / tap / swipe / OCR / app control as MCP tools over HTTP
+//! (`127.0.0.1:8090/mcp`). This replaces the old `operit-sb` SpringBoard socket for
+//! the daemon device layer. The socket path is kept as a fallback when ios-mcp is
+//! unreachable, so Operit2 still works if only its own tweak is loaded.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -14,24 +15,28 @@ use operit_host_api::{
     DeviceAutomationHost, DeviceScreenshot, HostError, HostResult, NormalizedPoint,
 };
 
+use crate::ios_mcp::IosMcpClient;
+
 /// Path to the SpringBoard tweak's control socket (rootless jailbreak layout).
+/// Used only as a fallback when ios-mcp is unavailable.
 const SOCK_PATH: &str = "/var/jb/var/mobile/.operit/operit.sock";
 
-/// Talks to `operit-sb` over its Unix socket. The tweak protocol is line-based:
-/// `<cmd> [args...]\n`, the server replies once, then closes the socket (read to EOF).
-pub struct IosDeviceAutomationHost;
+pub struct IosDeviceAutomationHost {
+    mcp: IosMcpClient,
+}
 
 impl IosDeviceAutomationHost {
-    /// Creates the iOS device-automation host.
     pub fn new() -> Self {
-        Self
+        Self {
+            mcp: IosMcpClient::new(),
+        }
     }
 
-    /// Sends one line-command and returns the full reply text (read until EOF).
+    /// Sends one line-command to `operit-sb` and returns the full reply (read to EOF).
     fn send_cmd(&self, cmd: &str) -> HostResult<String> {
         let mut stream = UnixStream::connect(SOCK_PATH).map_err(|e| {
             HostError::new(format!(
-                "device bridge: cannot connect to {} (is the SpringBoard tweak loaded / device resprung?)",
+                "device bridge: cannot connect to {} (is the SpringBoard tweak loaded?)",
                 e
             ))
         })?;
@@ -71,29 +76,43 @@ fn png_size(data: &[u8]) -> (u32, u32) {
 
 impl DeviceAutomationHost for IosDeviceAutomationHost {
     fn captureScreenshot(&self) -> HostResult<DeviceScreenshot> {
-        let resp = self.send_cmd("screenshot")?;
-        let resp = resp.trim();
-        if !resp.starts_with("OK|screenshot") {
-            return Err(HostError::new(format!("screenshot failed: {}", resp)));
+        match self.mcp.screenshot_png() {
+            Ok((png, width, height)) => Ok(DeviceScreenshot {
+                imagePng: png,
+                width,
+                height,
+            }),
+            Err(mcp_err) => {
+                // Fallback: operit-sb socket returns a PNG path.
+                let resp = self.send_cmd("screenshot").map_err(|e| {
+                    HostError::new(format!("{}; ios-mcp also failed: {}", e, mcp_err))
+                })?;
+                let resp = resp.trim();
+                if !resp.starts_with("OK|screenshot") {
+                    return Err(HostError::new(format!("screenshot failed: {}", resp)));
+                }
+                let path = resp
+                    .split("->")
+                    .nth(1)
+                    .map(str::trim)
+                    .ok_or_else(|| HostError::new("screenshot: no path in response".to_string()))?;
+                let png = std::fs::read(path).map_err(|e| {
+                    HostError::new(format!("screenshot: read {} failed: {}", path, e))
+                })?;
+                let (width, height) = png_size(&png);
+                Ok(DeviceScreenshot {
+                    imagePng: png,
+                    width,
+                    height,
+                })
+            }
         }
-        // tweak replies: "OK|screenshot <bytes> -> <path>"
-        let path = resp
-            .split("->")
-            .nth(1)
-            .map(str::trim)
-            .ok_or_else(|| HostError::new("screenshot: no path in response"))?;
-        let png = std::fs::read(path)
-            .map_err(|e| HostError::new(format!("screenshot: read {} failed: {}", path, e)))?;
-        let (width, height) = png_size(&png);
-        Ok(DeviceScreenshot {
-            imagePng: png,
-            width,
-            height,
-        })
     }
 
     fn tap(&self, point: NormalizedPoint) -> HostResult<()> {
-        self.send_expect_ok(&format!("tap {} {}", point.x, point.y))
+        self.mcp
+            .tap(point)
+            .or_else(|_| self.send_expect_ok(&format!("tap {} {}", point.x, point.y)))
     }
 
     fn swipe(
@@ -102,44 +121,64 @@ impl DeviceAutomationHost for IosDeviceAutomationHost {
         end: NormalizedPoint,
         durationMs: u64,
     ) -> HostResult<()> {
-        self.send_expect_ok(&format!(
-            "swipe {} {} {} {} {}",
-            start.x, start.y, end.x, end.y, durationMs
-        ))
+        self.mcp
+            .swipe(start, end, durationMs)
+            .or_else(|_| {
+                self.send_expect_ok(&format!(
+                    "swipe {} {} {} {} {}",
+                    start.x, start.y, end.x, end.y, durationMs
+                ))
+            })
     }
 
-    fn longPress(&self, point: NormalizedPoint, _durationMs: u64) -> HostResult<()> {
-        // operit-sb's longpress uses a fixed internal duration; the caller's value is ignored
-        // for now (extending the tweak protocol to accept it is a later task).
-        self.send_expect_ok(&format!("longpress {} {}", point.x, point.y))
+    fn longPress(&self, point: NormalizedPoint, durationMs: u64) -> HostResult<()> {
+        self.mcp
+            .long_press(point, durationMs)
+            .or_else(|_| self.send_expect_ok(&format!("longpress {} {}", point.x, point.y)))
     }
 
     fn typeText(&self, text: &str) -> HostResult<()> {
-        self.send_expect_ok(&format!("type {}", text))
+        self.mcp
+            .input_text(text)
+            .or_else(|_| self.send_expect_ok(&format!("type {}", text)))
     }
 
     fn launchApp(&self, bundleId: &str) -> HostResult<()> {
-        self.send_expect_ok(&format!("launch {}", bundleId))
+        self.mcp
+            .launch_app(bundleId)
+            .or_else(|_| self.send_expect_ok(&format!("launch {}", bundleId)))
     }
 
     fn pressHome(&self) -> HostResult<()> {
-        self.send_expect_ok("home")
+        self.mcp
+            .press_home()
+            .or_else(|_| self.send_expect_ok("home"))
     }
 
     fn pressBack(&self) -> HostResult<()> {
-        // iOS has no system back key; emulate the in-app left-edge swipe (normalized).
-        self.send_expect_ok("swipe 0.01 0.5 0.4 0.5 300")
+        // iOS has no system back key; emulate the in-app left-edge swipe.
+        // Prefer ios-mcp swipe; fall back to the socket.
+        let start = NormalizedPoint { x: 0.01, y: 0.5 };
+        let end = NormalizedPoint { x: 0.4, y: 0.5 };
+        self.mcp
+            .swipe(start, end, 300)
+            .or_else(|_| self.send_expect_ok("swipe 0.01 0.5 0.4 0.5 300"))
     }
 
     fn frontmost_app(&self) -> HostResult<String> {
-        let resp = self.send_cmd("front")?;
-        let resp = resp.trim();
-        if let Some(rest) = resp.strip_prefix("OK|front ") {
-            Ok(rest.to_string())
-        } else if let Some(err) = resp.strip_prefix("ERR|") {
-            Err(HostError::new(format!("front: {}", err)))
-        } else {
-            Err(HostError::new(format!("front: 意外返回 {}", resp)))
+        match self.mcp.frontmost_app() {
+            Ok(s) => Ok(s),
+            Err(_) => {
+                let resp = self.send_cmd("front")?;
+                let resp = resp.trim();
+                if let Some(rest) = resp.strip_prefix("OK|front ") {
+                    Ok(rest.to_string())
+                } else if let Some(err) = resp.strip_prefix("ERR|") {
+                    Err(HostError::new(format!("front: {}", err)))
+                } else {
+                    Err(HostError::new(format!("front: 意外返回 {}", resp)))
+                }
+            }
         }
     }
 }

@@ -682,23 +682,25 @@ final class AppleRuntimeChannel: NSObject {
     // socket. See deb/DEBIAN/postinst for how the tweak is loaded on a rootless jailbreak.
     workQueue.async {
       do {
-        let reply = try Self.operitSendLine("screenshot", socketPath: Self.operitDeviceSocketPath)
-        guard reply.hasPrefix("OK|screenshot") else {
-          throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: reply])
+        // Route screenshot through the ios-mcp jailbreak tweak instead of the
+        // operit-sb Unix socket. ios-mcp returns a base64 JPEG; re-encode to PNG
+        // to keep the existing Dart contract (imagePng base64 + width/height).
+        let reply = try Self.iosMcpCall(tool: "screenshot", arguments: [:])
+        guard let content = reply["content"] as? [[String: Any]],
+              let image = content.first(where: { ($0["type"] as? String) == "image" }),
+              let dataB64 = image["data"] as? String,
+              let jpegData = Data(base64Encoded: dataB64),
+              let uiImage = UIImage(data: jpegData),
+              let pngData = uiImage.pngData() else {
+          throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "ios-mcp screenshot: invalid image payload"])
         }
-        // tweak replies: "OK|screenshot <bytes> -> <path>"
-        guard let path = reply.components(separatedBy: "->").last?.trimmingCharacters(in: .whitespaces) else {
-          throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "screenshot: no path in response"])
-        }
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
-        let (width, height) = Self.pngSize(data)
+        let width = Int(uiImage.size.width * uiImage.scale)
+        let height = Int(uiImage.size.height * uiImage.scale)
         DispatchQueue.main.async {
           // Field names/types MUST match the generated Dart model
-          // RuntimeHostInteractionSystemCaptureScreenshotResponse (CoreProxyModels.g.dart),
-          // produced by operit-core-proxy from the Rust DeviceScreenshot struct. The
-          // generated file only exists after the full iOS build (xcframework toolchain).
+          // RuntimeHostInteractionSystemCaptureScreenshotResponse (CoreProxyModels.g.dart).
           result([
-            "imagePng": data.base64EncodedString(),
+            "imagePng": pngData.base64EncodedString(),
             "width": width,
             "height": height,
           ])
@@ -872,6 +874,95 @@ final class AppleRuntimeChannel: NSObject {
 
   // MARK: - Operit jailbreak device daemon bridge (iOS)
 
+  // MARK: ios-mcp jailbreak tweak bridge (iOS)
+  // Routes screenshot / OCR through the `ios-mcp` tweak (HTTP MCP at 127.0.0.1:8090)
+  // instead of the operit-sb Unix socket / in-process Vision. Protocol facts verified
+  // against witchan/ios-mcp MCPServer.m (see hosts/ios/src/ios_mcp.rs on the Rust side).
+  private static let iosMcpBaseURL = "http://127.0.0.1:8090/mcp"
+
+  private static func iosMcpPost(url: URL, body: [String: Any]) throws -> [String: Any] {
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    req.httpBody = try JSONSerialization.data(withJSONObject: body)
+    let sem = DispatchSemaphore(value: 0)
+    var out: [String: Any]?
+    var outErr: Error?
+    let task = URLSession.shared.dataTask(with: req) { data, _, error in
+      if let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        out = obj
+      } else {
+        outErr = error
+      }
+      sem.signal()
+    }
+    task.resume()
+    sem.wait()
+    if let outErr { throw outErr }
+    guard let out else {
+      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "ios-mcp: empty response"])
+    }
+    return out
+  }
+
+  /// Calls an MCP tool and returns its `result` object.
+  private static func iosMcpCall(tool: String, arguments: [String: Any]) throws -> [String: Any] {
+    let url = URL(string: Self.iosMcpBaseURL)!
+    // Best-effort handshake; the server stores the negotiated version globally.
+    let _ = try? Self.iosMcpPost(url: url, body: [
+      "jsonrpc": "2.0", "id": 1, "method": "initialize",
+      "params": [
+        "protocolVersion": "2025-11-25",
+        "capabilities": [:],
+        "clientInfo": ["name": "operit2", "version": "0.3.47"],
+      ],
+    ])
+    let resp = try Self.iosMcpPost(url: url, body: [
+      "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+      "params": ["name": tool, "arguments": arguments],
+    ])
+    if let error = resp["error"] as? [String: Any],
+       let message = error["message"] as? String {
+      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "ios-mcp \(tool) error: \(message)"])
+    }
+    guard let result = resp["result"] as? [String: Any] else {
+      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "ios-mcp \(tool): missing result"])
+    }
+    return result
+  }
+
+  /// Parses an OCR result: prefers `structuredContent`, else `content[0].text` (JSON).
+  /// Boxes are returned in normalized 0..1 (top-left) coordinates by dividing the
+  /// screen-point rect by the reported screen size, matching the prior Vision output.
+  private static func iosMcpOcrResult(_ result: [String: Any]) -> (text: String, boxes: [[String: Any]]) {
+    var dict: [String: Any]? = result["structuredContent"] as? [String: Any]
+    if dict == nil {
+      if let content = result["content"] as? [[String: Any]],
+         let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String,
+         let data = text.data(using: .utf8),
+         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        dict = obj
+      }
+    }
+    guard let dict else { return ("", []) }
+    let texts = dict["texts"] as? [[String: Any]] ?? []
+    let screen = dict["screen"] as? [String: Any]
+    let sw = max((screen?["width"] as? Int) ?? 0, 1)
+    let sh = max((screen?["height"] as? Int) ?? 0, 1)
+    let text = texts.map { $0["text"] as? String ?? "" }.joined(separator: "\n")
+    let boxes: [[String: Any]] = texts.compactMap { t in
+      guard let rect = t["rect"] as? [String: Any],
+            let rx = rect["x"] as? Double, let ry = rect["y"] as? Double,
+            let rw = rect["width"] as? Double, let rh = rect["height"] as? Double else { return nil }
+      return [
+        "text": t["text"] as? String ?? "",
+        "x": rx / Double(sw), "y": ry / Double(sh),
+        "w": rw / Double(sw), "h": rh / Double(sh),
+      ]
+    }
+    return (text, boxes)
+  }
+
   private static let operitDeviceSocketPath = "/var/jb/var/mobile/.operit/operit.sock"
   private static let operitAgentSocketPath = "/var/jb/var/mobile/.operit/agent.sock"
 
@@ -978,8 +1069,10 @@ final class AppleRuntimeChannel: NSObject {
     }
     workQueue.async {
       do {
-        let text = try self.recognizeText(imagePath: imagePath)
-        DispatchQueue.main.async { result(["text": text]) }
+        // ios-mcp `ocr_screen` always OCRs the live screen; imagePath is ignored on iOS.
+        let reply = try Self.iosMcpCall(tool: "ocr_screen", arguments: [:])
+        let (text, boxes) = Self.iosMcpOcrResult(reply)
+        DispatchQueue.main.async { result(["text": text, "boxes": boxes]) }
       } catch {
         DispatchQueue.main.async {
           result(FlutterError(code: "OWNER_SYSTEM_RECOGNIZE_TEXT_ERROR", message: error.localizedDescription, details: nil))
@@ -1225,15 +1318,39 @@ final class AppleRuntimeChannel: NSObject {
     utterance.pitchMultiplier = Float(pitchMultiplier)
   }
 
-  private func recognizeText(imagePath: String) throws -> String {
+  /// A single recognized text region with its bounding box, expressed in
+  /// normalized screen coordinates (origin top-left, 0..1). These can be fed
+  /// directly to device automation `tap`/`swipe`, which use the same convention
+  /// as the SpringBoard tweak `act_tap` (see operit-sb.x: normalized 0..1,
+  /// top-left origin, caller must supply already-normalized values).
+  private struct RecognizedTextBox {
+    let text: String
+    let x: Double
+    let y: Double
+    let w: Double
+    let h: Double
+  }
+
+  /// Runs Vision text recognition and returns each detected string together with
+  /// its bounding box. Vision's `boundingBox` uses a bottom-left origin, so the y
+  /// coordinate is flipped to top-left to match the screen/tweak convention.
+  private func recognizeText(imagePath: String) throws -> [RecognizedTextBox] {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     let handler = VNImageRequestHandler(url: URL(fileURLWithPath: imagePath), options: [:])
     try handler.perform([request])
-    guard let results = request.results else {
-      return ""
+    guard let observations = request.results else {
+      return []
     }
-    return results.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+    return observations.compactMap { observation in
+      guard let candidate = observation.topCandidates(1).first else { return nil }
+      let box = observation.boundingBox
+      let w = Double(box.size.width)
+      let h = Double(box.size.height)
+      let x = Double(box.origin.x)
+      let yTop = 1.0 - (Double(box.origin.y) + h)
+      return RecognizedTextBox(text: candidate.string, x: x, y: yTop, w: w, h: h)
+    }
   }
 
   private func musicPlayback(command: String, payload: [String: Any]) throws -> [String: Any?] {
