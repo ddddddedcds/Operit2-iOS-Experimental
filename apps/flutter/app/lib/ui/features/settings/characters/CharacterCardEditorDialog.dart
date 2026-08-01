@@ -526,6 +526,8 @@ class _CharacterCardEditorDialogState
     const imageGroup = XTypeGroup(
       label: 'image',
       extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
+      // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+      uniformTypeIdentifiers: <String>['public.data'],
     );
     final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
     if (file == null) {

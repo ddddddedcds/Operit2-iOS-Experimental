@@ -1206,7 +1206,14 @@ class _ComposeDslWebViewState extends State<ComposeDslWebView> {
     final accepts = _stringList(options['accepts']);
     final acceptedTypeGroups = accepts.isEmpty
         ? const <XTypeGroup>[]
-        : <XTypeGroup>[XTypeGroup(label: 'files', extensions: accepts)];
+        : <XTypeGroup>[
+            XTypeGroup(
+              label: 'files',
+              extensions: accepts,
+              // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+              uniformTypeIdentifiers: <String>['public.data'],
+            ),
+          ];
     final multiple = _bool(options['multiple']);
     final files = multiple
         ? await openFiles(acceptedTypeGroups: acceptedTypeGroups)

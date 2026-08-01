@@ -232,7 +232,12 @@ class _SkillImportDialogState extends State<SkillImportDialog> {
   Future<void> _pickZip() async {
     final file = await openFile(
       acceptedTypeGroups: const <XTypeGroup>[
-        XTypeGroup(label: 'Zip', extensions: <String>['zip']),
+        XTypeGroup(
+          label: 'Zip',
+          extensions: <String>['zip'],
+          // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+          uniformTypeIdentifiers: <String>['public.data'],
+        ),
       ],
     );
     if (file == null) {

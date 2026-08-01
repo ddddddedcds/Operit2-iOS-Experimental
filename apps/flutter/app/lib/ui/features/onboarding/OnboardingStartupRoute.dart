@@ -1,9 +1,11 @@
 // ignore_for_file: file_names
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show lerpDouble;
 
+import '../../../common/utils/ios_path_picker.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +22,8 @@ import '../../main/navigation/StartupRouteStrategy.dart';
 const XTypeGroup _operit1SnapshotFileTypeGroup = XTypeGroup(
   label: 'Operit snapshot',
   extensions: <String>['opsnapshot', 'zip'],
+  // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+  uniformTypeIdentifiers: <String>['public.data'],
 );
 
 void registerOnboardingStartupRoute(StartupRouteRegistry registry) {
@@ -500,7 +504,17 @@ class _AiSetupGuidePageState extends State<_AiSetupGuidePage>
 
   /// Lets the user select the runtime data directory.
   Future<void> _selectRuntimeRoot() async {
-    final path = await getDirectoryPath();
+    String? path;
+    if (Platform.isIOS) {
+      // iOS 无系统目录选择器，改为手动输入路径。
+      path = await promptPathInput(
+        context,
+        title: '运行时根目录',
+        hint: '/var/jb/var/mobile/operit/runtime',
+      );
+    } else {
+      path = await getDirectoryPath();
+    }
     if (path == null || path.trim().isEmpty) {
       return;
     }
@@ -513,7 +527,16 @@ class _AiSetupGuidePageState extends State<_AiSetupGuidePage>
 
   /// Lets the user select the workspace data directory.
   Future<void> _selectWorkspaceRoot() async {
-    final path = await getDirectoryPath();
+    String? path;
+    if (Platform.isIOS) {
+      path = await promptPathInput(
+        context,
+        title: '工作区根目录',
+        hint: '/var/jb/var/mobile/operit/workspace',
+      );
+    } else {
+      path = await getDirectoryPath();
+    }
     if (path == null || path.trim().isEmpty) {
       return;
     }

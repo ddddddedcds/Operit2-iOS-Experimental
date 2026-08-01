@@ -665,16 +665,28 @@ Future<void> _pickBackgroundVideo(OperitThemeController themeController) async {
 }
 
 Future<void> _pickUserAvatarImage(OperitThemeController themeController) async {
-  const imageGroup = XTypeGroup(
-    label: 'image',
-    extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
-  );
-  final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
-  if (file == null) {
-    return;
+  String? pickedPath;
+  if (Platform.isIOS) {
+    // iOS 走原生图片选择器，与背景图一致。
+    final result = await const MethodChannel('operit/runtime')
+        .invokeMethod<Map<dynamic, dynamic>>('pickImage');
+    pickedPath = result?['path'] as String?;
+    if (pickedPath == null || pickedPath.isEmpty) {
+      return;
+    }
+  } else {
+    const imageGroup = XTypeGroup(
+      label: 'image',
+      extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
+    );
+    final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
+    if (file == null) {
+      return;
+    }
+    pickedPath = file.path;
   }
   await themeController.saveActiveThemeUserAvatarSettings(
-    customUserAvatarUri: file.path,
+    customUserAvatarUri: pickedPath!,
   );
 }
 
@@ -682,6 +694,8 @@ Future<void> _pickCustomFont(OperitThemeController themeController) async {
   const fontGroup = XTypeGroup(
     label: 'font',
     extensions: <String>['ttf', 'otf', 'ttc'],
+    // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+    uniformTypeIdentifiers: <String>['public.data'],
   );
   final file = await openFile(acceptedTypeGroups: <XTypeGroup>[fontGroup]);
   if (file == null) {
@@ -723,6 +737,8 @@ Future<void> _showBubbleFontDialog(
             const fontGroup = XTypeGroup(
               label: 'font',
               extensions: <String>['ttf', 'otf', 'ttc'],
+              // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+              uniformTypeIdentifiers: <String>['public.data'],
             );
             final file = await openFile(
               acceptedTypeGroups: <XTypeGroup>[fontGroup],
@@ -843,14 +859,28 @@ Future<void> _pickBubbleImage(
   required ThemePreferenceSnapshot snapshot,
   required bool isUser,
 }) async {
-  const imageGroup = XTypeGroup(
-    label: 'image',
-    extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
-  );
-  final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
-  if (file == null) {
-    return;
+  final String filePath;
+  if (Platform.isIOS) {
+    // iOS 走原生图片选择器，与背景图一致。
+    final result = await const MethodChannel('operit/runtime')
+        .invokeMethod<Map<dynamic, dynamic>>('pickImage');
+    final picked = result?['path'] as String?;
+    if (picked == null || picked.isEmpty) {
+      return;
+    }
+    filePath = picked;
+  } else {
+    const imageGroup = XTypeGroup(
+      label: 'image',
+      extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
+    );
+    final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
+    if (file == null) {
+      return;
+    }
+    filePath = file.path;
   }
+  final file = XFile(filePath);
   final useImage = !snapshot.transparentSurfaceEnabled;
   if (_isNinePatchPngPath(file.path)) {
     final autoParams = await _parseNinePatchBubbleParams(file.path);

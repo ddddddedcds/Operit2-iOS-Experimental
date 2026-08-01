@@ -1,5 +1,8 @@
 // ignore_for_file: file_names
 
+import 'dart:io';
+
+import '../../../../common/utils/ios_path_picker.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,6 +21,8 @@ import 'UsageStatisticsDetailScreen.dart';
 const XTypeGroup _rawSnapshotFileTypeGroup = XTypeGroup(
   label: 'Operit snapshot',
   extensions: <String>['opsnapshot', 'zip'],
+  // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+  uniformTypeIdentifiers: <String>['public.data'],
 );
 
 class DataSettingsPanel extends StatefulWidget {
@@ -189,21 +194,40 @@ class _DataSettingsPanelState extends State<DataSettingsPanel> {
   Future<void> _exportRawSnapshot() async {
     final l10n = AppLocalizations.of(context)!;
     final suggestedName = _rawSnapshotSuggestedName();
-    final location = await getSaveLocation(
-      acceptedTypeGroups: const <XTypeGroup>[_rawSnapshotFileTypeGroup],
-      suggestedName: suggestedName,
-    );
-    if (location == null) {
+    String? savePath;
+    if (Platform.isIOS) {
+      // iOS 无系统保存对话框，改为手动输入目标路径。
+      savePath = await promptPathInput(
+        context,
+        title: '保存快照到',
+        hint: '/var/mobile/Documents/$suggestedName',
+        initialText: '/var/mobile/Documents/$suggestedName',
+      );
+    } else {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: const <XTypeGroup>[_rawSnapshotFileTypeGroup],
+        suggestedName: suggestedName,
+      );
+      savePath = location?.path;
+    }
+    if (savePath == null || savePath.trim().isEmpty) {
       return;
     }
+    final targetPath = savePath!;
     setState(() => _busy = true);
     try {
       final bytes = await widget.clients.application.exportRawSnapshot();
-      await XFile.fromData(
-        Uint8List.fromList(bytes),
-        name: suggestedName,
-        mimeType: 'application/zip',
-      ).saveTo(location.path);
+      if (Platform.isIOS) {
+        final outFile = File(targetPath);
+        await outFile.parent.create(recursive: true);
+        await outFile.writeAsBytes(Uint8List.fromList(bytes));
+      } else {
+        await XFile.fromData(
+          Uint8List.fromList(bytes),
+          name: suggestedName,
+          mimeType: 'application/zip',
+        ).saveTo(targetPath);
+      }
       if (!mounted) {
         return;
       }
@@ -212,7 +236,7 @@ class _DataSettingsPanelState extends State<DataSettingsPanel> {
       });
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(l10n.savedTo(location.path))));
+      ).showSnackBar(SnackBar(content: Text(l10n.savedTo(targetPath))));
     } catch (error) {
       if (!mounted) {
         return;
@@ -1062,24 +1086,45 @@ class _StorageLocationEditDialogState
 
   /// Selects a new runtime root directory.
   Future<void> _selectRuntimeRoot() async {
-    final path = await getDirectoryPath();
+    String? path;
+    if (Platform.isIOS) {
+      // iOS 无系统目录选择器，改为手动输入路径。
+      path = await promptPathInput(
+        context,
+        title: '运行时根目录',
+        hint: '/var/jb/var/mobile/operit/runtime',
+        initialText: _runtimeRootController.text,
+      );
+    } else {
+      path = await getDirectoryPath();
+    }
     if (path == null || path.trim().isEmpty) {
       return;
     }
     setState(() {
-      _runtimeRootController.text = path.trim();
+      _runtimeRootController.text = path!.trim();
       _errorText = null;
     });
   }
 
   /// Selects a new workspace root directory.
   Future<void> _selectWorkspaceRoot() async {
-    final path = await getDirectoryPath();
+    String? path;
+    if (Platform.isIOS) {
+      path = await promptPathInput(
+        context,
+        title: '工作区根目录',
+        hint: '/var/jb/var/mobile/operit/workspace',
+        initialText: _workspaceRootController.text,
+      );
+    } else {
+      path = await getDirectoryPath();
+    }
     if (path == null || path.trim().isEmpty) {
       return;
     }
     setState(() {
-      _workspaceRootController.text = path.trim();
+      _workspaceRootController.text = path!.trim();
       _errorText = null;
     });
   }

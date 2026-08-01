@@ -733,7 +733,12 @@ class _PackageManagerScreenState extends State<PackageManagerScreen> {
   Future<void> _importPlugin() async {
     final file = await openFile(
       acceptedTypeGroups: const <XTypeGroup>[
-        XTypeGroup(label: 'ToolPkg', extensions: <String>['toolpkg']),
+        XTypeGroup(
+          label: 'ToolPkg',
+          extensions: <String>['toolpkg'],
+          // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+          uniformTypeIdentifiers: <String>['public.data'],
+        ),
       ],
     );
     if (file == null) {
@@ -752,6 +757,8 @@ class _PackageManagerScreenState extends State<PackageManagerScreen> {
         XTypeGroup(
           label: 'Operit package',
           extensions: <String>['toolpkg', 'hjson', 'js', 'ts'],
+          // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+          uniformTypeIdentifiers: <String>['public.data'],
         ),
       ],
     );

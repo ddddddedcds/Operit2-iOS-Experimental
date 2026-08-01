@@ -1,8 +1,10 @@
 // ignore_for_file: file_names
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 
+import '../../../common/utils/ios_path_picker.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -17,6 +19,8 @@ import '../../../common/components/M3LoadingIndicator.dart';
 const XTypeGroup _memoryJsonFileTypeGroup = XTypeGroup(
   label: 'Operit memory JSON',
   extensions: <String>['json'],
+  // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
+  uniformTypeIdentifiers: <String>['public.data'],
 );
 
 class MemoryGraphScreen extends StatefulWidget {
@@ -519,23 +523,42 @@ class _MemoryGraphScreenState extends State<MemoryGraphScreen> {
   Future<void> _exportJson() async {
     final suggestedName =
         'operit-memory-${DateTime.now().millisecondsSinceEpoch}.json';
-    final location = await getSaveLocation(
-      acceptedTypeGroups: const <XTypeGroup>[_memoryJsonFileTypeGroup],
-      suggestedName: suggestedName,
-    );
-    if (location == null) {
+    String? savePath;
+    if (Platform.isIOS) {
+      // iOS 无系统保存对话框，改为手动输入目标路径。
+      savePath = await promptPathInput(
+        context,
+        title: '导出记忆到',
+        hint: '/var/mobile/Documents/$suggestedName',
+        initialText: '/var/mobile/Documents/$suggestedName',
+      );
+    } else {
+      final location = await getSaveLocation(
+        acceptedTypeGroups: const <XTypeGroup>[_memoryJsonFileTypeGroup],
+        suggestedName: suggestedName,
+      );
+      savePath = location?.path;
+    }
+    if (savePath == null || savePath.trim().isEmpty) {
       return;
     }
+    final targetPath = savePath!;
     setState(() => _busy = true);
     try {
       final jsonText = await _repository.exportMemoriesToJson();
-      await XFile.fromData(
-        Uint8List.fromList(utf8.encode(jsonText)),
-        name: suggestedName,
-        mimeType: 'application/json',
-      ).saveTo(location.path);
+      if (Platform.isIOS) {
+        final outFile = File(targetPath);
+        await outFile.parent.create(recursive: true);
+        await outFile.writeAsBytes(utf8.encode(jsonText));
+      } else {
+        await XFile.fromData(
+          Uint8List.fromList(utf8.encode(jsonText)),
+          name: suggestedName,
+          mimeType: 'application/json',
+        ).saveTo(targetPath);
+      }
       if (mounted) {
-        _showSnack('已导出到 ${location.path}');
+        _showSnack('已导出到 $targetPath');
       }
     } catch (error) {
       if (mounted) {
