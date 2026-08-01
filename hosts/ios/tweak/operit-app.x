@@ -209,6 +209,12 @@ static void *app_server_thread(void *unused) {
     // 不注入 Operit2 自身 app（bundle id = com.ai.assistance.operit2），避免无谓注入/递归；
     // 同时兜底跳过 ai.operit.* 系列包。
     if ([bid isEqualToString:@"com.ai.assistance.operit2"] || [bid hasPrefix:@"ai.operit."]) return;
+    // 排除 WebKit 辅助进程（WebContent / Networking / GPU 等）：
+    // 它们也会加载 UIKit 被本 dylib 注入，但不是 GUI App；注入后 %ctor 内的
+    // bind() 创建 per-pid socket 会崩溃（Address size fault），导致 Safari 等
+    // 所有网页无法渲染。主 App（com.apple.mobilesafari）不在此前缀下，仍正常
+    // 注入，保留地址栏/搜索框的跨 App 打字能力。
+    if ([bid hasPrefix:@"com.apple.WebKit."]) return;
     int pid = getpid();
     g_oc_logpath = [NSString stringWithFormat:@"/var/jb/var/mobile/.operit/logs/app-%d.log", pid];
     oc_log("app init bid=%s pid=%d", [bid UTF8String], pid);
