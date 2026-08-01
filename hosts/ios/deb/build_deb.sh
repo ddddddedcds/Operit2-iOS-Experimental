@@ -20,6 +20,12 @@ APP="$TWEAK/.theos/obj/debug/operit-app.dylib"
 # --- stage files into rootless layout (relative to /var/jb) ---
 mkdir -p "$FILES/usr/bin" "$FILES/Library/MobileSubstrate/DynamicLibraries" "$FILES/Library/LaunchDaemons"
 cp "$DAEMON" "$FILES/usr/bin/operit_agent_daemon"
+# ad-hoc sign the daemon (standalone LaunchDaemon binary) so AMFI does not SIGKILL it
+# on exec. An unsigned daemon -> launchctl reports ExitCode 9 and agent.sock never appears.
+# NOTE: sign WITH entitlements (app-sandbox=false) so it can reach /var/jb/var/mobile/.operit/*.
+echo "   ad-hoc signing daemon (macOS codesign) with entitlements ..."
+codesign --force --sign - --entitlements "$BASE/Runner.entitlements" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
+  echo "   (codesign unavailable; daemon will need 'sudo ldid -S' on-device)"
 cp "$SB" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.dylib"
 cp "$TWEAK/operit-sb.plist" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.plist"
 cp "$APP" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-app.dylib"
