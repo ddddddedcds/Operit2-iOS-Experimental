@@ -76,6 +76,7 @@ impl IosMcpClient {
             .client
             .post(self.url.as_str())
             .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", PROTOCOL_VERSION)
             .json(&body)
             .send()
             .map_err(|e| HostError::new(format!("ios-mcp: http request failed: {}", e)))?;

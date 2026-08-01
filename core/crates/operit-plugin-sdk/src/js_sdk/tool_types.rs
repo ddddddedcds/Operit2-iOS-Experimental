@@ -132,6 +132,9 @@ pub struct ToolResultMap {
     pub update_memory_link: MemoryLinkQueryResultData,
     pub delete_memory_link: String,
     pub update_user_preferences: String,
+    pub device_agent_start: String,
+    pub device_agent_stop: String,
+    pub device_agent_status: String,
 }
 
 include!(concat!(env!("OUT_DIR"), "/builtin_tool_names.rs"));

@@ -517,6 +517,14 @@ pub enum NetCookieManagerSetCookies {
     Variant2(BTreeMap<String, String>),
 }
 /// Performs HTTP requests and controls the browser automation tools available at runtime.
+/// Options for `Net.deviceAgentStart` — launches the on-device automation agent
+/// (AutoGLM subagent) with a natural-language goal the agent loop drives to completion.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostDeviceAgentStartOptions {
+    /// Natural-language goal the on-device automation agent should accomplish.
+    pub goal: String,
+}
+
 pub trait NetHost: Send + Sync {
     ///
     ///Perform HTTP GET request
@@ -662,6 +670,12 @@ pub trait NetHost: Send + Sync {
     ///@param options - Upload options
     ///
     fn uploadFile(&self, options: NetHostUploadFileOptions) -> JsFuture<HttpResponseData>;
+    /// Launches the on-device automation agent (AutoGLM subagent) with a goal.
+    fn deviceAgentStart(&self, options: NetHostDeviceAgentStartOptions) -> JsFuture<String>;
+    /// Stops a running on-device automation agent loop.
+    fn deviceAgentStop(&self) -> JsFuture<String>;
+    /// Reports whether the on-device automation agent is idle or running.
+    fn deviceAgentStatus(&self) -> JsFuture<String>;
 }
 /// Declares browser session and userscript APIs reserved for a future runtime capability.
 pub trait NetFutureHost: Send + Sync {

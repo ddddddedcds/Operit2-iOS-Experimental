@@ -44,7 +44,7 @@ use operit_tools::tools::AIToolHandler::{
 use operit_tools::tools::PackageToolExecutor::PackageToolExecutor;
 use operit_tools::tools::ToolResultDataClasses::{
     stringResultData, EnvironmentVariableReadResultData, EnvironmentVariableWriteResultData,
-    JsOptional, SleepResultData, ToolResultData,
+    JsOptional, SleepResultData, StringResultData, ToolResultData,
 };
 use operit_tools::ConversationMarkupManager::ToolResult;
 use operit_tools::ToolExecutionManager::{
@@ -107,7 +107,107 @@ const BROWSER_AUTOMATION_BUILTIN_TOOLS: &[BuiltinToolName] = &[
 #[allow(non_snake_case)]
 pub fn registerAllTools(handler: &mut AIToolHandler, context: &HostManager) {
     registerPublicTools(handler, context);
+    #[cfg(target_os = "ios")]
+    registerDeviceAgentTools(handler);
     registerInternalTools(handler, context);
+}
+
+/// Sends one line-command to the on-device `operit-agent` daemon over its Unix socket
+/// and returns the daemon's textual response. iOS only — the daemon lives on the
+/// jailbroken device at `/var/jb/var/mobile/.operit/agent.sock`.
+#[cfg(target_os = "ios")]
+fn device_agent_socket_command(command: &str) -> String {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    const SOCK: &str = "/var/jb/var/mobile/.operit/agent.sock";
+    match UnixStream::connect(SOCK) {
+        Ok(mut stream) => {
+            // Append a newline: the daemon reads one line per connection and only
+            // dispatches after a newline (or EOF). Without it the client would block
+            // on read_to_string while the daemon blocks on read -> deadlock.
+            if let Err(e) = stream.write_all(format!("{command}\n").as_bytes()) {
+                return format!("ERR|write failed: {e}");
+            }
+            let mut resp = String::new();
+            let _ = stream.read_to_string(&mut resp);
+            resp.trim().to_string()
+        }
+        Err(e) => format!("ERR|connect {SOCK} failed: {e}"),
+    }
+}
+
+/// Registers the three `Net.deviceAgent*` tools that drive the on-device automation
+/// agent (AutoGLM subagent) daemon. iOS only.
+#[cfg(target_os = "ios")]
+fn registerDeviceAgentTools(handler: &mut AIToolHandler) {
+    handler.registerBuiltinTool(
+        BuiltinToolName::DeviceAgentStart,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let goal = tool
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == "goal")
+                    .map(|parameter| parameter.value.clone())
+                    .unwrap_or_default();
+                let set = device_agent_socket_command(&format!("goal {goal}"));
+                let started = device_agent_socket_command("start");
+                let value = format!("set:{set} | start:{started}");
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: true,
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: None,
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::DeviceAgentStop,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let value = device_agent_socket_command("stop");
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: true,
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: None,
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::DeviceAgentStatus,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::READ,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let value = device_agent_socket_command("status");
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: true,
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: None,
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
 }
 
 #[allow(non_snake_case)]
