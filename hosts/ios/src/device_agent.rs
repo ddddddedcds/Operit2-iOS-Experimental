@@ -171,6 +171,9 @@ const APP_ALIASES_JSON: &str = r#"{
   "云闪付": "com.unionpay.chsp",
   "58同城": "com.taofang.iphone",
   "设置": "com.apple.Preferences",
+  "系统设置": "com.apple.Preferences",
+  "系统设置应用": "com.apple.Preferences",
+  "设置应用": "com.apple.Preferences",
   "settings": "com.apple.Preferences",
   "浏览器": "com.apple.mobilesafari",
   "safari": "com.apple.mobilesafari",
@@ -527,17 +530,37 @@ fn call_vlm(
 // ───────────────────────────── 动作执行（含真实回包校验） ─────────────────────────────
 
 fn resolve_bundle(app: &str, aliases: &HashMap<String, String>) -> String {
-    if app.contains('.') {
-        return app.to_string();
+    let app_t = app.trim();
+    // 已是 bundle id（含 '.'），原样发出，避免被别名表误改
+    if app_t.contains('.') {
+        return app_t.to_string();
     }
-    if let Some(b) = aliases.get(app) {
+    // 1) 精确匹配（含大小写不敏感）
+    let lower = app_t.to_lowercase();
+    if let Some(b) = aliases.get(app_t).or_else(|| aliases.get(&lower)) {
         return b.clone();
     }
-    let lower = app.to_lowercase();
-    if let Some(b) = aliases.get(&lower) {
-        return b.clone();
+    // 2) 子串兜底：任一别名 key 被 app 包含（或包含 app），取最长匹配的 key。
+    //    要求 key 长度 >= 2，避免单字误命中。
+    //    例："系统设置" 含 "设置" -> com.apple.Preferences；
+    //        "网易云音乐" 已被上面的精确匹配优先命中，不会落到这里。
+    let mut best: Option<(&String, &String)> = None;
+    for (key, bid) in aliases.iter() {
+        if key.chars().count() < 2 {
+            continue;
+        }
+        let k = key.to_lowercase();
+        if lower.contains(&k) || k.contains(&lower) {
+            match best {
+                Some((bk, _)) if bk.chars().count() >= key.chars().count() => {}
+                _ => best = Some((key, bid)),
+            }
+        }
     }
-    app.to_string()
+    if let Some((_, bid)) = best {
+        return bid.clone();
+    }
+    app_t.to_string()
 }
 
 fn exec_action(
