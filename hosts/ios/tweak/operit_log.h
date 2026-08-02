@@ -6,14 +6,15 @@
 #define OPERIT_LOG_H
 
 #import <Foundation/Foundation.h>
+#import "roothide_compat.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
 
-static NSString *g_oc_logpath = @"/var/jb/var/mobile/.operit/logs/tweak.log";
+static NSString *g_oc_logpath = jbroot(@"/var/jb/var/mobile/.operit/logs/tweak.log");
 
 static void oc_log(const char *fmt, ...) {
-    NSString *dir = @"/var/jb/var/mobile/.operit/logs";
+    NSString *dir = jbroot(@"/var/jb/var/mobile/.operit/logs");
     [[NSFileManager defaultManager] createDirectoryAtPath:dir
                                withIntermediateDirectories:YES attributes:nil error:nil];
     FILE *f = fopen([g_oc_logpath UTF8String], "a");

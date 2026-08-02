@@ -4,20 +4,23 @@
 Preserves setuid bits from the source tree (any file whose mode has 0o4000).
 Computed from files/ + DEBIAN/.
 """
-import os, io, tarfile, gzip, stat
+import os, io, tarfile, gzip, stat, sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 FILES = os.path.join(ROOT, "files")
 DEBIAN = os.path.join(ROOT, "DEBIAN")
 OUT = os.path.join(ROOT, "operit2-ios_0.3.52_iphoneos-arm64.deb")
 
-# Rootless relocation done at PACKAGE time: prefix every data.tar member with
-# "var/jb/" so a plain `dpkg -i` (what Sileo/Filza invoke, WITHOUT --root=/var/jb)
-# extracts straight into the writable /var/jb tree instead of the read-only real
-# "/". This makes the deb installable through Sileo/local-deb the same way repo
-# packages do. NOTE: do NOT install with `dpkg --root=/var/jb` anymore — that would
-# double-prefix to /var/jb/var/jb. Use plain `sudo dpkg -i` (or Sileo/Filza).
-JB_PREFIX = "var/jb/"
+# Package scheme is selected via the OPERIT_PACK_SCHEME env var (set by
+# build_deb.sh). roothide: the process rootfs view IS the jbroot, so the deb is
+# laid out directly at the jbroot root (no /var/jb prefix); roothide's dpkg
+# installs it there. rootless: prefix every data.tar member with "var/jb/" so a
+# plain `dpkg -i` extracts into the writable /var/jb tree. Do NOT install with
+# `dpkg --root=/var/jb` (would double-prefix). Use plain `sudo dpkg -i` / Sileo.
+SCHEME = os.environ.get("OPERIT_PACK_SCHEME", "rootless")
+if SCHEME not in ("rootless", "roothide"):
+    SCHEME = "rootless"
+JB_PREFIX = "var/jb/" if SCHEME == "rootless" else ""
 
 
 def tar_add(tar, path, arcname, mode=None):

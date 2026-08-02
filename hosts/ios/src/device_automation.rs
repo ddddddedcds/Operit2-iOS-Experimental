@@ -35,6 +35,16 @@ impl IosDeviceAutomationHost {
 
     /// Sends one line-command to `operit-sb` and returns the full reply (read to EOF).
     fn send_cmd(&self, cmd: &str) -> HostResult<String> {
+        // Non-jailbreak: the operit-sb tweak is not injected, so its control
+        // socket can never exist. ios-mcp remains the primary automation path;
+        // if that is also unavailable the caller already surfaces a clear error.
+        // Skipping the connect here avoids a misleading "cannot connect" message.
+        if !operit_ios_env::provider().can_inject_tweaks() {
+            return Err(HostError::new(
+                "device bridge: tweak injection unavailable (non-jailbreak); only ios-mcp is possible"
+                    .to_string(),
+            ));
+        }
         let mut stream = UnixStream::connect(operit_ios_env::data_root().join("operit.sock")).map_err(|e| {
             HostError::new(format!(
                 "device bridge: cannot connect to {} (is the SpringBoard tweak loaded?)",

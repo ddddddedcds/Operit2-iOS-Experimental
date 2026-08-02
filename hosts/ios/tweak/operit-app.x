@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <time.h>
 #include "operit_log.h"
+#import "roothide_compat.h"
 
 static int g_appfd = -1;
 static NSString *g_sockpath_app = nil;   // 本进程的 per-pid socket 路径，退出时清理
@@ -36,7 +37,7 @@ static void app_cleanup(void) {
 // 前台 pid 文件：注入的 app 在“上台/变为活跃”时把自身 pid 写入，
 // 进入后台时若是自己则清除。operit-sb 的 `type` 命令直接读它来定位前台 app 的 per-pid socket，
 // 比让 SpringBoard 猜 frontmost 更稳定（UIApplicationDidBecomeActive 是公开稳定 API）。
-static NSString *g_frontpath = @"/var/jb/var/mobile/.operit/front.pid";
+static NSString *g_frontpath = jbroot(@"/var/jb/var/mobile/.operit/front.pid");
 
 static void write_front_pid(pid_t pid) {
     NSString *s = [NSString stringWithFormat:@"%d", (int)pid];
@@ -216,7 +217,7 @@ static void *app_server_thread(void *unused) {
     // 注入，保留地址栏/搜索框的跨 App 打字能力。
     if ([bid hasPrefix:@"com.apple.WebKit."]) return;
     int pid = getpid();
-    g_oc_logpath = [NSString stringWithFormat:@"/var/jb/var/mobile/.operit/logs/app-%d.log", pid];
+    g_oc_logpath = [NSString stringWithFormat:@"%@/logs/app-%d.log", jbroot(@"/var/jb/var/mobile/.operit"), pid];
     oc_log("app init bid=%s pid=%d", [bid UTF8String], pid);
 
     // 上报前台 pid：启动时写一次，上台时更新，进后台若为自身则清除（home 屏 front.pid 为空）。
@@ -231,7 +232,7 @@ static void *app_server_thread(void *unused) {
                 usingBlock:^(NSNotification *n){ (void)n; clear_front_pid_if_mine(getpid()); }];
     oc_log("front.pid observers registered");
 
-    NSString *path = [NSString stringWithFormat:@"/var/jb/var/mobile/.operit/app.%d.sock", pid];
+    NSString *path = [NSString stringWithFormat:@"%@/app.%d.sock", jbroot(@"/var/jb/var/mobile/.operit"), pid];
     unlink([path UTF8String]);
     g_sockpath_app = path;   // 记下供退出清理
     g_appfd = socket(AF_UNIX, SOCK_STREAM, 0);

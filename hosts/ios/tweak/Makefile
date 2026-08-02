@@ -2,7 +2,16 @@
 # Loaded only into SpringBoard; exposes a Unix socket for device control.
 TARGET := iphone:clang:16.5:15.0
 ARCHS := arm64 arm64e
-THEOS_PACKAGE_SCHEME := rootless
+# Package scheme: rootless (default, plain theos) or roothide (roothide/theos).
+# To build the roothide package install roothide/theos, then:
+#   make package THEOS_PACKAGE_SCHEME=roothide
+# roothide/theos builds need the real jbroot() API, enabled via -DUSE_ROOTHIDE_API.
+THEOS_PACKAGE_SCHEME ?= rootless
+
+ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
+operit-sb_CFLAGS += -DUSE_ROOTHIDE_API
+operit-app_CFLAGS += -DUSE_ROOTHIDE_API
+endif
 
 include $(THEOS)/makefiles/common.mk
 

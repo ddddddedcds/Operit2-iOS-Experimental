@@ -2,6 +2,16 @@
 # Assemble the Operit2 iOS device-automation .deb (rootless) from built artifacts.
 # Mac has no dpkg-deb, so packdeb.py constructs the ar package in Python.
 set -e
+# Package scheme: rootless (default) or roothide. Override with OPERIT_PACK_SCHEME=roothide.
+SCHEME="${OPERIT_PACK_SCHEME:-rootless}"
+# roothide needs 4 extra entitlements (platform-application + AppBundles +
+# AppDataContainers); those must NOT be applied to a plain rootless build, where
+# platform-application can break app launch. Pick the file per scheme.
+if [ "$SCHEME" = "roothide" ]; then
+  ENTITLEMENTS="$BASE/Runner.roothide.entitlements"
+else
+  ENTITLEMENTS="$BASE/Runner.entitlements"
+fi
 BASE="$(cd "$(dirname "$0")" && pwd)"
 IOS="$BASE/.."                       # hosts/ios
 TWEAK="$IOS/tweak"
@@ -24,7 +34,7 @@ cp "$DAEMON" "$FILES/usr/bin/operit_agent_daemon"
 # on exec. An unsigned daemon -> launchctl reports ExitCode 9 and agent.sock never appears.
 # NOTE: sign WITH entitlements (app-sandbox=false) so it can reach /var/jb/var/mobile/.operit/*.
 echo "   ad-hoc signing daemon (macOS codesign) with entitlements ..."
-codesign --force --sign - --entitlements "$BASE/Runner.entitlements" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
+codesign --force --sign - --entitlements "$ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
   echo "   (codesign unavailable; daemon will need 'sudo ldid -S' on-device)"
 cp "$SB" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.dylib"
 cp "$TWEAK/operit-sb.plist" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.plist"
@@ -51,7 +61,7 @@ if [ -d "$APP_SRC" ]; then
   # at launch and Flutter's Impeller engine aborts (SIGABRT). app-sandbox=false
   # lets the app reach /var/jb/var/mobile/.operit/agent.sock and its own caches.
   echo "   ad-hoc signing app (macOS codesign) with entitlements ..."
-  codesign --force --deep --sign - --entitlements "$BASE/Runner.entitlements" "$FILES/Applications/Runner.app" 2>&1 | tail -3 || \
+  codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$FILES/Applications/Runner.app" 2>&1 | tail -3 || \
     echo "   (codesign unavailable; rely on postinst ldid + AppSync Unified)"
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
 else
@@ -76,6 +86,19 @@ if not ok:
 PY
 echo "  all key strings present."
 
+# --- roothide layout fixups ---
+# Under roothide the process rootfs view IS the jbroot, so the launchd plist must
+# reference paths WITHOUT the /var/jb prefix (e.g. /usr/bin/... and /var/mobile);
+# otherwise the daemon binary / HOME would point at a non-existent /var/jb path.
+if [ "$SCHEME" = "roothide" ]; then
+  echo "   roothide scheme: stripping /var/jb prefix from launchd plist"
+  PLIST="$FILES/Library/LaunchDaemons/ai.operit.agent.plist"
+  if [ -f "$PLIST" ]; then
+    sed -i '' 's#/var/jb##g' "$PLIST"
+  fi
+fi
+
 # --- pack ---
+export OPERIT_PACK_SCHEME="$SCHEME"
 python3 "$BASE/packdeb.py"
 echo "done."
