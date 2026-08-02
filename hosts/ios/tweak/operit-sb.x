@@ -662,7 +662,7 @@ static NSString *cmd_front(void) {
 }
 
 // ---- socket server ----
-static NSString *g_sockpath = jbroot(@"/var/jb/var/mobile/.operit/operit.sock");
+static NSString *g_sockpath = nil;
 static int g_listen = -1;
 
 static void ensure_sock_dir(void) {
@@ -781,5 +781,6 @@ static void start_server(void) {
 }
 
 %ctor {
+    g_sockpath = jbroot(@"/var/jb/var/mobile/.operit/operit.sock");
     start_server();
 }

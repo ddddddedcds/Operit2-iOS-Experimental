@@ -11,9 +11,16 @@
 #include <stdarg.h>
 #include <time.h>
 
-static NSString *g_oc_logpath = jbroot(@"/var/jb/var/mobile/.operit/logs/tweak.log");
+static NSString *g_oc_logpath = nil;
 
 static void oc_log(const char *fmt, ...) {
+    if (!g_oc_logpath) {
+        // Lazily resolve the default log path on first use. Must NOT be a static
+        // initializer: jbroot() is a runtime call under roothide (the jbroot is
+        // random per-device), and even the rootless identity form must stay out
+        // of a compile-time constant slot. operit-app overrides this in its %ctor.
+        g_oc_logpath = jbroot(@"/var/jb/var/mobile/.operit/logs/tweak.log");
+    }
     NSString *dir = jbroot(@"/var/jb/var/mobile/.operit/logs");
     [[NSFileManager defaultManager] createDirectoryAtPath:dir
                                withIntermediateDirectories:YES attributes:nil error:nil];

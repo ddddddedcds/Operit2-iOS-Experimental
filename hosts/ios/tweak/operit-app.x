@@ -37,7 +37,7 @@ static void app_cleanup(void) {
 // 前台 pid 文件：注入的 app 在“上台/变为活跃”时把自身 pid 写入，
 // 进入后台时若是自己则清除。operit-sb 的 `type` 命令直接读它来定位前台 app 的 per-pid socket，
 // 比让 SpringBoard 猜 frontmost 更稳定（UIApplicationDidBecomeActive 是公开稳定 API）。
-static NSString *g_frontpath = jbroot(@"/var/jb/var/mobile/.operit/front.pid");
+static NSString *g_frontpath = nil;
 
 static void write_front_pid(pid_t pid) {
     NSString *s = [NSString stringWithFormat:@"%d", (int)pid];
@@ -205,6 +205,7 @@ static void *app_server_thread(void *unused) {
 }
 
 %ctor {
+    g_frontpath = jbroot(@"/var/jb/var/mobile/.operit/front.pid");
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if ([bid isEqualToString:@"com.apple.SpringBoard"]) return;   // 不注入 SpringBoard
     // 不注入 Operit2 自身 app（bundle id = com.ai.assistance.operit2），避免无谓注入/递归；

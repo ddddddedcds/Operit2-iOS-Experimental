@@ -17,8 +17,10 @@
 #ifdef USE_ROOTHIDE_API
 #import <roothide.h>
 #else
-static inline NSString *operit_jbroot_path(NSString *path) { return path; }
-#define jbroot operit_jbroot_path
+// rootless: "/var/jb/..." is already the real path, so jbroot() is an identity
+// mapping. A compile-time macro keeps call sites valid even where a constant is
+// required (e.g. static initializers), and is a no-op at runtime.
+#define jbroot(p) (p)
 #endif
 
 #endif
