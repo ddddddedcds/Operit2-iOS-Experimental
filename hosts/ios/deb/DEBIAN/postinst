@@ -11,6 +11,19 @@ else
 fi
 echo "== Operit2 iOS install (JB prefix='${JB:-<none>}') =="
 
+# Locate the device ldid. Its install path varies by jailbreak toolchain
+# (Procursus commonly uses /usr/bin/ldid, but some setups install to
+# /usr/local/bin/ldid). A hardcoded /usr/bin/ldid that MISSES on the device
+# means the daemon is NEVER re-signed -> AMFI SIGKILL (-9) -> white screen,
+# with the failure silently swallowed. Probe the common locations instead of
+# assuming one, so the log always shows whether ldid was actually found.
+LDID_BIN=""
+for _c in /usr/bin/ldid /usr/local/bin/ldid; do
+  [ -x "$_c" ] && LDID_BIN="$_c" && break
+done
+[ -z "$LDID_BIN" ] && LDID_BIN="$(command -v ldid 2>/dev/null || true)"
+echo "== ldid resolved to: ${LDID_BIN:-<NOT FOUND>} =="
+
 echo "== socket / log directories =="
 mkdir -p ${JB}/var/mobile/.operit 2>/dev/null || true
 chown -R mobile:mobile ${JB}/var/mobile/.operit 2>/dev/null || true
@@ -32,11 +45,11 @@ chmod 0755 ${JB}/usr/bin/operit_agent_daemon 2>/dev/null || true
 ENTFILE=${JB}/usr/share/operit/operit.entitlements
 DAEMON_BIN=${JB}/usr/bin/operit_agent_daemon
 PINST_LOG=${JB}/var/mobile/.operit/logs/postinst.log
-if [ -x /usr/bin/ldid ] && [ -f "$DAEMON_BIN" ]; then
+if [ -n "$LDID_BIN" ] && [ -f "$DAEMON_BIN" ]; then
   if [ -f "$ENTFILE" ]; then
     for i in 1 2 3 4 5; do
-      echo "$(date) ldid -S daemon attempt $i" >> "$PINST_LOG" 2>&1
-      if /usr/bin/ldid -S"$ENTFILE" "$DAEMON_BIN" >> "$PINST_LOG" 2>&1; then
+      echo "$(date) ldid -S daemon attempt $i (using $LDID_BIN)" >> "$PINST_LOG" 2>&1
+      if $LDID_BIN -S"$ENTFILE" "$DAEMON_BIN" >> "$PINST_LOG" 2>&1; then
         echo "$(date) daemon signed OK on attempt $i" >> "$PINST_LOG" 2>&1
         break
       else
@@ -46,12 +59,12 @@ if [ -x /usr/bin/ldid ] && [ -f "$DAEMON_BIN" ]; then
     done
   else
     echo "$(date) WARN: entitlements missing ($ENTFILE); signing daemon WITHOUT entitlements" >> "$PINST_LOG" 2>&1
-    /usr/bin/ldid -S "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
+    $LDID_BIN -S "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
   fi
   echo "$(date) daemon entitlements after sign:" >> "$PINST_LOG" 2>&1
-  /usr/bin/ldid -e "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
+  $LDID_BIN -e "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
 else
-  echo "$(date) WARN: /usr/bin/ldid missing or daemon not found; daemon will likely SIGKILL (-9)" >> "$PINST_LOG" 2>&1
+  echo "$(date) WARN: ldid not found (probed /usr/bin/ldid, /usr/local/bin/ldid, PATH) or daemon missing; daemon will likely SIGKILL (-9)" >> "$PINST_LOG" 2>&1
 fi
 
 echo "== load agent daemon =="
@@ -76,19 +89,19 @@ if [ -d "$APP" ]; then
   # Re-sign app binaries on-device with the SAME entitlements the build used
   # (Runner.roothide.entitlements: no-sandbox + iokit for Metal/IOSurface).
   # A bare `ldid -S` (no file) would STRIP those keys -> Impeller SIGABRT / Metal
-  # denied at launch. If the entitlements file is missing, skip and let AppSync
-  # Unified (already installed) sign the app instead.
-  if [ -f "$ENTFILE" ]; then
+  # denied at launch. If ldid or the entitlements file is missing, skip and let
+  # AppSync Unified (already installed) sign the app instead.
+  if [ -n "$LDID_BIN" ] && [ -f "$ENTFILE" ]; then
     echo "   signing app executables with entitlements (best-effort) ..."
     for bin in "$APP/Runner" \
                "$APP/Frameworks/Flutter.framework/Flutter" \
                "$APP/Frameworks/App.framework/App" \
                "$APP/Frameworks/objective_c.framework/objective_c"; do
-      [ -f "$bin" ] && /usr/bin/ldid -S"$ENTFILE" "$bin" 2>/dev/null || true
+      [ -f "$bin" ] && $LDID_BIN -S"$ENTFILE" "$bin" 2>/dev/null || true
     done
-    find "$APP/Frameworks" -maxdepth 1 -name "*.dylib" -type f -exec /usr/bin/ldid -S"$ENTFILE" {} \; 2>/dev/null || true
+    find "$APP/Frameworks" -maxdepth 1 -name "*.dylib" -type f -exec $LDID_BIN -S"$ENTFILE" {} \; 2>/dev/null || true
   else
-    echo "   (entitlements missing; relying on AppSync Unified to sign app)"
+    echo "   (ldid or entitlements missing; relying on AppSync Unified to sign app)"
   fi
   chown -R root:wheel "$APP" 2>/dev/null || true
   find "$APP" -type d -exec chmod 0755 {} \; 2>/dev/null || true
