@@ -17,9 +17,10 @@ use operit_host_api::{
 
 use crate::ios_mcp::IosMcpClient;
 
-/// Path to the SpringBoard tweak's control socket (rootless jailbreak layout).
-/// Used only as a fallback when ios-mcp is unavailable.
-const SOCK_PATH: &str = "/var/jb/var/mobile/.operit/operit.sock";
+/// Path to the SpringBoard tweak's control socket. Used only as a fallback when
+/// ios-mcp is unavailable. Resolved at runtime from the active jailbreak root
+/// (see `operit_ios_env`).
+
 
 pub struct IosDeviceAutomationHost {
     mcp: IosMcpClient,
@@ -34,7 +35,7 @@ impl IosDeviceAutomationHost {
 
     /// Sends one line-command to `operit-sb` and returns the full reply (read to EOF).
     fn send_cmd(&self, cmd: &str) -> HostResult<String> {
-        let mut stream = UnixStream::connect(SOCK_PATH).map_err(|e| {
+        let mut stream = UnixStream::connect(operit_ios_env::data_root().join("operit.sock")).map_err(|e| {
             HostError::new(format!(
                 "device bridge: cannot connect to {} (is the SpringBoard tweak loaded?)",
                 e

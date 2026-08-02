@@ -477,10 +477,10 @@ struct SessionCommandResult {
 
 /// Device-side diagnostic log for the terminal host. Every line is prefixed
 /// with LEVEL, source location (file:line) and a unix timestamp so a failure
-/// can be pinpointed to the exact code path without a debugger. Written to
-/// /var/jb/var/mobile/.operit/terminal-error.log (jailbroken root path).
+/// can be pinpointed to the exact code path without a debugger. Written to the
+/// runtime-resolved data root (see `operit_ios_env`).
 fn log_terminal_diag(level: &str, file: &str, line: u32, msg: &str) {
-    let dir = std::path::Path::new("/var/jb/var/mobile/.operit");
+    let dir = operit_ios_env::data_root();
     let _ = std::fs::create_dir_all(dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -623,7 +623,7 @@ fn createPtySession(
 /// of how the shell was launched. Returns None on non-iOS (env injection is used).
 #[cfg(target_os = "ios")]
 fn write_pty_rc_file() -> Option<std::path::PathBuf> {
-    let dir = std::path::Path::new("/var/jb/var/mobile/.operit");
+    let dir = operit_ios_env::data_root();
     let _ = std::fs::create_dir_all(dir);
     let rc = dir.join(".operit_bashrc");
     let body = r#"__operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status""#;
@@ -691,15 +691,13 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
     let mut path = std::env::var("PATH").unwrap_or_else(|_| {
         "/usr/bin:/bin:/usr/sbin:/sbin".to_string()
     });
-    for dir in [
-        "/var/jb/bin",
-        "/var/jb/usr/bin",
-        "/var/jb/sbin",
-        "/var/jb/usr/sbin",
-    ] {
-        if std::path::Path::new(dir).is_dir() {
-            path.push(':');
-            path.push_str(dir);
+    if let Some(bin) = operit_ios_env::binary_root() {
+        for sub in ["bin", "usr/bin", "sbin", "usr/sbin"] {
+            let dir = bin.join(sub);
+            if dir.is_dir() {
+                path.push(':');
+                path.push_str(dir.to_str().unwrap_or(""));
+            }
         }
     }
     let prompt_marker = prompt_env.is_some();
@@ -731,14 +729,16 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
 /// Resolves the best available login shell on a jailbroken iOS device.
 #[cfg(target_os = "ios")]
 fn ios_pty_shell() -> String {
-    for candidate in [
-        "/var/jb/bin/bash",
-        "/bin/bash",
-        "/var/jb/bin/sh",
-        "/bin/sh",
-    ] {
-        if std::path::Path::new(candidate).exists() {
-            return candidate.to_string();
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(bin) = operit_ios_env::binary_root() {
+        candidates.push(bin.join("bin/bash"));
+        candidates.push(bin.join("bin/sh"));
+    }
+    candidates.push(std::path::PathBuf::from("/bin/bash"));
+    candidates.push(std::path::PathBuf::from("/bin/sh"));
+    for candidate in candidates {
+        if candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
         }
     }
     "bash".to_string()
@@ -748,14 +748,16 @@ fn ios_pty_shell() -> String {
 /// and session (direct spawn inside the app process fails on iOS).
 #[cfg(target_os = "ios")]
 fn ios_script_path() -> Option<String> {
-    for candidate in [
-        "/var/jb/usr/bin/script",
-        "/usr/bin/script",
-        "/var/jb/bin/script",
-        "/bin/script",
-    ] {
-        if std::path::Path::new(candidate).exists() {
-            return Some(candidate.to_string());
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(bin) = operit_ios_env::binary_root() {
+        candidates.push(bin.join("usr/bin/script"));
+        candidates.push(bin.join("bin/script"));
+    }
+    candidates.push(std::path::PathBuf::from("/usr/bin/script"));
+    candidates.push(std::path::PathBuf::from("/bin/script"));
+    for candidate in candidates {
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().into_owned());
         }
     }
     None

@@ -598,12 +598,12 @@ fn resolve_bin(program: &str) -> String {
     }
     #[cfg(target_os = "ios")]
     {
-        for cand in [
-            format!("/var/jb/usr/bin/{program}"),
-            format!("/var/jb/bin/{program}"),
-        ] {
-            if Path::new(&cand).exists() {
-                return cand;
+        if let Some(bin) = operit_ios_env::binary_root() {
+            for sub in ["usr/bin", "bin"] {
+                let cand = bin.join(sub).join(program);
+                if cand.exists() {
+                    return cand.to_string_lossy().into_owned();
+                }
             }
         }
     }

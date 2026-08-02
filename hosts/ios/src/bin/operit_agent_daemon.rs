@@ -20,11 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use operit_host_ios_native::device_agent::{run_device_agent_loop, DeviceAgentConfig};
 use operit_host_ios_native::device_automation::IosDeviceAutomationHost;
 
-const SOCK: &str = "/var/jb/var/mobile/.operit/agent.sock";
-const CONFIG: &str = "/var/jb/var/mobile/.operit/config.plist";
-const SCREEN: &str = "/var/jb/var/mobile/.operit/screen.png";
-const LOG_DIR: &str = "/var/jb/var/mobile/.operit/logs";
-const LOG: &str = "/var/jb/var/mobile/.operit/logs/agent.log";
+// All on-device paths are resolved at runtime from the active jailbreak root
+// (see `operit_ios_env`): on rootless the data root is /var/jb/var/mobile/.operit,
+// on roothide it is /var/mobile/.operit (real, writable data path).
 const AUTOGLM_ENDPOINT: &str = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const DAEMON_VERSION: &str = "0.3.9";
 
@@ -52,14 +50,18 @@ fn now_hms() -> String {
 }
 
 fn log_line(msg: &str) {
-    let _ = fs::create_dir_all(LOG_DIR);
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(LOG) {
+    let _ = fs::create_dir_all(operit_ios_env::data_root().join("logs"));
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(operit_ios_env::data_root().join("logs/agent.log"))
+    {
         let _ = writeln!(f, "[{}] {}", now_hms(), msg);
     }
 }
 
 fn write_screen(png: &[u8]) {
-    let _ = fs::write(SCREEN, png);
+    let _ = fs::write(operit_ios_env::data_root().join("screen.png"), png);
 }
 
 fn set_running(v: bool) {
@@ -69,7 +71,7 @@ fn set_running(v: bool) {
 /// 读 App 写的共享 config.plist（XML），解析出 autoglm-phone 的端点 + 模型。
 /// 与 Obj-C operit-agent.m 的 chatCompletion 逻辑 1:1 一致。
 fn load_config() -> Option<DeviceAgentConfig> {
-    let file = File::open(CONFIG).ok()?;
+    let file = File::open(operit_ios_env::data_root().join("config.plist")).ok()?;
     let val: plist::Value = plist::from_reader(file).ok()?;
     let dict = val.into_dictionary()?;
     let get = |k: &str| -> String {
@@ -112,7 +114,7 @@ fn load_config() -> Option<DeviceAgentConfig> {
 }
 
 fn run_task(goal: String, stop: Arc<AtomicBool>) {
-    let _ = fs::remove_file(LOG);
+    let _ = fs::remove_file(operit_ios_env::data_root().join("logs/agent.log"));
     log_line(&format!("任务开始: {}", goal));
 
     let cfg = match load_config() {
@@ -201,12 +203,12 @@ fn handle_client(mut stream: UnixStream) {
 }
 
 fn main() {
-    let _ = fs::create_dir_all(LOG_DIR);
+    let _ = fs::create_dir_all(operit_ios_env::data_root().join("logs"));
     log_line(&format!("operit-agent daemon v{} 启动", DAEMON_VERSION));
-    let _ = fs::remove_file(SOCK);
-    let listener =
-        UnixListener::bind(SOCK).expect("agent.sock 绑定失败（是否已有实例在跑？）");
-    let _ = fs::set_permissions(SOCK, fs::Permissions::from_mode(0o666));
+    let _ = fs::remove_file(operit_ios_env::data_root().join("agent.sock"));
+    let listener = UnixListener::bind(operit_ios_env::data_root().join("agent.sock"))
+        .expect("agent.sock 绑定失败（是否已有实例在跑？）");
+    let _ = fs::set_permissions(operit_ios_env::data_root().join("agent.sock"), fs::Permissions::from_mode(0o666));
 
     for conn in listener.incoming() {
         if let Ok(stream) = conn {

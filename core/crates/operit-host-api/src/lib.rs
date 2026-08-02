@@ -34,7 +34,7 @@ pub fn setHostLogSink(sink: HostLogSink) {
 fn error_log_path() -> std::path::PathBuf {
     #[cfg(target_os = "ios")]
     {
-        std::path::Path::new("/var/jb/var/mobile/.operit/operit-error.log").to_path_buf()
+        operit_ios_env::data_root().join("operit-error.log")
     }
     #[cfg(not(target_os = "ios"))]
     {

@@ -113,14 +113,14 @@ pub fn registerAllTools(handler: &mut AIToolHandler, context: &HostManager) {
 }
 
 /// Sends one line-command to the on-device `operit-agent` daemon over its Unix socket
-/// and returns the daemon's textual response. iOS only — the daemon lives on the
-/// jailbroken device at `/var/jb/var/mobile/.operit/agent.sock`.
+/// and returns the daemon's textual response. iOS only — the daemon's socket lives
+/// under the runtime-resolved data root (see `operit_ios_env`).
 #[cfg(target_os = "ios")]
 fn device_agent_socket_command(command: &str) -> String {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
-    const SOCK: &str = "/var/jb/var/mobile/.operit/agent.sock";
-    match UnixStream::connect(SOCK) {
+    let sock = operit_ios_env::data_root().join("agent.sock");
+    match UnixStream::connect(&sock) {
         Ok(mut stream) => {
             // Append a newline: the daemon reads one line per connection and only
             // dispatches after a newline (or EOF). Without it the client would block

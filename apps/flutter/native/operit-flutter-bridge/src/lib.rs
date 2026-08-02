@@ -3267,11 +3267,11 @@ pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
     if api_key.trim().is_empty() {
         return;
     }
-    let dir = "/var/jb/var/mobile/.operit";
-    if std::fs::create_dir_all(dir).is_err() {
+    let dir = operit_ios_env::data_root();
+    if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let path = format!("{dir}/config.plist");
+    let path = dir.join("config.plist");
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\

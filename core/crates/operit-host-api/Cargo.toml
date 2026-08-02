@@ -13,6 +13,7 @@ documentation = "https://docs.rs/operit-host-api"
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+operit-ios-env = { path = "../operit-ios-env" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

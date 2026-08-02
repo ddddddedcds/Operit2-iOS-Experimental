@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 operit-core-proxy = { path = "../../../../core/crates/operit-core-proxy" }
 operit-host-api = { path = "../../../../core/crates/operit-host-api" }
+operit-ios-env = { path = "../../../../core/crates/operit-ios-env" }
 operit-link = { path = "../../../../core/crates/operit-link" }
 operit-runtime = { path = "../../../../core/crates/operit-runtime", default-features = false, features = ["javascript"] }
 operit-store = { path = "../../../../core/crates/operit-store" }
