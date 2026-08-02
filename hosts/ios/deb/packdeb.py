@@ -103,11 +103,17 @@ def compute_installed_size_kb():
 
 
 def make_control_tar():
-    # NOTE: intentionally ship NO maintainer scripts (postinst/prerm). On rootless
-    # jailbreaks the dpkg admindir/info layout and the absence of /bin/bash|/bin/sh
-    # make script execution fail with ENOENT. All setup (app ad-hoc signing, file
-    # modes, ownership) is done at build time on macOS, so no postinst is needed.
+    # NOTE: intentionally ship NO maintainer scripts for the *rootless* scheme —
+    # its dpkg/AMFI layout lacks /bin/sh and accepts ad-hoc signatures, so a
+    # script is both unrunnable and unnecessary. For *roothide*, however, AMFI
+    # REJECTS the macOS ldid cert (SIGKILL on the daemon), and only the device's
+    # own ldid can produce an AMFI-trusted signature. So roothide MUST ship a
+    # postinst that re-signs the daemon on-device at install time. roothide's dpkg
+    # does run maintainer scripts, so this is safe there.
     items = []
+    if SCHEME == "roothide":
+        pinst = open(os.path.join(DEBIAN, "postinst"), "rb").read()
+        items.append(("postinst", pinst, 0o755))
     ctrl = open(os.path.join(DEBIAN, "control"), "rb").read()
     # roothide: rewrite the Architecture marker + human-readable rootless labels
     # to roothide. (Architecture `iphoneos-arm64e` is the Sileo/roothide-dpkg

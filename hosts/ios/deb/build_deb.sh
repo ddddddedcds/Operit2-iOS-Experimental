@@ -58,6 +58,13 @@ else
   codesign --force --sign - --entitlements "$DAEMON_ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
     echo "   (codesign unavailable; daemon will need 'sudo ldid -S' on-device)"
 fi
+# Ship the entitlements file into the deb so postinst can re-sign the daemon
+# on-device with the EXACT same keys. A bare `ldid -S` (no file) would strip
+# platform-application + no-sandbox; under roothide that breaks the daemon
+# (sandbox/file-access failures) on top of the signature-trust problem.
+mkdir -p "$FILES/usr/share/operit"
+cp "$ENTITLEMENTS" "$FILES/usr/share/operit/operit.entitlements"
+
 cp "$SB" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.dylib"
 cp "$TWEAK/operit-sb.plist" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.plist"
 cp "$APP" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-app.dylib"
