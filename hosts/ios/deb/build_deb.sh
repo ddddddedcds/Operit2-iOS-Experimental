@@ -45,9 +45,19 @@ cp "$DAEMON" "$FILES/usr/bin/operit_agent_daemon"
 # binary that touches the jbroot. The actual EACCES-on-socket fix is running the
 # daemon as ROOT (plist UserName=root); a mobile user cannot bind a Unix socket
 # in /var/mobile/.operit even though the dir is mobile-writable for plain files.
-echo "   ad-hoc signing daemon (macOS codesign) with daemon entitlements ..."
-codesign --force --sign - --entitlements "$DAEMON_ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
-  echo "   (codesign unavailable; daemon will need 'sudo ldid -S' on-device)"
+# Sign the daemon. roothide's AMFI REJECTS Apple ad-hoc codesign (SIGKILL on
+# exec -> launchctl ExitCode 9, agent.sock never appears); the roothide-ecosystem
+# signer is `ldid`. Prefer macOS ldid (stable) when building the roothide scheme;
+# fall back to codesign for rootless / when ldid is absent.
+if [ "$SCHEME" = "roothide" ] && [ -x /usr/local/bin/ldid ]; then
+  echo "   signing daemon (macOS ldid) with entitlements ..."
+  /usr/local/bin/ldid -S"$DAEMON_ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
+    echo "   (ldid failed; daemon will need 'sudo ldid -S' on-device)"
+else
+  echo "   ad-hoc signing daemon (macOS codesign) with daemon entitlements ..."
+  codesign --force --sign - --entitlements "$DAEMON_ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
+    echo "   (codesign unavailable; daemon will need 'sudo ldid -S' on-device)"
+fi
 cp "$SB" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.dylib"
 cp "$TWEAK/operit-sb.plist" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.plist"
 cp "$APP" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-app.dylib"

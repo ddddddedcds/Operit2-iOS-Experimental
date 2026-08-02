@@ -49,14 +49,38 @@ impl Roots {
     }
 }
 
+/// Detect roothide by its randomized jbroot marker.
+///
+/// roothide (unlike rootless) installs the bootstrap to a random directory
+/// without a fixed `/var/jb`. It emits a `.jbroot-<random>` symlink (usually
+/// under `/var/containers/Bundle/Application/`) and a root-level `/.jbroot`
+/// marker. We must detect this directly — relying on `/var/jb` (as rootless
+/// does) is wrong here and silently breaks the moment `/var/jb` is absent.
+fn roothide_jbroot_present() -> bool {
+    if let Ok(entries) = std::fs::read_dir("/var/containers/Bundle/Application") {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with(".jbroot-") {
+                return true;
+            }
+        }
+    }
+    Path::new("/.jbroot").exists()
+}
+
 /// Detect the active jailbreak environment at runtime.
 ///
 /// Resolution order:
-/// 1. `JBROOT` env (roothide injects the random jbroot here; rootless users may
-///    also export it). Present and non-empty ⇒ roothide-style binary root.
-/// 2. `/var/jb` exists ⇒ rootless.
-/// 3. Otherwise ⇒ non-jailbreak (no binary root).
+/// 1. roothide jbroot marker (`.jbroot-<random>` symlink or `/.jbroot`) ⇒ roothide.
+///    Checked FIRST so a roothide device that also has a `/var/jb` shim still
+///    resolves as roothide, and a clean roothide (no `/var/jb`) does not fall
+///    through to NonJailbreak.
+/// 2. `JBROOT` env (roothide may also inject it; empty here on some setups).
+/// 3. `/var/jb` exists ⇒ rootless.
+/// 4. Otherwise ⇒ non-jailbreak (no binary root).
 pub fn detect_jailbreak() -> JailbreakType {
+    if roothide_jbroot_present() {
+        return JailbreakType::RootHide;
+    }
     if let Ok(jbroot) = std::env::var("JBROOT") {
         if !jbroot.is_empty() {
             return JailbreakType::RootHide;

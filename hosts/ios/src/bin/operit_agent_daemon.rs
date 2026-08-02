@@ -223,32 +223,35 @@ fn main() {
     }
 }
 
-/// Bind the agent control socket, tolerating a stale/leftover socket file or a
-/// second launchd-spawned instance racing on the same path.
+/// Bind the agent control socket.
 ///
-/// - If the socket file exists but no live daemon is listening, we unlink and
-///   retry (covers crashes that left a dead file behind).
-/// - If a live daemon is already serving, we exit quietly so launchd's
-///   KeepAlive does not spin a crash loop.
+/// Liveness-first takeover: if a healthy daemon is already listening on this
+/// socket we exit quietly (exit 0). Combined with the LaunchDaemon's
+/// `KeepAlive -> SuccessfulExit=false`, launchd will NOT respawn the secondary,
+/// so no crash loop. We never unlink a socket a live peer holds — doing so
+/// orphans the live listener and lets a second instance steal the path.
+///
+/// If no live peer is present we drop any stale file left by a crashed instance
+/// and bind. A tiny race remains (a peer may bind between our connect-check and
+/// our bind); in that case the bind fails with AddrInUse and we loop — the next
+/// iteration's connect-check finds the live peer and exits cleanly.
 fn bind_agent_sock(sock: &Path) -> UnixListener {
-    for attempt in 0..4 {
+    for _ in 0..12 {
+        match UnixStream::connect(sock) {
+            Ok(_) => {
+                log_line("agent.sock 已被其他实例占用，本实例退出复用");
+                std::process::exit(0);
+            }
+            Err(_) => {}
+        }
         let _ = fs::remove_file(sock);
         match UnixListener::bind(sock) {
             Ok(l) => return l,
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempt < 3 => {
-                match UnixStream::connect(sock) {
-                    Ok(_) => {
-                        log_line("agent.sock 已被其他实例占用，本实例退出复用");
-                        std::process::exit(0);
-                    }
-                    Err(_) => {
-                        let _ = fs::remove_file(sock);
-                        std::thread::sleep(std::time::Duration::from_millis(150));
-                        continue;
-                    }
-                }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
             }
-            Err(e) => panic!("agent.sock 绑定失败: {}", e),
+            Err(e) => panic!("agent.sock 绑定失败: path={:?} len={} err={}", sock, sock.as_os_str().len(), e),
         }
     }
     panic!("agent.sock 绑定失败（重试耗尽）");
