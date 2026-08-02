@@ -2,6 +2,7 @@
 # Assemble the Operit2 iOS device-automation .deb (rootless) from built artifacts.
 # Mac has no dpkg-deb, so packdeb.py constructs the ar package in Python.
 set -e
+BASE="$(cd "$(dirname "$0")" && pwd)"
 # Package scheme: rootless (default) or roothide. Override with OPERIT_PACK_SCHEME=roothide.
 SCHEME="${OPERIT_PACK_SCHEME:-rootless}"
 # roothide needs 4 extra entitlements (platform-application + AppBundles +
@@ -12,7 +13,6 @@ if [ "$SCHEME" = "roothide" ]; then
 else
   ENTITLEMENTS="$BASE/Runner.entitlements"
 fi
-BASE="$(cd "$(dirname "$0")" && pwd)"
 IOS="$BASE/.."                       # hosts/ios
 TWEAK="$IOS/tweak"
 DAEMON="$IOS/target/aarch64-apple-ios/release/operit_agent_daemon"

@@ -9,7 +9,13 @@ import os, io, tarfile, gzip, stat, sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 FILES = os.path.join(ROOT, "files")
 DEBIAN = os.path.join(ROOT, "DEBIAN")
-OUT = os.path.join(ROOT, "operit2-ios_0.3.52_iphoneos-arm64.deb")
+_SCHEME0 = os.environ.get("OPERIT_PACK_SCHEME", "rootless")
+# roothide packages are tagged with the `iphoneos-arm64e` Architecture value
+# (per theapplewiki/roothide docs). NOTE: this is purely a package-manager
+# marker string — it has nothing to do with the actual arm64e CPU slice, so a
+# pure arm64 binary is fine inside such a package.
+OUT = os.path.join(ROOT, "operit2-ios_0.3.52_%s.deb" %
+                   ("iphoneos-arm64e" if _SCHEME0 == "roothide" else "iphoneos-arm64"))
 
 # Package scheme is selected via the OPERIT_PACK_SCHEME env var (set by
 # build_deb.sh). roothide: the process rootfs view IS the jbroot, so the deb is
@@ -103,6 +109,15 @@ def make_control_tar():
     # modes, ownership) is done at build time on macOS, so no postinst is needed.
     items = []
     ctrl = open(os.path.join(DEBIAN, "control"), "rb").read()
+    # roothide: rewrite the Architecture marker + human-readable rootless labels
+    # to roothide. (Architecture `iphoneos-arm64e` is the Sileo/roothide-dpkg
+    # discriminator; the bare file layout is already correct for roothide.)
+    if SCHEME == "roothide":
+        ctrl = ctrl.replace(b"Architecture: iphoneos-arm64\n",
+                            b"Architecture: iphoneos-arm64e\n")
+        ctrl = ctrl.replace(b"(device automation, rootless)",
+                            b"(device automation, roothide)")
+        ctrl = ctrl.replace(b"(iOS, rootless)", b"(iOS, roothide)")
     kb = compute_installed_size_kb()
     lines = [l for l in ctrl.split(b"\n") if not l.lower().startswith(b"installed-size:")]
     body = b"\n".join(lines).rstrip() + b"\n"
