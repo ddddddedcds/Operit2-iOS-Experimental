@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 
 use operit_host_ios_native::device_agent::{run_device_agent_loop, DeviceAgentConfig};
 use operit_host_ios_native::device_automation::IosDeviceAutomationHost;
@@ -204,15 +205,60 @@ fn handle_client(mut stream: UnixStream) {
 
 fn main() {
     let _ = fs::create_dir_all(operit_ios_env::data_root().join("logs"));
-    log_line(&format!("operit-agent daemon v{} 启动", DAEMON_VERSION));
-    let _ = fs::remove_file(operit_ios_env::data_root().join("agent.sock"));
-    let listener = UnixListener::bind(operit_ios_env::data_root().join("agent.sock"))
-        .expect("agent.sock 绑定失败（是否已有实例在跑？）");
-    let _ = fs::set_permissions(operit_ios_env::data_root().join("agent.sock"), fs::Permissions::from_mode(0o666));
+    let sock = operit_ios_env::data_root().join("agent.sock");
+    log_line(&format!(
+        "operit-agent daemon v{} 启动, sock={:?}",
+        DAEMON_VERSION, sock
+    ));
+    let listener = bind_agent_sock(&sock);
+    // Best-effort: drop the socket file when the process exits (graceful or via
+    // unwind from a panic), so a restart does not trip on a stale file.
+    let _guard = SockGuard { path: &sock };
+    let _ = fs::set_permissions(&sock, fs::Permissions::from_mode(0o666));
 
     for conn in listener.incoming() {
         if let Ok(stream) = conn {
             thread::spawn(move || handle_client(stream));
         }
+    }
+}
+
+/// Bind the agent control socket, tolerating a stale/leftover socket file or a
+/// second launchd-spawned instance racing on the same path.
+///
+/// - If the socket file exists but no live daemon is listening, we unlink and
+///   retry (covers crashes that left a dead file behind).
+/// - If a live daemon is already serving, we exit quietly so launchd's
+///   KeepAlive does not spin a crash loop.
+fn bind_agent_sock(sock: &Path) -> UnixListener {
+    for attempt in 0..4 {
+        let _ = fs::remove_file(sock);
+        match UnixListener::bind(sock) {
+            Ok(l) => return l,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempt < 3 => {
+                match UnixStream::connect(sock) {
+                    Ok(_) => {
+                        log_line("agent.sock 已被其他实例占用，本实例退出复用");
+                        std::process::exit(0);
+                    }
+                    Err(_) => {
+                        let _ = fs::remove_file(sock);
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                        continue;
+                    }
+                }
+            }
+            Err(e) => panic!("agent.sock 绑定失败: {}", e),
+        }
+    }
+    panic!("agent.sock 绑定失败（重试耗尽）");
+}
+
+struct SockGuard<'a> {
+    path: &'a Path,
+}
+impl<'a> Drop for SockGuard<'a> {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(self.path);
     }
 }
