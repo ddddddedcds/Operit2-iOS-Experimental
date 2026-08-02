@@ -481,7 +481,7 @@ struct SessionCommandResult {
 /// runtime-resolved data root (see `operit_ios_env`).
 fn log_terminal_diag(level: &str, file: &str, line: u32, msg: &str) {
     let dir = operit_ios_env::data_root();
-    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -624,7 +624,7 @@ fn createPtySession(
 #[cfg(target_os = "ios")]
 fn write_pty_rc_file() -> Option<std::path::PathBuf> {
     let dir = operit_ios_env::data_root();
-    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::create_dir_all(&dir);
     let rc = dir.join(".operit_bashrc");
     let body = r#"__operit_status=$?; printf '\033]133;OperitPrompt=%s:%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\n')" "$__operit_status""#;
     if std::fs::write(&rc, format!("{}\n", body)).is_ok() {

@@ -132,7 +132,7 @@ fn device_agent_socket_command(command: &str) -> String {
             let _ = stream.read_to_string(&mut resp);
             resp.trim().to_string()
         }
-        Err(e) => format!("ERR|connect {SOCK} failed: {e}"),
+        Err(e) => format!("ERR|connect {} failed: {e}", sock.display()),
     }
 }
 
