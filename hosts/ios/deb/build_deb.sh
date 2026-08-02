@@ -13,11 +13,14 @@ if [ "$SCHEME" = "roothide" ]; then
 else
   ENTITLEMENTS="$BASE/Runner.entitlements"
 fi
-# The daemon is a STANDALONE LaunchDaemon (NOT an app). It must not carry app-only
-# entitlements — under roothide platform-application + AppBundles + AppDataContainers
-# lock it inside an app container it has no access to, causing EACCES on
-# /var/mobile/.operit/agent.sock. Use a minimal no-sandbox set for both schemes.
-DAEMON_ENTITLEMENTS="$BASE/daemon.entitlements"
+# The daemon is a STANDALONE LaunchDaemon. It is launched by launchd as ROOT
+# (plist UserName=root) because on iOS a mobile user cannot create a Unix domain
+# socket in /var/mobile/.operit — it gets EACCES even though the directory is
+# mobile-writable for regular files; only root can bind the socket. It therefore
+# uses the SAME 4-key set as the app (platform-application + no-sandbox +
+# AppBundles + AppDataContainers), which roothide requires for any binary that
+# touches the jbroot. Running as root bypasses the mobile socket restriction.
+DAEMON_ENTITLEMENTS="$ENTITLEMENTS"
 IOS="$BASE/.."                       # hosts/ios
 TWEAK="$IOS/tweak"
 DAEMON="$IOS/target/aarch64-apple-ios/release/operit_agent_daemon"
@@ -37,9 +40,11 @@ mkdir -p "$FILES/usr/bin" "$FILES/Library/MobileSubstrate/DynamicLibraries" "$FI
 cp "$DAEMON" "$FILES/usr/bin/operit_agent_daemon"
 # ad-hoc sign the daemon (standalone LaunchDaemon binary) so AMFI does not SIGKILL it
 # on exec. An unsigned daemon -> launchctl reports ExitCode 9 and agent.sock never appears.
-# NOTE: sign with DAEMON_ENTITLEMENTS (minimal no-sandbox set, NO AppBundles /
-# AppDataContainers) so it can reach /var/mobile/.operit/* without being trapped
-# inside an app container (which would cause EACCES -> crash loop under roothide).
+# Sign with DAEMON_ENTITLEMENTS (= the scheme's 4-key set: platform-application +
+# no-sandbox + AppBundles + AppDataContainers), which roothide requires for any
+# binary that touches the jbroot. The actual EACCES-on-socket fix is running the
+# daemon as ROOT (plist UserName=root); a mobile user cannot bind a Unix socket
+# in /var/mobile/.operit even though the dir is mobile-writable for plain files.
 echo "   ad-hoc signing daemon (macOS codesign) with daemon entitlements ..."
 codesign --force --sign - --entitlements "$DAEMON_ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
   echo "   (codesign unavailable; daemon will need 'sudo ldid -S' on-device)"
