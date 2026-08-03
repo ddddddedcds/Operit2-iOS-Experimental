@@ -440,7 +440,12 @@ final class AppleRuntimeChannel: NSObject {
       isRootHide = true
     }
     if isRootHide {
-      return "/var/mobile/.operit"
+      // roothide remaps /var per-process: the system-launched daemon sees the
+      // real root, the jbroot-injected app sees the container. Anchor to
+      // /rootfs (fixed bind-mount, independent of the random .jbroot-XXXX name)
+      // so the app and daemon resolve the agent socket to the same physical
+      // directory.
+      return "/rootfs/private/var/mobile/.operit"
     }
     if FileManager.default.fileExists(atPath: "/var/jb") {
       return "/var/jb/var/mobile/.operit"

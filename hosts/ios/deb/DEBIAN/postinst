@@ -11,6 +11,19 @@ else
 fi
 echo "== Operit2 iOS install (JB prefix='${JB:-<none>}') =="
 
+# Data directory for sockets / logs / config.
+# - rootless: /var/jb/var/mobile/.operit (writable jb tree).
+# - roothide: "/var/mobile/.operit" is per-process remapped, so the daemon
+#   (system launchd view) and the jbroot-injected app resolve it to DIFFERENT
+#   physical dirs. Anchor to the fixed real-root bind-mount /rootfs so every
+#   process lands on the same dir (matches the launchd plist + Rust/Swift
+#   data_root fix). This is what the daemon actually writes into.
+if [ -n "$JB" ]; then
+  DATA_DIR="${JB}/var/mobile/.operit"
+else
+  DATA_DIR="/rootfs/private/var/mobile/.operit"
+fi
+
 # Locate the device ldid. Its install path varies by jailbreak toolchain
 # (Procursus commonly uses /usr/bin/ldid, but some setups install to
 # /usr/local/bin/ldid). A hardcoded /usr/bin/ldid that MISSES on the device
@@ -25,10 +38,10 @@ done
 echo "== ldid resolved to: ${LDID_BIN:-<NOT FOUND>} =="
 
 echo "== socket / log directories =="
-mkdir -p ${JB}/var/mobile/.operit 2>/dev/null || true
-chown -R mobile:mobile ${JB}/var/mobile/.operit 2>/dev/null || true
-mkdir -p ${JB}/var/mobile/.operit/logs 2>/dev/null || true
-chown -R mobile:mobile ${JB}/var/mobile/.operit/logs 2>/dev/null || true
+mkdir -p "$DATA_DIR" 2>/dev/null || true
+chown -R mobile:mobile "$DATA_DIR" 2>/dev/null || true
+mkdir -p "$DATA_DIR/logs" 2>/dev/null || true
+chown -R mobile:mobile "$DATA_DIR/logs" 2>/dev/null || true
 
 echo "== agent daemon permissions + on-device re-sign (runs as root via LaunchDaemon) =="
 chown root:wheel ${JB}/usr/bin/operit_agent_daemon 2>/dev/null || true
@@ -44,7 +57,7 @@ chmod 0755 ${JB}/usr/bin/operit_agent_daemon 2>/dev/null || true
 # failed sign is visible instead of masquerading as "installed fine".
 ENTFILE=${JB}/usr/share/operit/operit.entitlements
 DAEMON_BIN=${JB}/usr/bin/operit_agent_daemon
-PINST_LOG=${JB}/var/mobile/.operit/logs/postinst.log
+PINST_LOG="$DATA_DIR/logs/postinst.log"
 if [ -n "$LDID_BIN" ] && [ -f "$DAEMON_BIN" ]; then
   if [ -f "$ENTFILE" ]; then
     for i in 1 2 3 4 5; do
@@ -68,12 +81,22 @@ else
 fi
 
 echo "== load agent daemon =="
+# Do NOT let `launchctl load` block postinst: if the daemon crashes/loops on
+# first launch (e.g. a transient path/entitlement error), launchctl can hang
+# waiting on it, which makes dpkg never return and Sileo kills it -> "dpkg was
+# interrupted". Bound the call with `timeout` and never fail postinst on it;
+# launchd will start the daemon (RunAtLoad) independently of this step.
+load_daemon() {
+  _plist="$1"
+  if [ -f "$_plist" ]; then
+    timeout 10 launchctl load "$_plist" 2>/dev/null || \
+      timeout 10 launchctl bootstrap system "$_plist" 2>/dev/null || true
+  fi
+}
 if [ -n "$JB" ]; then
-  launchctl load ${JB}/Library/LaunchDaemons/ai.operit.agent.plist 2>/dev/null || \
-    launchctl bootstrap system ${JB}/Library/LaunchDaemons/ai.operit.agent.plist 2>/dev/null || true
+  load_daemon ${JB}/Library/LaunchDaemons/ai.operit.agent.plist
 else
-  launchctl load /Library/LaunchDaemons/ai.operit.agent.plist 2>/dev/null || \
-    launchctl bootstrap system /Library/LaunchDaemons/ai.operit.agent.plist 2>/dev/null || true
+  load_daemon /Library/LaunchDaemons/ai.operit.agent.plist
 fi
 
 echo "== reload SpringBoard so the control tweak takes effect =="
@@ -112,5 +135,5 @@ else
   echo "   (no bundled app found at $APP; frontend not included in this deb)"
 fi
 
-echo "Operit2 iOS installed. Daemon log: ${JB}/var/mobile/.operit/logs/agent.log"
+echo "Operit2 iOS installed. Daemon log: $DATA_DIR/logs/agent.log"
 exit 0

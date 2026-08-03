@@ -120,10 +120,18 @@ echo "  all key strings present."
 # reference paths WITHOUT the /var/jb prefix (e.g. /usr/bin/... and /var/mobile);
 # otherwise the daemon binary / HOME would point at a non-existent /var/jb path.
 if [ "$SCHEME" = "roothide" ]; then
-  echo "   roothide scheme: stripping /var/jb prefix from launchd plist"
+  echo "   roothide scheme: rewriting launchd plist paths for real-root anchor"
   PLIST="$FILES/Library/LaunchDaemons/ai.operit.agent.plist"
   if [ -f "$PLIST" ]; then
+    # 1) drop the /var/jb prefix (roothide has no /var/jb; daemon lives in the
+    #    jbroot container at /usr/bin/...).
     sed -i '' 's#/var/jb##g' "$PLIST"
+    # 2) roothide remaps /var per-process, so "/var/mobile/.operit" resolves to
+    #    different physical dirs depending on the process view (see the socket
+    #    white-screen fix). Anchor the daemon's logs / working dir / socket dir
+    #    to the fixed real-root bind-mount /rootfs so every process lands on the
+    #    same physical directory regardless of the random .jbroot-XXXX name.
+    sed -i '' 's#/var/mobile/.operit#/rootfs/private/var/mobile/.operit#g' "$PLIST"
   fi
 fi
 

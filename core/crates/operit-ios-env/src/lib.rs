@@ -104,9 +104,14 @@ pub fn resolve_roots_for(jb: JailbreakType) -> Roots {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
-            // data root stays at the real, writable /var/mobile/.operit
-            // (it is data, not mach-o, so the /var ban does not apply).
-            data: PathBuf::from("/var/mobile/.operit"),
+            // roothide remaps /var per-process: daemons launched by system
+            // launchd see the REAL root, while jbroot-injected apps see the
+            // jbroot container. The same string "/var/mobile/.operit" resolves
+            // to two different physical dirs, so the agent socket can never
+            // meet. Anchor to the real root via /rootfs (a fixed bind-mount
+            // independent of the random .jbroot-XXXX name) so both views land
+            // on one physical directory.
+            data: PathBuf::from("/rootfs/private/var/mobile/.operit"),
         },
         JailbreakType::NonJailbreak => Roots {
             binary: None,
@@ -206,7 +211,8 @@ impl CapabilitiesProvider for RootHideProvider {
             .map(PathBuf::from)
     }
     fn data_root(&self) -> PathBuf {
-        PathBuf::from("/var/mobile/.operit")
+        // See `resolve_roots_for` RootHide branch for why /rootfs is used.
+        PathBuf::from("/rootfs/private/var/mobile/.operit")
     }
     fn can_inject_tweaks(&self) -> bool {
         true
