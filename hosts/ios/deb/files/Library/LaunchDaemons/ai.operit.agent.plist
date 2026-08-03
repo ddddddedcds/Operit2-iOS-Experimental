@@ -20,9 +20,9 @@
     <key>WorkingDirectory</key>
     <string>/var/mobile</string>
     <key>StandardOutPath</key>
-    <string>/var/jb/var/mobile/.operit/logs/launchd.out</string>
+    <string>/var/mobile/.operit/logs/launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>/var/jb/var/mobile/.operit/logs/launchd.err</string>
+    <string>/var/mobile/.operit/logs/launchd.err</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>

@@ -93,6 +93,12 @@ if [ -d "$APP_SRC" ]; then
   codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$FILES/Applications/Runner.app" 2>&1 | tail -3 || \
     echo "   (codesign unavailable; rely on postinst ldid + AppSync Unified)"
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
+  # --- produce IPA (app already ad-hoc signed above with $ENTITLEMENTS) ---
+  IPA_NAME="operit2-ios_0.3.54_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"
+  IPA_OUT="$BASE/$IPA_NAME"
+  echo "   building IPA: $IPA_NAME"
+  ( cd "$FILES/Applications" && rm -rf Payload && mkdir Payload && cp -R Runner.app Payload/ && zip -q -r "$IPA_OUT" Payload && rm -rf Payload )
+  echo "   wrote $IPA_NAME ($(du -h "$IPA_OUT" | cut -f1))"
 else
   echo "WARNING: APP_SRC not found ($APP_SRC); building backend-only deb"
 fi
@@ -104,7 +110,7 @@ python3 - "$FILES/usr/bin/operit_agent_daemon" <<'PY'
 import sys
 data=open(sys.argv[1],'rb').read()
 ok=True
-for s in [b'operit-agent daemon v', b'OK|pong', '设备上下文'.encode(), b'frontmost_app', b'agent.sock', b'operit.sock', b'0.3.9', '屏幕未变化'.encode()]:
+for s in [b'operit-agent daemon v', b'OK|pong', '设备上下文'.encode(), b'frontmost_app', b'127.0.0.1', b'operit.sock', b'0.3.9', '屏幕未变化'.encode()]:
     if s in data:
         print("  [OK]  ", s[:30])
     else:

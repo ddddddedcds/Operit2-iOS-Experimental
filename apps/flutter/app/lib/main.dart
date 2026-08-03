@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -15,16 +16,33 @@ import 'ui/window/OperitWindowPlatform.dart';
 
 const String _appStartupLogTag = 'AppStartup';
 
+/// Raw, ClientLogger-independent diagnostic sink.
+/// Writes directly to /var/mobile/.operit/launch.log via dart:io so that
+/// startup failures (including ClientLogger.initialize() throwing) are still
+/// captured and visible over SSH. Best-effort; never throws.
+void _writeLaunchLog(String message) {
+  try {
+    const path = '/var/mobile/.operit/launch.log';
+    File(path).parent.createSync(recursive: true);
+    final ts = DateTime.now().toIso8601String();
+    File(path).writeAsStringSync('[$ts] $message\n', mode: FileMode.append);
+  } catch (_) {
+    // Last-resort sink; ignore all failures.
+  }
+}
+
 /// Runs the application startup sequence with structured diagnostics.
 void main(List<String> _) async {
   await runZonedGuarded(
     () async {
+      _writeLaunchLog('DART_MAIN_START');
       final startupStopwatch = Stopwatch()..start();
       final bindingStopwatch = Stopwatch()..start();
       WidgetsFlutterBinding.ensureInitialized();
       final bindingElapsedMs = bindingStopwatch.elapsedMilliseconds;
       final loggerStopwatch = Stopwatch()..start();
       await ClientLogger.initialize();
+      _writeLaunchLog('CLIENT_LOGGER_INIT_OK');
       ClientLogger.i(
         'widgets binding initialized elapsedMs=$bindingElapsedMs',
         tag: _appStartupLogTag,
@@ -73,8 +91,10 @@ void main(List<String> _) async {
         'startup done elapsedMs=${startupStopwatch.elapsedMilliseconds}',
         tag: _appStartupLogTag,
       );
+      _writeLaunchLog('STARTUP_DONE');
     },
     (error, stackTrace) {
+      _writeLaunchLog('ZONE_ERROR: $error\n$stackTrace');
       if (ClientLogger.isInitialized) {
         ClientLogger.e(
           'Uncaught zone error',
@@ -134,6 +154,7 @@ void _installClientLogHooks() {
   };
 
   FlutterError.onError = (FlutterErrorDetails details) {
+    _writeLaunchLog('FLUTTER_ERROR: ${details.exceptionAsString()}\n${details.stack}');
     ClientLogger.e(
       details.exceptionAsString(),
       tag: 'FlutterFramework',
@@ -149,6 +170,7 @@ void _installClientLogHooks() {
   };
 
   PlatformDispatcher.instance.onError = (error, stackTrace) {
+    _writeLaunchLog('PLATFORM_ERROR: $error\n$stackTrace');
     ClientLogger.e(
       'Uncaught platform error',
       tag: 'PlatformDispatcher',

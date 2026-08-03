@@ -8,9 +8,31 @@ class OperitClientPaths {
   const OperitClientPaths._();
 
   static Future<Directory> filesRootDir() async {
-    final directory = await getApplicationSupportDirectory();
-    await directory.create(recursive: true);
-    return directory;
+    try {
+      final directory = await getApplicationSupportDirectory();
+      await directory.create(recursive: true);
+      return directory;
+    } catch (_) {
+      // No-container jailbreak builds (roothide/rootless) have no creatable
+      // sandbox path from path_provider. Fall back to the operit data root,
+      // which matches the Rust core / daemon data_root() and is writable
+      // because the app is built without an app sandbox.
+      final fallback = Directory(_operitDataRoot());
+      await fallback.create(recursive: true);
+      return fallback;
+    }
+  }
+
+  /// Mirrors Swift iosDataRoot() / Rust data_root() for iOS jailbreak builds.
+  static String _operitDataRoot() {
+    if (Platform.isIOS) {
+      if (Directory('/var/jb').existsSync()) {
+        return '/var/jb/var/mobile/.operit';
+      }
+      return '/var/mobile/.operit';
+    }
+    // Non-iOS fallback (should not normally be reached).
+    return Directory.systemTemp.path;
   }
 
   static Future<Directory> clientRootDir() {
