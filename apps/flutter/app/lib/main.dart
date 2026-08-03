@@ -17,15 +17,29 @@ import 'ui/window/OperitWindowPlatform.dart';
 const String _appStartupLogTag = 'AppStartup';
 
 /// Raw, ClientLogger-independent diagnostic sink.
-/// Writes directly to /var/mobile/.operit/launch.log via dart:io so that
-/// startup failures (including ClientLogger.initialize() throwing) are still
-/// captured and visible over SSH. Best-effort; never throws.
+/// Writes directly to launch.log AND mirrors into trace.log (the same file the
+/// native tracer writes) so all startup diagnostics live in one place and are
+/// visible over SSH even when ClientLogger.initialize() throws. Best-effort;
+/// never throws.
 void _writeLaunchLog(String message) {
   try {
-    const path = '/var/mobile/.operit/launch.log';
-    File(path).parent.createSync(recursive: true);
     final ts = DateTime.now().toIso8601String();
-    File(path).writeAsStringSync('[$ts] $message\n', mode: FileMode.append);
+    final line = '[$ts] $message\n';
+    const paths = [
+      '/var/mobile/.operit/launch.log',
+      '/var/mobile/trace.log',
+      '/var/mobile/.operit/trace.log',
+      '/var/jb/var/mobile/.operit/trace.log',
+      '/tmp/trace.log',
+    ];
+    for (final p in paths) {
+      try {
+        File(p).parent.createSync(recursive: true);
+        File(p).writeAsStringSync(line, mode: FileMode.append);
+      } catch (_) {
+        // Try next candidate path.
+      }
+    }
   } catch (_) {
     // Last-resort sink; ignore all failures.
   }
@@ -39,6 +53,7 @@ void main(List<String> _) async {
       final startupStopwatch = Stopwatch()..start();
       final bindingStopwatch = Stopwatch()..start();
       WidgetsFlutterBinding.ensureInitialized();
+      _writeLaunchLog('WIDGETS_BINDING_OK');
       final bindingElapsedMs = bindingStopwatch.elapsedMilliseconds;
       final loggerStopwatch = Stopwatch()..start();
       await ClientLogger.initialize();
@@ -63,18 +78,21 @@ void main(List<String> _) async {
         'runtime connection initialized elapsedMs=${runtimeStopwatch.elapsedMilliseconds}',
         tag: _appStartupLogTag,
       );
+      _writeLaunchLog('RUNTIME_INIT_OK');
       final glassStopwatch = Stopwatch()..start();
       await LiquidGlassWidgets.initialize();
       ClientLogger.i(
         'liquid glass initialized elapsedMs=${glassStopwatch.elapsedMilliseconds}',
         tag: _appStartupLogTag,
       );
+      _writeLaunchLog('LIQUID_GLASS_OK');
       final windowStopwatch = Stopwatch()..start();
       final windowArguments = await readOperitWindowArguments();
       ClientLogger.i(
         'window arguments read type=${windowArguments.runtimeType} elapsedMs=${windowStopwatch.elapsedMilliseconds}',
         tag: _appStartupLogTag,
       );
+      _writeLaunchLog('WINDOW_ARGS_OK type=${windowArguments.runtimeType}');
       switch (windowArguments) {
         case MainWindowArguments():
           final coreStopwatch = Stopwatch()..start();
@@ -115,6 +133,7 @@ void main(List<String> _) async {
 /// Starts the main application window without touching runtime services.
 void _runMainWindow() {
   ClientLogger.i('run main window', tag: _appStartupLogTag);
+  _writeLaunchLog('BEFORE_RUN_APP main');
   runApp(
     LiquidGlassWidgets.wrap(
       respectSystemAccessibility: false,
@@ -131,6 +150,7 @@ void _runMainWindow() {
 /// Starts a detached chat window after runtime configuration is loaded.
 void _runDetachedChatWindow(DetachedChatWindowArguments arguments) {
   ClientLogger.i('run detached chat window', tag: _appStartupLogTag);
+  _writeLaunchLog('BEFORE_RUN_APP detached');
   runApp(
     LiquidGlassWidgets.wrap(
       respectSystemAccessibility: false,

@@ -50,4 +50,24 @@ import UIKit
     }
     return ret
   }
+
+  // ---- 全套生命周期诊断 ----
+  override func applicationDidBecomeActive(_ application: UIApplication) {
+    bootLog("APP_BECAME_ACTIVE")
+  }
+  override func applicationWillResignActive(_ application: UIApplication) {
+    bootLog("APP_WILL_RESIGN_ACTIVE")
+  }
+  override func applicationDidEnterBackground(_ application: UIApplication) {
+    bootLog("APP_DID_ENTER_BACKGROUND")
+  }
+  override func applicationWillEnterForeground(_ application: UIApplication) {
+    bootLog("APP_WILL_ENTER_FOREGROUND")
+  }
+  override func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+    bootLog("APP_MEMORY_WARNING")
+  }
+  override func applicationWillTerminate(_ application: UIApplication) {
+    bootLog("APP_WILL_TERMINATE")
+  }
 }

@@ -90,6 +90,7 @@ final class AppleRuntimeChannel: NSObject {
   }
 
   private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    OperitTraceAppend("CHANNEL_CALL method=\(call.method)")
     switch call.method {
     case "call":
       callRuntime(call: call, result: result, nativeCall: operit_flutter_bridge_native_call)

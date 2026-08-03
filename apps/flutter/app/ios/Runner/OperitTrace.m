@@ -2,6 +2,7 @@
 // 最早期诊断追踪：在 main() 之前写入进程启动记录，并捕获 native 崩溃与未捕获异常。
 // 背景：roothide 设备无系统日志设施，且 Dart 之前崩溃无任何痕迹。
 // 本文件保证"只要进程被 dyn-loaded 起来就留痕"，无论之后闪退还是白屏。
+// 同时追踪 dyld 镜像加载（死在加载期也能看到最后一个加载的库）、进程退出、环境快照。
 #import <Foundation/Foundation.h>
 #import <signal.h>
 #import <execinfo.h>
@@ -9,6 +10,9 @@
 #import <string.h>
 #import <time.h>
 #import <sys/stat.h>
+#import <sys/types.h>
+#import <mach-o/dyld.h>
+#import <dlfcn.h>
 
 static int g_trace_fds[8];
 static int g_trace_nfds = 0;
@@ -28,6 +32,22 @@ static void trace_raw(const char *msg) {
     for (int i = 0; i < g_trace_nfds; i++) {
         write(g_trace_fds[i], msg, len);
     }
+}
+
+static void trace_open(void);  // 前向声明，供 OperitTraceAppend 调用
+
+// 供 Swift / 其他 native 代码统一追加一行（带时间戳）。Swift 可直接调用。
+void OperitTraceAppend(const char *msg) {
+    if (!msg) return;
+    if (g_trace_nfds == 0) trace_open();
+    char ts[32];
+    time_t t = time(NULL);
+    struct tm tmres;
+    localtime_r(&t, &tmres);
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tmres);
+    char buf[2048];
+    snprintf(buf, sizeof(buf), "[%s] %s\n", ts, msg);
+    trace_raw(buf);
 }
 
 static void trace_open(void) {
@@ -54,6 +74,47 @@ static const char *sig_name(int sig) {
     }
 }
 
+// dyld 镜像加载追踪：记录每一个被加载的动态库/框架。
+// 若进程死在 dyld 加载期，trace.log 里最后一个 DYLD_LOAD 就是嫌疑库。
+static void operit_dyld_add_image(const struct mach_header *mh, intptr_t vmaddr_slide) {
+    (void)vmaddr_slide;
+    Dl_info info;
+    const char *name = "?";
+    if (dladdr(mh, &info) && info.dli_fname) name = info.dli_fname;
+    char buf[2048];
+    snprintf(buf, sizeof(buf), "DYLD_LOAD #%d %s\n", _dyld_image_count(), name);
+    trace_raw(buf);
+}
+
+// 进程正常退出钩子
+static void operit_atexit(void) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "PROCESS_EXIT pid=%d\n", getpid());
+    trace_raw(buf);
+}
+
+// 启动环境快照：身份、越狱视图、可执行路径、bundle id、注入库
+static void operit_env_snapshot(void) {
+    char buf[2048];
+    snprintf(buf, sizeof(buf), "UID=%d EUID=%d\n", getuid(), geteuid());
+    trace_raw(buf);
+    trace_raw(access("/.jbroot", F_OK) == 0 ? "JBROOT_EXISTS=YES\n" : "JBROOT_EXISTS=NO\n");
+    trace_raw(access("/var/jb", F_OK) == 0 ? "VAR_JB_EXISTS=YES\n" : "VAR_JB_EXISTS=NO\n");
+    char exep[1024]; uint32_t exesz = sizeof(exep);
+    if (_NSGetExecutablePath(exep, &exesz) == 0) {
+        snprintf(buf, sizeof(buf), "EXE=%s\n", exep);
+        trace_raw(buf);
+    }
+    NSString *bid = [NSBundle mainBundle].bundleIdentifier;
+    if (bid) {
+        snprintf(buf, sizeof(buf), "BID=%s\n", [bid UTF8String]);
+        trace_raw(buf);
+    }
+    const char *ins = getenv("DYLD_INSERT_LIBRARIES");
+    snprintf(buf, sizeof(buf), "DYLD_INSERT_LIBRARIES=%s\n", ins ? ins : "(null)");
+    trace_raw(buf);
+}
+
 static void operit_crash_handler(int sig, siginfo_t *info, void *ucontext);
 static void operit_uncaught_handler(NSException *e);
 
@@ -64,6 +125,14 @@ static void operit_trace_init(void) {
     time_t t = time(NULL);
     snprintf(buf, sizeof(buf), "\n=== OPERIT_TRACE pid=%d time=%ld ===\n", getpid(), (long)t);
     trace_raw(buf);
+
+    // 启动环境快照
+    operit_env_snapshot();
+
+    // 追踪 dyld 镜像加载（含已加载的 + 之后加载的）
+    _dyld_register_func_for_add_image(operit_dyld_add_image);
+    // 进程退出钩子
+    atexit(operit_atexit);
 
     // 捕获 native 崩溃信号
     struct sigaction sa;
