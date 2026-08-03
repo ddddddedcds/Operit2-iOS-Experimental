@@ -14,7 +14,7 @@ _SCHEME0 = os.environ.get("OPERIT_PACK_SCHEME", "rootless")
 # (per theapplewiki/roothide docs). NOTE: this is purely a package-manager
 # marker string — it has nothing to do with the actual arm64e CPU slice, so a
 # pure arm64 binary is fine inside such a package.
-OUT = os.path.join(ROOT, "operit2-ios_0.3.56_%s.deb" %
+OUT = os.path.join(ROOT, "operit2-ios_0.3.57_%s.deb" %
                    ("iphoneos-arm64e" if _SCHEME0 == "roothide" else "iphoneos-arm64"))
 
 # Package scheme is selected via the OPERIT_PACK_SCHEME env var (set by

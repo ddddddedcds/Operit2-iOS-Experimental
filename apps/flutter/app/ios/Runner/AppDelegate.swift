@@ -3,18 +3,27 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
-  // 诊断：roothide 下 Dart 不跑，且设备无系统日志。把启动检查点写文件，SSH 可读。
+  // 诊断：roothide 下 Dart 不跑且设备无系统日志。把启动检查点【追加】写入 trace.log
+  // （与 OperitTrace.m 的 native tracer 同一文件），SSH 可读。/tmp 兜底保证可写。
   private func bootLog(_ msg: String) {
     let stamp = "\(Date()) [operit-boot] \(msg)\n"
     let paths = [
-      "/var/mobile/.operit/boot.log",
-      "/var/jb/var/mobile/.operit/boot.log",
-      "/tmp/boot.log"
+      "/var/mobile/trace.log",
+      "/var/mobile/.operit/trace.log",
+      "/var/jb/var/mobile/.operit/trace.log",
+      "/tmp/trace.log"
     ]
+    let data = stamp.data(using: .utf8)!
     for p in paths {
       let dir = (p as NSString).deletingLastPathComponent
       try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-      try? stamp.write(toFile: p, atomically: true, encoding: .utf8)
+      if let fh = FileHandle(forWritingAtPath: p) {
+        fh.seekToEndOfFile()
+        fh.write(data)
+        fh.closeFile()
+      } else {
+        try? stamp.write(toFile: p, atomically: true, encoding: .utf8)
+      }
     }
   }
 
