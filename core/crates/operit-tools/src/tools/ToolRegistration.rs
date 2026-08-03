@@ -112,15 +112,17 @@ pub fn registerAllTools(handler: &mut AIToolHandler, context: &HostManager) {
     registerInternalTools(handler, context);
 }
 
-/// Sends one line-command to the on-device `operit-agent` daemon over its Unix socket
-/// and returns the daemon's textual response. iOS only — the daemon's socket lives
-/// under the runtime-resolved data root (see `operit_ios_env`).
+/// Sends one line-command to the on-device `operit-agent` daemon over loopback
+/// TCP (127.0.0.1:8890) and returns the daemon's textual response. iOS only —
+/// loopback TCP is shared across the roothide per-process /var remap, which a
+/// unix-socket path (resolved differently by the app vs the daemon) could not
+/// guarantee.
 #[cfg(target_os = "ios")]
 fn device_agent_socket_command(command: &str) -> String {
     use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
-    let sock = operit_ios_env::data_root().join("agent.sock");
-    match UnixStream::connect(&sock) {
+    use std::net::{TcpStream, SocketAddr, IpAddr, Ipv4Addr};
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8890);
+    match TcpStream::connect(addr) {
         Ok(mut stream) => {
             // Append a newline: the daemon reads one line per connection and only
             // dispatches after a newline (or EOF). Without it the client would block
@@ -132,7 +134,7 @@ fn device_agent_socket_command(command: &str) -> String {
             let _ = stream.read_to_string(&mut resp);
             resp.trim().to_string()
         }
-        Err(e) => format!("ERR|connect {} failed: {e}", sock.display()),
+        Err(e) => format!("ERR|connect 127.0.0.1:8890 failed: {e}"),
     }
 }
 

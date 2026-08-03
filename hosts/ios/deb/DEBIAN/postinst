@@ -13,15 +13,15 @@ echo "== Operit2 iOS install (JB prefix='${JB:-<none>}') =="
 
 # Data directory for sockets / logs / config.
 # - rootless: /var/jb/var/mobile/.operit (writable jb tree).
-# - roothide: "/var/mobile/.operit" is per-process remapped, so the daemon
-#   (system launchd view) and the jbroot-injected app resolve it to DIFFERENT
-#   physical dirs. Anchor to the fixed real-root bind-mount /rootfs so every
-#   process lands on the same dir (matches the launchd plist + Rust/Swift
-#   data_root fix). This is what the daemon actually writes into.
+# - roothide: /var/mobile/.operit. The app (jbroot-injected) and the daemon
+#   (system launchd) each resolve this to their OWN physical dir — that is fine,
+#   because the agent control channel and config are exchanged over loopback TCP
+#   (127.0.0.1:8890), which is shared across the per-process /var remap. No
+#   /rootfs anchor needed.
 if [ -n "$JB" ]; then
   DATA_DIR="${JB}/var/mobile/.operit"
 else
-  DATA_DIR="/rootfs/private/var/mobile/.operit"
+  DATA_DIR="/var/mobile/.operit"
 fi
 
 # Locate the device ldid. Its install path varies by jailbreak toolchain
@@ -99,12 +99,8 @@ else
   load_daemon /Library/LaunchDaemons/ai.operit.agent.plist
 fi
 
-echo "== reload SpringBoard so the control tweak takes effect =="
-if command -v sbreload >/dev/null 2>&1; then
-  sbreload 2>/dev/null || true
-else
-  echo "（未找到 sbreload，请手动 respring / 注销以使 SpringBoard tweak 生效）"
-fi
+echo "== NOTE: 安装脚本不自动 respring（sbreload 会重启 SpringBoard，而 Sileo/Zebra 等本身跑在 SpringBoard 上，自杀式 respring 会中断安装器并留下半配置状态）=="
+echo "   装完后请手动 respring：Sileo 设置内按钮，或终端 sbreload，使 SpringBoard tweak 生效。"
 
 echo "== frontend app install (sign + register) =="
 APP=${JB}/Applications/Runner.app

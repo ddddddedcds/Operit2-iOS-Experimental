@@ -1,39 +1,33 @@
 Package: ai.operit
 Name: Operit2 (device automation, rootless)
-Version: 0.3.52
+Version: 0.3.53
 Architecture: iphoneos-arm64
-Description: Operit2 (iOS, rootless) — a personal/AI-experimental fork adapted from AAswordman/Operit2, with the Operit2 Flutter UI bundled in. Screenshot, OCR, touch/input and device automation are delegated to the ios-mcp backend running on the device.
+Description: Operit2（iOS 版）— 个人 / AI 实验性分支，改编自
+ AAswordman/Operit2，内置 Operit2 的 Flutter 界面。截图、OCR、
+ 触控输入与设备自动化均交由运行在设备上的 ios-mcp 后端处理。
  .
- This package is NOT an official release. It is an unofficial, personal + AI
- experimental adaptation of the original Operit2 project. See:
-  - This project: https://github.com/ddddddedcds/Operit2
-  - Original work: https://github.com/AAswordman/Operit2
-  - Original predecessor / idea source: https://github.com/AAswordman/Operit
+ 本包并非官方发布，是对原 Operit2 项目的非官方、个人 + AI 实验性
+ 改编。参见：
+  - 本项目：https://github.com/ddddddedcds/Operit2
+  - 原项目：https://github.com/AAswordman/Operit2
+  - 最初构思：https://github.com/AAswordman/Operit
  .
- Third-party open-source packages used by this build (none omitted); source
- links below:
-  - ElleKit — rootless tweak injection libraries & loader (by opa334)
-    https://github.com/opa334/ElleKit
-  - ios-mcp — MCP server for AI-driven iOS device control (by witchan)
+ 本构建使用的第三方开源组件：
+  - ios-mcp — 用于 AI 驱动 iOS 设备控制的 MCP 服务（by witchan）
     https://github.com/witchan/ios-mcp
  .
- Acknowledgements (感谢):
-  Special thanks to opa334 for ElleKit, the rootless hooking substrate that
-  makes this tweak possible; to witchan for ios-mcp, whose device-control MCP
-  server powers Operit2's screenshot/OCR/automation layer; and to AAswordman
-  for the original Operit2 (https://github.com/AAswordman/Operit2) and the
-  earlier Operit project (https://github.com/AAswordman/Operit) that provided
-  the development ideas. Operit2 would not exist without these excellent
-  open-source works.
+ 致谢（感谢）：
+  特别感谢 witchan 开发的 ios-mcp，其设备控制 MCP 服务为 Operit2 的
+  截图 / OCR / 自动化层提供动力；以及 AAswordman 提供的原版 Operit2
+  与更早的 Operit 项目，为开发提供思路。没有这些优秀的开源作品就
+  不会有 Operit2。
  .
- Disclaimer (免责声明):
-  This tool is experimental and unstable. Use it at your own risk. The
-  authors are not responsible for any data loss, property damage, system
-  damage, or any other harm resulting from the installation or use of this
-  package. So far no such incidents have been reported, but you assume all
-  risks by installing and using it.
+ 免责声明：
+  本工具为实验性软件且不稳定，使用风险自负。作者不对因安装或使用
+  本包导致的任何数据丢失、财产损失、系统损坏或其他损害负责。目前
+  尚无此类事故报告，但安装与使用即视为你接受全部风险。
 Maintainer: operit2-ios <local@example.com>
 Author: operit2-ios
 Section: Utilities
-Depends: ellekit, com.witchan.ios-mcp
+Depends: com.witchan.ios-mcp
 Tag: cydia::compatible::ios15

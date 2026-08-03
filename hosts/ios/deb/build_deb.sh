@@ -126,12 +126,10 @@ if [ "$SCHEME" = "roothide" ]; then
     # 1) drop the /var/jb prefix (roothide has no /var/jb; daemon lives in the
     #    jbroot container at /usr/bin/...).
     sed -i '' 's#/var/jb##g' "$PLIST"
-    # 2) roothide remaps /var per-process, so "/var/mobile/.operit" resolves to
-    #    different physical dirs depending on the process view (see the socket
-    #    white-screen fix). Anchor the daemon's logs / working dir / socket dir
-    #    to the fixed real-root bind-mount /rootfs so every process lands on the
-    #    same physical directory regardless of the random .jbroot-XXXX name.
-    sed -i '' 's#/var/mobile/.operit#/rootfs/private/var/mobile/.operit#g' "$PLIST"
+    # 2) the launchd plist already references /var/mobile/.operit (no /var/jb
+    #    prefix under roothide). The daemon and app exchange the agent control
+    #    channel + config over loopback TCP (127.0.0.1:8890), which is shared
+    #    across the per-process /var remap, so no /rootfs re-anchoring is needed.
   fi
 fi
 

@@ -418,37 +418,32 @@ final class AppleRuntimeChannel: NSObject {
   /// `/var/mobile` anywhere else in this file.
   ///
   /// Detection order (must match Rust `detect_jailbreak`):
-  /// 1. roothide  — a `.jbroot-*` marker under the app bundle dir, a root-level
-  ///    `/.jbroot` marker, or a non-empty `JBROOT` env var ⇒ real, writable
-  ///    `/var/mobile/.operit` (data, not mach-o, so the roothide `/var` ban
-  ///    does not apply).
-  /// 2. rootless  — `/var/jb` exists ⇒ `/var/jb/var/mobile/.operit`.
+  /// 1. rootless  — `/var/jb` exists ⇒ `/var/jb/var/mobile/.operit`.
+  /// 2. roothide  — `/var/mobile/.operit` is writable by this (unsandboxed,
+  ///    jbroot-injected) app ⇒ `/var/mobile/.operit`. We test writability rather
+  ///    than the `.jbroot-*` markers, which are invisible in the app's view.
   /// 3. non-jailbreak — app sandbox `Documents/.operit`.
+  /// The agent control channel + config travel over loopback TCP
+  /// (127.0.0.1:8890), shared across the per-process /var remap, so no /rootfs
+  /// anchor is needed.
   private static func iosDataRoot() -> String {
-    let bundleAppDir = "/var/containers/Bundle/Application"
-    var isRootHide = false
-    if let entries = try? FileManager.default.contentsOfDirectory(atPath: bundleAppDir),
-       entries.contains(where: { $0.hasPrefix(".jbroot-") }) {
-      isRootHide = true
-    }
-    if !isRootHide, FileManager.default.fileExists(atPath: "/.jbroot") {
-      isRootHide = true
-    }
-    if !isRootHide,
-       let jbroot = ProcessInfo.processInfo.environment["JBROOT"],
-       !jbroot.isEmpty {
-      isRootHide = true
-    }
-    if isRootHide {
-      // roothide remaps /var per-process: the system-launched daemon sees the
-      // real root, the jbroot-injected app sees the container. Anchor to
-      // /rootfs (fixed bind-mount, independent of the random .jbroot-XXXX name)
-      // so the app and daemon resolve the agent socket to the same physical
-      // directory.
-      return "/rootfs/private/var/mobile/.operit"
-    }
     if FileManager.default.fileExists(atPath: "/var/jb") {
       return "/var/jb/var/mobile/.operit"
+    }
+    // roothide: the app runs unsandboxed inside the jbroot container, so
+    // /var/mobile/.operit is writable; a plain sandboxed app cannot write there.
+    let roothidePath = "/var/mobile/.operit"
+    let probe = roothidePath.appendingPathComponent(".writetest")
+    var writable = false
+    if FileManager.default.fileExists(atPath: roothidePath) {
+      writable = FileManager.default.createFile(atPath: probe, contents: nil)
+    } else {
+      try? FileManager.default.createDirectory(atPath: roothidePath, withIntermediateDirectories: true)
+      writable = FileManager.default.createFile(atPath: probe, contents: nil)
+    }
+    if writable {
+      try? FileManager.default.removeItem(atPath: probe)
+      return roothidePath
     }
     if let home = ProcessInfo.processInfo.environment["HOME"] {
       return (home as NSString).appendingPathComponent("Documents/.operit")
@@ -1037,10 +1032,10 @@ final class AppleRuntimeChannel: NSObject {
     return (text, boxes)
   }
 
-  // Resolved at load from the environment-aware data root so the app and the
-  // Rust daemon (which uses operit_ios_env::data_root()) agree on the socket
-  // path. Hardcoding `/var/jb` broke the agent socket on roothide, where that
-  // prefix does not exist.
+  // The agent control channel now runs over loopback TCP (127.0.0.1:8890) —
+  // shared across the roothide per-process /var remap, which a unix-socket path
+  // could not guarantee. `operitSendLine` connects to the fixed loopback port;
+  // these path constants are retained only for backward compatibility.
   private static let operitDeviceSocketPath: String = {
     (iosDataRoot() as NSString).appendingPathComponent("operit.sock")
   }()
@@ -1048,28 +1043,30 @@ final class AppleRuntimeChannel: NSObject {
     (iosDataRoot() as NSString).appendingPathComponent("agent.sock")
   }()
 
-  /// Sends one line command to a local Unix socket and returns the full reply (read to EOF).
+  /// Sends one line command to the local agent daemon over TCP loopback
+  /// (127.0.0.1:8890) and returns the full reply (read to EOF). Loopback TCP is
+  /// shared across the roothide per-process filesystem remap, unlike a unix
+  /// socket path (which resolves to different physical dirs for the app vs the
+  /// system-launched daemon). The `socketPath` argument is retained for API
+  /// compatibility but the address is fixed to the loopback port.
   private static func operitSendLine(_ command: String, socketPath: String) throws -> String {
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = [UInt8](socketPath.utf8)
-    withUnsafeMutableBytes(of: &addr.sun_path) { ptr in
-      pathBytes.withUnsafeBytes { src in
-        ptr.copyBytes(from: src)
-      }
-    }
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    var addr = sockaddr_in()
+    addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = UInt16(bigEndian: 8890)
+    addr.sin_addr = in_addr(s_addr: 0x7F000001) // 127.0.0.1 in network byte order
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
     if fd < 0 {
       throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "socket() failed"])
     }
     defer { close(fd) }
     let connected = withUnsafePointer(to: addr) { ptr in
       ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-        connect(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+        connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
       }
     }
     if connected < 0 {
-      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "connect \(socketPath) failed"])
+      throw NSError(domain: "operit", code: 1, userInfo: [NSLocalizedDescriptionKey: "connect 127.0.0.1:8890 failed"])
     }
     let cmdData = [UInt8](command.utf8)
     let sent = cmdData.withUnsafeBytes { write(fd, $0.baseAddress, cmdData.count) }

@@ -10,13 +10,11 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::net::{TcpListener, TcpStream, IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::path::Path;
 
 use operit_host_ios_native::device_agent::{run_device_agent_loop, DeviceAgentConfig};
 use operit_host_ios_native::device_automation::IosDeviceAutomationHost;
@@ -37,6 +35,22 @@ static STATE: Mutex<State> = Mutex::new(State {
 });
 static STOP: LazyLock<Mutex<Arc<AtomicBool>>> =
     LazyLock::new(|| Mutex::new(Arc::new(AtomicBool::new(false))));
+
+/// Cached daemon config pushed by the app over the TCP control channel.
+///
+/// On roothide the app and daemon resolve `data_root()` to DIFFERENT physical
+/// directories (per-process /var remap), so a config.plist file written by the
+/// app is invisible to the daemon. The only cross-view channel is loopback TCP,
+/// hence the app pushes its LLM credentials here; `resolve_config` prefers this
+/// cache and falls back to the on-disk plist (which still works on rootless).
+struct CachedConfig {
+    api_key: String,
+    provider: String,
+    base_url: String,
+    model: String,
+}
+static CACHED_CONFIG: LazyLock<Mutex<Option<CachedConfig>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 fn now_hms() -> String {
     let secs = SystemTime::now()
@@ -69,8 +83,40 @@ fn set_running(v: bool) {
     STATE.lock().unwrap().running = v;
 }
 
-/// 读 App 写的共享 config.plist（XML），解析出 autoglm-phone 的端点 + 模型。
-/// 与 Obj-C operit-agent.m 的 chatCompletion 逻辑 1:1 一致。
+/// Build a `DeviceAgentConfig` from the four credential fields, mirroring the
+/// Obj-C operit-agent.m chatCompletion logic.
+fn build_config(api_key: &str, provider: &str, base_url: &str, model: &str) -> Option<DeviceAgentConfig> {
+    if api_key.is_empty() {
+        return None;
+    }
+    let (endpoint, model) = if provider == "custom" {
+        let b = base_url.trim_end_matches('/');
+        let ep = if b.is_empty() {
+            AUTOGLM_ENDPOINT.to_string()
+        } else {
+            format!("{}/chat/completions", b)
+        };
+        (ep, model.to_string())
+    } else {
+        (
+            AUTOGLM_ENDPOINT.to_string(),
+            if model.is_empty() {
+                "autoglm-phone".to_string()
+            } else {
+                model.to_string()
+            },
+        )
+    };
+    Some(DeviceAgentConfig {
+        api_key: api_key.to_string(),
+        api_base: endpoint,
+        model,
+    })
+}
+
+/// Read the app-written shared config.plist (XML). On roothide this file lives
+/// in a different physical dir than the one the app wrote, so it may be
+/// missing/empty; `resolve_config` covers that case via the TCP-pushed cache.
 fn load_config() -> Option<DeviceAgentConfig> {
     let file = File::open(operit_ios_env::data_root().join("config.plist")).ok()?;
     let val: plist::Value = plist::from_reader(file).ok()?;
@@ -85,40 +131,23 @@ fn load_config() -> Option<DeviceAgentConfig> {
     let provider = get("apiProvider");
     let base_url = get("apiBaseUrl");
     let model = get("apiModel");
+    build_config(&api_key, &provider, &base_url, &model)
+}
 
-    let (endpoint, model) = if provider == "custom" {
-        let b = base_url.trim_end_matches('/');
-        let ep = if b.is_empty() {
-            AUTOGLM_ENDPOINT.to_string()
-        } else {
-            format!("{}/chat/completions", b)
-        };
-        (ep, model)
-    } else {
-        (
-            AUTOGLM_ENDPOINT.to_string(),
-            if model.is_empty() {
-                "autoglm-phone".to_string()
-            } else {
-                model
-            },
-        )
-    };
-    if api_key.is_empty() {
-        return None;
+/// Resolve the daemon config: prefer the app-pushed TCP cache (roothide-safe),
+/// fall back to the on-disk config.plist (rootless / non-jb).
+fn resolve_config() -> Option<DeviceAgentConfig> {
+    if let Some(c) = CACHED_CONFIG.lock().unwrap().as_ref() {
+        return build_config(&c.api_key, &c.provider, &c.base_url, &c.model);
     }
-    Some(DeviceAgentConfig {
-        api_key,
-        api_base: endpoint,
-        model,
-    })
+    load_config()
 }
 
 fn run_task(goal: String, stop: Arc<AtomicBool>) {
     let _ = fs::remove_file(operit_ios_env::data_root().join("logs/agent.log"));
     log_line(&format!("任务开始: {}", goal));
 
-    let cfg = match load_config() {
+    let cfg = match resolve_config() {
         Some(c) => c,
         None => {
             log_line("错误：未填 API Key（请在 Operit App 设置中填写）");
@@ -175,11 +204,28 @@ fn dispatch(line: &str) -> String {
             STATE.lock().unwrap().goal = String::new();
             "OK|goal set".to_string()
         }
+        _ if line.starts_with("config ") => {
+            // App pushes LLM credentials over TCP (roothide-safe). Payload:
+            // "config <apiKey>|<apiProvider>|<apiBaseUrl>|<apiModel>".
+            let rest = &line[7..];
+            let parts: Vec<&str> = rest.split('|').collect();
+            if parts.len() == 4 {
+                *CACHED_CONFIG.lock().unwrap() = Some(CachedConfig {
+                    api_key: parts[0].to_string(),
+                    provider: parts[1].to_string(),
+                    base_url: parts[2].to_string(),
+                    model: parts[3].to_string(),
+                });
+                "OK|config set".to_string()
+            } else {
+                "ERR|bad config payload".to_string()
+            }
+        }
         _ => "ERR|unknown".to_string(),
     }
 }
 
-fn handle_client(mut stream: UnixStream) {
+fn handle_client(mut stream: TcpStream) {
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -203,19 +249,15 @@ fn handle_client(mut stream: UnixStream) {
     let _ = stream.write_all(resp.as_bytes());
 }
 
+const AGENT_PORT: u16 = 8890;
+
 fn main() {
     let _ = fs::create_dir_all(operit_ios_env::data_root().join("logs"));
-    let sock = operit_ios_env::data_root().join("agent.sock");
     log_line(&format!(
-        "operit-agent daemon v{} 启动, sock={:?}",
-        DAEMON_VERSION, sock
+        "operit-agent daemon v{} 启动, tcp=127.0.0.1:{}",
+        DAEMON_VERSION, AGENT_PORT
     ));
-    let listener = bind_agent_sock(&sock);
-    // Best-effort: drop the socket file when the process exits (graceful or via
-    // unwind from a panic), so a restart does not trip on a stale file.
-    let _guard = SockGuard { path: &sock };
-    let _ = fs::set_permissions(&sock, fs::Permissions::from_mode(0o666));
-
+    let listener = bind_agent_sock();
     for conn in listener.incoming() {
         if let Ok(stream) = conn {
             thread::spawn(move || handle_client(stream));
@@ -223,45 +265,32 @@ fn main() {
     }
 }
 
-/// Bind the agent control socket.
+/// Bind the agent control socket over loopback TCP (127.0.0.1:8890).
 ///
 /// Liveness-first takeover: if a healthy daemon is already listening on this
-/// socket we exit quietly (exit 0). Combined with the LaunchDaemon's
+/// port we exit quietly (exit 0). Combined with the LaunchDaemon's
 /// `KeepAlive -> SuccessfulExit=false`, launchd will NOT respawn the secondary,
-/// so no crash loop. We never unlink a socket a live peer holds — doing so
-/// orphans the live listener and lets a second instance steal the path.
-///
-/// If no live peer is present we drop any stale file left by a crashed instance
-/// and bind. A tiny race remains (a peer may bind between our connect-check and
-/// our bind); in that case the bind fails with AddrInUse and we loop — the next
-/// iteration's connect-check finds the live peer and exits cleanly.
-fn bind_agent_sock(sock: &Path) -> UnixListener {
+/// so no crash loop. Loopback TCP is shared across the roothide per-process
+/// /var remap, so the app (jbroot view) and the daemon (real-root view) both
+/// reach the same listener — which a unix-socket path could not guarantee.
+fn bind_agent_sock() -> TcpListener {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), AGENT_PORT);
     for _ in 0..12 {
-        match UnixStream::connect(sock) {
+        match TcpStream::connect(addr) {
             Ok(_) => {
-                log_line("agent.sock 已被其他实例占用，本实例退出复用");
+                log_line("agent 端口已被其他实例占用，本实例退出复用");
                 std::process::exit(0);
             }
             Err(_) => {}
         }
-        let _ = fs::remove_file(sock);
-        match UnixListener::bind(sock) {
+        match TcpListener::bind(addr) {
             Ok(l) => return l,
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
-            Err(e) => panic!("agent.sock 绑定失败: path={:?} len={} err={}", sock, sock.as_os_str().len(), e),
+            Err(e) => panic!("agent 端口绑定失败: addr={:?} err={}", addr, e),
         }
     }
-    panic!("agent.sock 绑定失败（重试耗尽）");
-}
-
-struct SockGuard<'a> {
-    path: &'a Path,
-}
-impl<'a> Drop for SockGuard<'a> {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(self.path);
-    }
+    panic!("agent 端口绑定失败（重试耗尽）");
 }

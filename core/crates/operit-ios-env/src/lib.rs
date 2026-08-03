@@ -49,45 +49,48 @@ impl Roots {
     }
 }
 
-/// Detect roothide by its randomized jbroot marker.
+/// Test whether this process can write to `/var/mobile/.operit`.
 ///
-/// roothide (unlike rootless) installs the bootstrap to a random directory
-/// without a fixed `/var/jb`. It emits a `.jbroot-<random>` symlink (usually
-/// under `/var/containers/Bundle/Application/`) and a root-level `/.jbroot`
-/// marker. We must detect this directly — relying on `/var/jb` (as rootless
-/// does) is wrong here and silently breaks the moment `/var/jb` is absent.
-fn roothide_jbroot_present() -> bool {
-    if let Ok(entries) = std::fs::read_dir("/var/containers/Bundle/Application") {
-        for e in entries.flatten() {
-            if e.file_name().to_string_lossy().starts_with(".jbroot-") {
-                return true;
-            }
-        }
+/// On roothide the app runs unsandboxed inside the jbroot container, so this
+/// path is writable and resolves to the (per-process-remapped) jbroot data dir.
+/// On a stock, non-jailbroken, sandboxed app this path is NOT writable, which is
+/// how we distinguish roothide from plain NonJailbreak. (TrollStore is
+/// intentionally out of scope, so "unsandboxed + writable" is unambiguous.)
+///
+/// We deliberately do NOT probe the `.jbroot-*` / `/.jbroot` markers: those live
+/// in the *real-root* filesystem view and are invisible to the jbroot-injected
+/// app, which is exactly why the old marker-based detection silently fell
+/// through to NonJailbreak on roothide.
+fn operit_data_writable() -> bool {
+    let p = Path::new("/var/mobile/.operit");
+    if std::fs::create_dir_all(p).is_err() {
+        return false;
     }
-    Path::new("/.jbroot").exists()
+    let probe = p.join(".writetest");
+    match std::fs::write(&probe, b"x") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Detect the active jailbreak environment at runtime.
 ///
 /// Resolution order:
-/// 1. roothide jbroot marker (`.jbroot-<random>` symlink or `/.jbroot`) ⇒ roothide.
-///    Checked FIRST so a roothide device that also has a `/var/jb` shim still
-///    resolves as roothide, and a clean roothide (no `/var/jb`) does not fall
-///    through to NonJailbreak.
-/// 2. `JBROOT` env (roothide may also inject it; empty here on some setups).
-/// 3. `/var/jb` exists ⇒ rootless.
-/// 4. Otherwise ⇒ non-jailbreak (no binary root).
+/// 1. `/var/jb` exists ⇒ rootless (Dopamine / ElleKit).
+/// 2. `/var/mobile/.operit` is writable by this process ⇒ roothide. The app is
+///    unsandboxed inside the jbroot container, so the path is writable; a plain
+///    sandboxed app cannot write there. We deliberately avoid the `.jbroot-*`
+///    markers (invisible to the jbroot-injected app).
+/// 3. Otherwise ⇒ non-jailbreak (local sandbox only).
 pub fn detect_jailbreak() -> JailbreakType {
-    if roothide_jbroot_present() {
-        return JailbreakType::RootHide;
-    }
-    if let Ok(jbroot) = std::env::var("JBROOT") {
-        if !jbroot.is_empty() {
-            return JailbreakType::RootHide;
-        }
-    }
     if Path::new("/var/jb").exists() {
         return JailbreakType::Rootless;
+    }
+    if operit_data_writable() {
+        return JailbreakType::RootHide;
     }
     JailbreakType::NonJailbreak
 }
@@ -104,14 +107,12 @@ pub fn resolve_roots_for(jb: JailbreakType) -> Roots {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
-            // roothide remaps /var per-process: daemons launched by system
-            // launchd see the REAL root, while jbroot-injected apps see the
-            // jbroot container. The same string "/var/mobile/.operit" resolves
-            // to two different physical dirs, so the agent socket can never
-            // meet. Anchor to the real root via /rootfs (a fixed bind-mount
-            // independent of the random .jbroot-XXXX name) so both views land
-            // on one physical directory.
-            data: PathBuf::from("/rootfs/private/var/mobile/.operit"),
+            // roothide: the app (jbroot-injected) and the daemon (system launchd)
+            // each resolve "/var/mobile/.operit" to their OWN physical dir. That
+            // is fine, because the agent control channel + config now travel over
+            // loopback TCP (127.0.0.1:8890), which is shared across the
+            // per-process /var remap. No /rootfs anchor is needed.
+            data: PathBuf::from("/var/mobile/.operit"),
         },
         JailbreakType::NonJailbreak => Roots {
             binary: None,
@@ -211,8 +212,10 @@ impl CapabilitiesProvider for RootHideProvider {
             .map(PathBuf::from)
     }
     fn data_root(&self) -> PathBuf {
-        // See `resolve_roots_for` RootHide branch for why /rootfs is used.
-        PathBuf::from("/rootfs/private/var/mobile/.operit")
+        // See `resolve_roots_for` RootHide branch: the app and daemon exchange
+        // the agent channel + config over loopback TCP, so a shared physical dir
+        // is not required.
+        PathBuf::from("/var/mobile/.operit")
     }
     fn can_inject_tweaks(&self) -> bool {
         true

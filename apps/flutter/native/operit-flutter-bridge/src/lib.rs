@@ -3289,6 +3289,33 @@ pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
         escape_plist(&model),
     );
     let _ = std::fs::write(path, xml);
+    // Push credentials to the daemon over loopback TCP as well. On roothide the
+    // app and daemon resolve data_root() to DIFFERENT physical dirs, so this
+    // file is invisible to the daemon; TCP loopback is the only cross-view
+    // channel. Best-effort: if the daemon isn't up yet this is silently ignored
+    // and the daemon falls back to reading this file (works on rootless / non-jb).
+    push_config_over_tcp(&api_key, &provider, &base_url, &model);
+}
+
+/// Pushes LLM credentials to the on-device agent daemon over loopback TCP
+/// (127.0.0.1:8890) using the daemon's `config` control command. Best-effort
+/// and fire-and-forget; failures are ignored (the daemon may not be running
+/// yet, or this is a non-jb build where the file path is sufficient).
+#[cfg(target_os = "ios")]
+fn push_config_over_tcp(api_key: &str, provider: &str, base_url: &str, model: &str) {
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, SocketAddr, IpAddr, Ipv4Addr};
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8890);
+    let mut stream = match TcpStream::connect(addr) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let payload = format!("config {}|{}|{}|{}\n", api_key, provider, base_url, model);
+    if stream.write_all(payload.as_bytes()).is_err() {
+        return;
+    }
+    let mut resp = String::new();
+    let _ = stream.read_to_string(&mut resp);
 }
 
 #[cfg(target_os = "ios")]

@@ -1736,6 +1736,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "js-sys",
+ "operit-ios-env",
  "serde",
  "serde_json",
 ]
@@ -1750,12 +1751,17 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "operit-host-api",
+ "operit-ios-env",
  "portable-pty",
  "reqwest",
  "rusqlite",
  "uuid",
  "zip",
 ]
+
+[[package]]
+name = "operit-ios-env"
+version = "0.1.0"
 
 [[package]]
 name = "operit-js-bridge"
@@ -1952,6 +1958,7 @@ dependencies = [
  "json5",
  "md-5",
  "operit-host-api",
+ "operit-ios-env",
  "operit-model",
  "operit-plugin-sdk",
  "operit-plugin-sdk-codegen",
