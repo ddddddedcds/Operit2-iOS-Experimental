@@ -433,7 +433,7 @@ final class AppleRuntimeChannel: NSObject {
     // roothide: the app runs unsandboxed inside the jbroot container, so
     // /var/mobile/.operit is writable; a plain sandboxed app cannot write there.
     let roothidePath = "/var/mobile/.operit"
-    let probe = roothidePath.appendingPathComponent(".writetest")
+    let probe = (roothidePath as NSString).appendingPathComponent(".writetest")
     var writable = false
     if FileManager.default.fileExists(atPath: roothidePath) {
       writable = FileManager.default.createFile(atPath: probe, contents: nil)
