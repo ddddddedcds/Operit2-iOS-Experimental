@@ -2811,6 +2811,9 @@ String _themeTargetLabel(
   AppLocalizations l10n,
   OperitThemeController themeController,
 ) {
+  if (!themeController.hasActiveThemeTarget) {
+    return '未选择角色或群组';
+  }
   final name = themeController.activeThemeTargetName;
   if (themeController.isActiveThemeTargetGroup) {
     return l10n.settingsAppearanceThemeTargetGroup(name);

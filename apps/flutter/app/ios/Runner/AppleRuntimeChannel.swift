@@ -468,6 +468,16 @@ final class AppleRuntimeChannel: NSObject {
     return (runtime, workspace)
   }
 
+  /// Returns whether two storage root URLs denote the same filesystem location.
+  /// Resolves symlinks so `/var/mobile/...` and `/private/var/mobile/...` are
+  /// treated as identical, preventing `RUNTIME_ALREADY_CREATED` false positives
+  /// when Dart passes a symlink-resolved path while the configured root is not.
+  private func areStorageRootsEqual(_ lhs: URL, _ rhs: URL) -> Bool {
+    let resolvedLhs = lhs.resolvingSymlinksInPath().standardizedFileURL
+    let resolvedRhs = rhs.resolvingSymlinksInPath().standardizedFileURL
+    return resolvedLhs == resolvedRhs
+  }
+
   /// Resolves one required Flutter-provided storage root.
   private func absoluteDirectory(from value: Any?, label: String) throws -> URL {
     guard let value = value as? String else {
@@ -520,7 +530,10 @@ final class AppleRuntimeChannel: NSObject {
       let runtimeRoot = try absoluteDirectory(from: arguments["runtimeRoot"] ?? nil, label: "runtimeRoot")
       let workspaceRoot = try absoluteDirectory(from: arguments["workspaceRoot"] ?? nil, label: "workspaceRoot")
       if handle != nil {
-        if configuredRuntimeRoot == runtimeRoot && configuredWorkspaceRoot == workspaceRoot {
+        if let configuredRuntimeRoot,
+           let configuredWorkspaceRoot,
+           areStorageRootsEqual(configuredRuntimeRoot, runtimeRoot),
+           areStorageRootsEqual(configuredWorkspaceRoot, workspaceRoot) {
           result(nil)
           return
         }

@@ -439,25 +439,54 @@ class RuntimeConnectionManager extends ChangeNotifier {
             await LocalRuntimeStorageBridge.apply(stored);
           }
         } catch (error, stackTrace) {
-          // Applying the stored roots failed (likely a dead path after a
-          // jailbreak reinstall). Re-detect and apply the current roots.
-          ClientLogger.e(
-            'local storage apply failed, falling back to fresh defaults',
-            tag: _logTag,
-            error: error,
-            stackTrace: stackTrace,
-          );
-          final fresh = await LocalRuntimeStorageBridge.defaultPaths();
-          effectiveLocalStorage = LocalRuntimeStorageConfig(
-            confirmed: true,
-            runtimeRoot: fresh.runtimeRoot,
-            workspaceRoot: fresh.workspaceRoot,
-            updatedAt: DateTime.now().millisecondsSinceEpoch,
-          );
-          await LocalRuntimeStorageBridge.apply(effectiveLocalStorage);
-          final updated = storedConfig.copyWith(localStorage: effectiveLocalStorage);
-          _config = updated;
-          await RuntimeConnectionConfigStore.write(updated);
+          final isAlreadyCreated = error is PlatformException &&
+              error.code == 'RUNTIME_ALREADY_CREATED';
+          if (isAlreadyCreated) {
+            // The runtime handle is already alive. This can happen when the
+            // onboarding screen triggers core setup before the user confirms
+            // storage. If the stored roots differ from the freshly-detected
+            // defaults only by symlink resolution (e.g. `/private/var/mobile`
+            // vs `/var/mobile`), the native side will treat them as identical
+            // once the Swift fix is in. Until then, keep Dart consistent with
+            // the current environment without trying to move a live runtime.
+            ClientLogger.w(
+              'local storage apply reported runtime already created; '
+              'updating config to current defaults without re-applying',
+              tag: _logTag,
+              error: error,
+              stackTrace: stackTrace,
+            );
+            final fresh = await LocalRuntimeStorageBridge.defaultPaths();
+            effectiveLocalStorage = LocalRuntimeStorageConfig(
+              confirmed: true,
+              runtimeRoot: fresh.runtimeRoot,
+              workspaceRoot: fresh.workspaceRoot,
+              updatedAt: DateTime.now().millisecondsSinceEpoch,
+            );
+            final updated = storedConfig.copyWith(localStorage: effectiveLocalStorage);
+            _config = updated;
+            await RuntimeConnectionConfigStore.write(updated);
+          } else {
+            // Applying the stored roots failed (likely a dead path after a
+            // jailbreak reinstall). Re-detect and apply the current roots.
+            ClientLogger.e(
+              'local storage apply failed, falling back to fresh defaults',
+              tag: _logTag,
+              error: error,
+              stackTrace: stackTrace,
+            );
+            final fresh = await LocalRuntimeStorageBridge.defaultPaths();
+            effectiveLocalStorage = LocalRuntimeStorageConfig(
+              confirmed: true,
+              runtimeRoot: fresh.runtimeRoot,
+              workspaceRoot: fresh.workspaceRoot,
+              updatedAt: DateTime.now().millisecondsSinceEpoch,
+            );
+            await LocalRuntimeStorageBridge.apply(effectiveLocalStorage);
+            final updated = storedConfig.copyWith(localStorage: effectiveLocalStorage);
+            _config = updated;
+            await RuntimeConnectionConfigStore.write(updated);
+          }
         }
         ClientLogger.i(
           'local storage apply done elapsedMs=${storageStopwatch.elapsedMilliseconds}',
@@ -533,7 +562,37 @@ class RuntimeConnectionManager extends ChangeNotifier {
       workspaceRoot: workspaceRoot.trim(),
       updatedAt: DateTime.now().millisecondsSinceEpoch,
     );
-    await LocalRuntimeStorageBridge.apply(localStorage);
+    final current = _config.localStorage;
+    final alreadyApplied = current.confirmed &&
+        current.runtimeRoot.trim() == localStorage.runtimeRoot &&
+        current.workspaceRoot.trim() == localStorage.workspaceRoot;
+    if (!alreadyApplied) {
+      try {
+        await LocalRuntimeStorageBridge.apply(localStorage);
+      } on PlatformException catch (error, stackTrace) {
+        // If the runtime is already running with roots that resolve to the same
+        // location (e.g. `/var/mobile/...` vs `/private/var/mobile/...`), the
+        // native layer will throw RUNTIME_ALREADY_CREATED. The native side now
+        // resolves symlinks before comparing, but keep this guard so the Dart
+        // layer treats an already-matched runtime as a no-op instead of failing
+        // onboarding.
+        if (error.code == 'RUNTIME_ALREADY_CREATED') {
+          ClientLogger.w(
+            'confirm local runtime storage: runtime already created with matching roots, treating as no-op',
+            tag: _logTag,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        } else {
+          rethrow;
+        }
+      }
+    } else {
+      ClientLogger.i(
+        'confirm local runtime storage: roots unchanged, skipping native apply',
+        tag: _logTag,
+      );
+    }
     await _apply(
       _config.copyWith(
         mode: RuntimeConnectionMode.local,

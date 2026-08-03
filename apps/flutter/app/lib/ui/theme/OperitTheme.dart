@@ -268,11 +268,7 @@ class OperitThemeController {
   ThemePreferenceSnapshot get themePreferenceSnapshot =>
       _themePreferenceSnapshot;
   String get activeThemeTargetName {
-    final name = _activeThemeTargetName;
-    if (name == null || name.trim().isEmpty) {
-      throw StateError('No active theme target name');
-    }
-    return name;
+    return _activeThemeTargetName ?? '';
   }
 
   bool get hasActiveThemeTarget =>

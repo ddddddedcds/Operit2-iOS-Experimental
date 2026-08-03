@@ -6,7 +6,7 @@
     <string>ai.operit.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/operit_agent_daemon</string>
+        <string>/var/jb/usr/bin/operit_agent_daemon</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
