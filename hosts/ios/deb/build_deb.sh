@@ -94,7 +94,7 @@ if [ -d "$APP_SRC" ]; then
     echo "   (codesign unavailable; rely on postinst ldid + AppSync Unified)"
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
   # --- produce IPA (app already ad-hoc signed above with $ENTITLEMENTS) ---
-  IPA_NAME="operit2-ios_0.3.55_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"
+  IPA_NAME="operit2-ios_0.3.56_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"
   IPA_OUT="$BASE/$IPA_NAME"
   echo "   building IPA: $IPA_NAME"
   ( cd "$FILES/Applications" && rm -rf Payload && mkdir Payload && cp -R Runner.app Payload/ && zip -q -r "$IPA_OUT" Payload && rm -rf Payload )
