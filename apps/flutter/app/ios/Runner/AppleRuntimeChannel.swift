@@ -411,14 +411,55 @@ final class AppleRuntimeChannel: NSObject {
     }
   }
 
+  /// Resolves the operit data root at runtime, mirroring Rust's
+  /// `operit_ios_env::data_root()` (core/crates/operit-ios-env/src/lib.rs).
+  /// This is the SINGLE source of truth for where logs / sockets / config live.
+  /// Keep it in sync with that Rust logic; do NOT hardcode `/var/jb` or
+  /// `/var/mobile` anywhere else in this file.
+  ///
+  /// Detection order (must match Rust `detect_jailbreak`):
+  /// 1. roothide  — a `.jbroot-*` marker under the app bundle dir, a root-level
+  ///    `/.jbroot` marker, or a non-empty `JBROOT` env var ⇒ real, writable
+  ///    `/var/mobile/.operit` (data, not mach-o, so the roothide `/var` ban
+  ///    does not apply).
+  /// 2. rootless  — `/var/jb` exists ⇒ `/var/jb/var/mobile/.operit`.
+  /// 3. non-jailbreak — app sandbox `Documents/.operit`.
+  private static func iosDataRoot() -> String {
+    let bundleAppDir = "/var/containers/Bundle/Application"
+    var isRootHide = false
+    if let entries = try? FileManager.default.contentsOfDirectory(atPath: bundleAppDir),
+       entries.contains(where: { $0.hasPrefix(".jbroot-") }) {
+      isRootHide = true
+    }
+    if !isRootHide, FileManager.default.fileExists(atPath: "/.jbroot") {
+      isRootHide = true
+    }
+    if !isRootHide,
+       let jbroot = ProcessInfo.processInfo.environment["JBROOT"],
+       !jbroot.isEmpty {
+      isRootHide = true
+    }
+    if isRootHide {
+      return "/var/mobile/.operit"
+    }
+    if FileManager.default.fileExists(atPath: "/var/jb") {
+      return "/var/jb/var/mobile/.operit"
+    }
+    if let home = ProcessInfo.processInfo.environment["HOME"] {
+      return (home as NSString).appendingPathComponent("Documents/.operit")
+    }
+    return "/var/mobile/.operit"
+  }
+
   /// Returns the default Apple runtime and workspace roots.
   /// This app is installed no-sandbox (container-required=false), so the system
   /// never creates a per-app container UUID directory. The original
   /// applicationSupportDirectory path therefore does not exist and the Rust core
-  /// panics on create_dir_all().unwrap(). Use a fixed, always-writable path under
-  /// /var/mobile/.operit and pre-create it before handing it to the runtime.
+  /// panics on create_dir_all().unwrap(). Pre-create the (environment-resolved)
+  /// data root before handing it to the runtime.
   private func defaultStorageRoots() -> (runtime: URL, workspace: URL) {
-    let base = URL(fileURLWithPath: "/var/mobile/.operit/operit2", isDirectory: true)
+    let basePath = (Self.iosDataRoot() as NSString).appendingPathComponent("operit2")
+    let base = URL(fileURLWithPath: basePath, isDirectory: true)
     let runtime = base.appendingPathComponent("runtime", isDirectory: true)
     let workspace = base.appendingPathComponent("workspaces", isDirectory: true)
     for url in [base, runtime, workspace] {
@@ -978,8 +1019,16 @@ final class AppleRuntimeChannel: NSObject {
     return (text, boxes)
   }
 
-  private static let operitDeviceSocketPath = "/var/jb/var/mobile/.operit/operit.sock"
-  private static let operitAgentSocketPath = "/var/jb/var/mobile/.operit/agent.sock"
+  // Resolved at load from the environment-aware data root so the app and the
+  // Rust daemon (which uses operit_ios_env::data_root()) agree on the socket
+  // path. Hardcoding `/var/jb` broke the agent socket on roothide, where that
+  // prefix does not exist.
+  private static let operitDeviceSocketPath: String = {
+    (iosDataRoot() as NSString).appendingPathComponent("operit.sock")
+  }()
+  private static let operitAgentSocketPath: String = {
+    (iosDataRoot() as NSString).appendingPathComponent("agent.sock")
+  }()
 
   /// Sends one line command to a local Unix socket and returns the full reply (read to EOF).
   private static func operitSendLine(_ command: String, socketPath: String) throws -> String {

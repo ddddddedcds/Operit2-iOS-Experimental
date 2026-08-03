@@ -507,10 +507,17 @@ class _AiSetupGuidePageState extends State<_AiSetupGuidePage>
     String? path;
     if (Platform.isIOS) {
       // iOS 无系统目录选择器，改为手动输入路径。
+      var hint = '/var/mobile/.operit/operit2/runtime';
+      try {
+        final defaults = await RuntimeConnectionManager.instance.localRuntimeStorageDefaultPaths();
+        hint = defaults.runtimeRoot;
+      } catch (_) {
+        // keep fallback hint
+      }
       path = await promptPathInput(
         context,
         title: '运行时根目录',
-        hint: '/var/jb/var/mobile/operit/runtime',
+        hint: hint,
       );
     } else {
       path = await getDirectoryPath();
@@ -529,10 +536,17 @@ class _AiSetupGuidePageState extends State<_AiSetupGuidePage>
   Future<void> _selectWorkspaceRoot() async {
     String? path;
     if (Platform.isIOS) {
+      var hint = '/var/mobile/.operit/operit2/workspaces';
+      try {
+        final defaults = await RuntimeConnectionManager.instance.localRuntimeStorageDefaultPaths();
+        hint = defaults.workspaceRoot;
+      } catch (_) {
+        // keep fallback hint
+      }
       path = await promptPathInput(
         context,
         title: '工作区根目录',
-        hint: '/var/jb/var/mobile/operit/workspace',
+        hint: hint,
       );
     } else {
       path = await getDirectoryPath();

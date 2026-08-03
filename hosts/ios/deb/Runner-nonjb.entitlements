@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- ============================================================
+         Non-jailbreak build (TrollStore / ad-hoc / dev cert).
+         Private jailbreak entitlements stripped: on a NON-jailbroken
+         device there is no AppSync/amfid patch, so
+         com.apple.private.security.no-sandbox and
+         com.apple.private.security.container-required=false are NOT
+         honored -> the app falls back to the standard container-only
+         sandbox (data_root = $HOME/Documents/.operit, see
+         operit-ios-env NonJailbreakProvider). We therefore DROP those
+         two private keys instead of fighting the OS.
+         ============================================================ -->
+    <!-- Flutter/Impeller Metal rendering still needs these (standard,
+         honored under plain ad-hoc signing) or the engine SIGABRTs:
+         AGXDeviceUserClient / IOSurfaceRootUserClient. -->
+    <key>com.apple.security.iokit-user-client-class</key>
+    <array>
+        <string>AGXDeviceUserClient</string>
+        <string>IOSurfaceRootUserClient</string>
+    </array>
+    <!-- Allow loading the ad-hoc signed embedded frameworks
+         (Flutter.framework, App.framework, libswift_Concurrency,
+         objective_c.framework). -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <!-- Keychain access. Without application-identifier +
+         keychain-access-groups the app hits securityd error -34018 at
+         launch -> uncaught NSException -> silent SIGABRT. -->
+    <key>application-identifier</key>
+    <string>com.ai.assistance.operit2</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.ai.assistance.operit2</string>
+    </array>
+    <!-- NOTE: intentionally NO
+         com.apple.security.app-sandbox=false,
+         com.apple.private.security.no-sandbox,
+         com.apple.private.security.container-required=false,
+         get-task-allow. The OS applies the standard container sandbox. -->
+</dict>
+</plist>

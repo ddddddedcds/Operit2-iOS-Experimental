@@ -398,13 +398,67 @@ class RuntimeConnectionManager extends ChangeNotifier {
         'config read done mode=${storedConfig.mode.name} localConfirmed=${storedConfig.localStorage.confirmed} remoteCount=${storedConfig.remoteSessions.length} elapsedMs=${readStopwatch.elapsedMilliseconds}',
         tag: _logTag,
       );
+      // effectiveLocalStorage carries the roots actually used this launch. It
+      // starts as the persisted config and is replaced with freshly-detected
+      // roots when the environment changed since the config was written.
+      var effectiveLocalStorage = storedConfig.localStorage;
       if (storedConfig.localStorage.confirmed) {
         final storageStopwatch = Stopwatch()..start();
-        ClientLogger.i(
-          'local storage apply start runtimeRoot=${storedConfig.localStorage.runtimeRoot} workspaceRoot=${storedConfig.localStorage.workspaceRoot}',
-          tag: _logTag,
-        );
-        await LocalRuntimeStorageBridge.apply(storedConfig.localStorage);
+        final stored = storedConfig.localStorage;
+        try {
+          final fresh = await LocalRuntimeStorageBridge.defaultPaths();
+          final envChanged = fresh.runtimeRoot != stored.runtimeRoot ||
+              fresh.workspaceRoot != stored.workspaceRoot;
+          if (envChanged) {
+            // The persisted (confirmed) roots point at a jailbreak layout that
+            // no longer matches this device — e.g. a reinstall moved the jbroot
+            // or switched rootless <-> roothide <-> non-jailbreak. Applying the
+            // stale path makes Rust panic on create_dir_all(); adopt the current
+            // environment's roots instead.
+            ClientLogger.i(
+              'local storage env changed, re-applying fresh roots '
+              'runtimeRoot=${fresh.runtimeRoot} workspaceRoot=${fresh.workspaceRoot} '
+              'stale=${stored.runtimeRoot}',
+              tag: _logTag,
+            );
+            effectiveLocalStorage = LocalRuntimeStorageConfig(
+              confirmed: true,
+              runtimeRoot: fresh.runtimeRoot,
+              workspaceRoot: fresh.workspaceRoot,
+              updatedAt: DateTime.now().millisecondsSinceEpoch,
+            );
+            await LocalRuntimeStorageBridge.apply(effectiveLocalStorage);
+            final updated = storedConfig.copyWith(localStorage: effectiveLocalStorage);
+            _config = updated;
+            await RuntimeConnectionConfigStore.write(updated);
+          } else {
+            ClientLogger.i(
+              'local storage apply start runtimeRoot=${stored.runtimeRoot} workspaceRoot=${stored.workspaceRoot}',
+              tag: _logTag,
+            );
+            await LocalRuntimeStorageBridge.apply(stored);
+          }
+        } catch (error, stackTrace) {
+          // Applying the stored roots failed (likely a dead path after a
+          // jailbreak reinstall). Re-detect and apply the current roots.
+          ClientLogger.e(
+            'local storage apply failed, falling back to fresh defaults',
+            tag: _logTag,
+            error: error,
+            stackTrace: stackTrace,
+          );
+          final fresh = await LocalRuntimeStorageBridge.defaultPaths();
+          effectiveLocalStorage = LocalRuntimeStorageConfig(
+            confirmed: true,
+            runtimeRoot: fresh.runtimeRoot,
+            workspaceRoot: fresh.workspaceRoot,
+            updatedAt: DateTime.now().millisecondsSinceEpoch,
+          );
+          await LocalRuntimeStorageBridge.apply(effectiveLocalStorage);
+          final updated = storedConfig.copyWith(localStorage: effectiveLocalStorage);
+          _config = updated;
+          await RuntimeConnectionConfigStore.write(updated);
+        }
         ClientLogger.i(
           'local storage apply done elapsedMs=${storageStopwatch.elapsedMilliseconds}',
           tag: _logTag,
@@ -422,7 +476,7 @@ class RuntimeConnectionManager extends ChangeNotifier {
         );
         return;
       }
-      await _apply(storedConfig, persist: false);
+      await _apply(storedConfig.copyWith(localStorage: effectiveLocalStorage), persist: false);
       ClientLogger.i(
         'initialize done mode=${_config.mode.name} elapsedMs=${stopwatch.elapsedMilliseconds}',
         tag: _logTag,
