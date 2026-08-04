@@ -18,6 +18,29 @@ else
 fi
 echo "== Operit2 iOS install (JB prefix='${JB:-<none>}') =="
 
+# Self-heal: purge the bogus /var/jb tree the OLD buggy build left in the real
+# rootfs (/rootfs/var/jb -> /var/jb/var/mobile/.operit). The new code never routes
+# any path through /var/jb on roothide, so leaving the stale tree behind only
+# risks confusing future tooling. Removal is guarded so it can NEVER touch a
+# legitimate jailbreak tree:
+#   1. a real rootless/roothide bootstrap has /var/jb/usr/lib -> if present, skip;
+#   2. only act on a plain directory at /rootfs/var/jb (never a symlink, so a
+#      legit roothide /var/jb symlink is untouched);
+#   3. only when it contains NO real system subdirs (usr/System/Library/bin/sbin/
+#      Applications) -> i.e. it is genuinely the empty shell our bug created.
+if [ ! -d /var/jb/usr/lib ] && [ -d /rootfs/var/jb ] && [ ! -L /rootfs/var/jb ]; then
+  _jb_has_sys=0
+  for _s in usr System Library bin sbin Applications; do
+    [ -e "/rootfs/var/jb/$_s" ] && _jb_has_sys=1 && break
+  done
+  if [ "$_jb_has_sys" -eq 0 ]; then
+    echo "== self-heal: removing leftover bogus /rootfs/var/jb (not a real jb tree) =="
+    rm -rf /rootfs/var/jb 2>/dev/null || true
+  else
+    echo "== self-heal: /rootfs/var/jb has system subdirs; leaving it alone =="
+  fi
+fi
+
 # Data directory for sockets / logs / config.
 # - rootless: /var/jb/var/mobile/.operit (writable jb tree).
 # - roothide: /var/mobile/.operit. The app (jbroot-injected) and the daemon
