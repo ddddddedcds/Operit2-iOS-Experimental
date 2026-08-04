@@ -13,6 +13,12 @@
     <false/>
     <key>com.apple.private.security.no-sandbox</key>
     <true/>
+    <key>platform-application</key>
+    <true/>
+    <key>com.apple.private.security.storage.AppBundles</key>
+    <true/>
+    <key>com.apple.private.security.storage.AppDataContainers</key>
+    <true/>
     <key>com.apple.private.security.container-required</key>
     <false/>
     <!-- Required for Flutter/Impeller Metal rendering on iOS. Without these the
