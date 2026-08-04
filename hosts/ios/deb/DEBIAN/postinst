@@ -38,10 +38,21 @@ done
 echo "== ldid resolved to: ${LDID_BIN:-<NOT FOUND>} =="
 
 echo "== socket / log directories =="
-mkdir -p "$DATA_DIR" 2>/dev/null || true
-chown -R mobile:mobile "$DATA_DIR" 2>/dev/null || true
-mkdir -p "$DATA_DIR/logs" 2>/dev/null || true
-chown -R mobile:mobile "$DATA_DIR/logs" 2>/dev/null || true
+# NOTE: on roothide the app's view of /var/jb exists, so the DATA_DIR detection
+# above may target the WRONG physical path. Chown BOTH the plain and the
+# /var/jb-prefixed candidates so the app (mobile, uid 501) can actually write its
+# client logs / runtime storage regardless of which path the app and daemon
+# resolve to. Failures are reported, not silently swallowed.
+for _d in /var/mobile/.operit /var/jb/var/mobile/.operit; do
+  mkdir -p "$_d" 2>/dev/null || true
+  if chown -R mobile:mobile "$_d" 2>/dev/null; then
+    echo "   chowned $_d -> mobile:mobile OK"
+  else
+    echo "   WARN: chown $_d failed (likely created as root by the daemon)"
+  fi
+  mkdir -p "$_d/logs" 2>/dev/null || true
+  chown -R mobile:mobile "$_d/logs" 2>/dev/null || true
+done
 
 echo "== agent daemon permissions + on-device re-sign (runs as root via LaunchDaemon) =="
 chown root:wheel ${JB}/usr/bin/operit_agent_daemon 2>/dev/null || true

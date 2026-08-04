@@ -56,8 +56,15 @@ void main(List<String> _) async {
       _writeLaunchLog('WIDGETS_BINDING_OK');
       final bindingElapsedMs = bindingStopwatch.elapsedMilliseconds;
       final loggerStopwatch = Stopwatch()..start();
-      await ClientLogger.initialize();
-      _writeLaunchLog('CLIENT_LOGGER_INIT_OK');
+      try {
+        await ClientLogger.initialize();
+        _writeLaunchLog('CLIENT_LOGGER_INIT_OK');
+      } catch (e, st) {
+        // Logging must never block app startup. If the data directory is not
+        // writable (e.g. a root-owned .operit on roothide), degrade gracefully
+        // so runApp still executes instead of white-screening.
+        _writeLaunchLog('CLIENT_LOGGER_INIT_FAILED: $e\n$st');
+      }
       ClientLogger.i(
         'widgets binding initialized elapsedMs=$bindingElapsedMs',
         tag: _appStartupLogTag,

@@ -14,12 +14,34 @@ class OperitClientPaths {
       return directory;
     } catch (_) {
       // No-container jailbreak builds (roothide/rootless) have no creatable
-      // sandbox path from path_provider. Fall back to the operit data root,
-      // which matches the Rust core / daemon data_root() and is writable
-      // because the app is built without an app sandbox.
-      final fallback = Directory(_operitDataRoot());
-      await fallback.create(recursive: true);
-      return fallback;
+      // sandbox path from path_provider. Pick a root that is actually WRITABLE
+      // by the app user (mobile, uid 501). On roothide the shared
+      // /var/mobile/.operit may be owned by root (the agent daemon runs as
+      // root and creates it), so we PROBE writability and fall back to a
+      // mobile-owned directory instead of throwing — otherwise
+      // ClientLogger.initialize() fails and the app white-screens.
+      final candidates = <String>[
+        _operitDataRoot(),
+        '/var/mobile/operit2_client',
+        '/var/jb/var/mobile/operit2_client',
+        '/var/mobile',
+        '/var/jb/var/mobile',
+      ];
+      for (final candidate in candidates) {
+        try {
+          final root = Directory(candidate);
+          await root.create(recursive: true);
+          // Confirm we can actually create a subdir (root may be root:755).
+          final probe = Directory('${candidate}/.write_probe');
+          await probe.create(recursive: true);
+          await probe.delete();
+          return root;
+        } catch (_) {
+          // Not writable; try the next candidate.
+        }
+      }
+      // Last resort: system temp is always writable.
+      return Directory.systemTemp;
     }
   }
 
