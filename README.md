@@ -293,8 +293,7 @@ await Tools.Net.deviceAgentStop({});     // 停止
 
 ## 构建脚本（.sh）用法（简要）
 
-iOS 产物（deb / ipa）由本机脚本从 **CI 产出的未签名 Runner.app** 打包而来
-（本机无法跑 `flutter build ios`，缺 Python xcframework）。前置：macOS +
+iOS 产物（deb / ipa）由本机脚本从 **CI 产出的未签名 Runner.app** 打包而来。前置：macOS +
 Python3（`packdeb.py`）、Xcode `codesign`、可选 `ldid`；Rust `aarch64-apple-ios`
 目标用于编译 daemon；rootless theos 用于编译 tweak。
 
