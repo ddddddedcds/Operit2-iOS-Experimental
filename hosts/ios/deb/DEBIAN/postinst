@@ -4,7 +4,14 @@ set -u
 
 # roothide installs to / (dpkg remaps package paths into the random jbroot);
 # rootless installs to /var/jb. Detect so the paths below are correct on both.
-if [ -L /var/jb ] || [ -d /var/jb/usr ]; then
+#
+# CRITICAL: do NOT test bare `/var/jb` existence to tell the two apart. On a
+# real roothide device `/var/jb` exists too (it is a symlink into the jbroot),
+# so the old `[ -L /var/jb ] || [ -d /var/jb/usr ]` rule silently mis-detected
+# roothide as rootless and pointed every path at a non-writable tree. Require a
+# *real* rootless subtree (`/var/jb/usr/lib`); the buggy tweak never created
+# that, so its presence is an unambiguous rootless signal.
+if [ -d /var/jb/usr/lib ]; then
   JB=/var/jb
 else
   JB=
@@ -43,7 +50,20 @@ echo "== socket / log directories =="
 # /var/jb-prefixed candidates so the app (mobile, uid 501) can actually write its
 # client logs / runtime storage regardless of which path the app and daemon
 # resolve to. Failures are reported, not silently swallowed.
-for _d in /var/mobile/.operit /var/jb/var/mobile/.operit; do
+# CRITICAL: never `mkdir -p /var/jb/...` on roothide. Creating a bare /var/jb
+# permanently poisons every "is this rootless?" check made by the app, the
+# daemon and this script — that is exactly what produced the white screen (the
+# app resolved its data root to a root-owned /var/jb tree it cannot write).
+# Only touch the jb tree when a REAL rootless install is present (/var/jb/usr).
+_DATA_CANDIDATES="/var/mobile/.operit"
+if [ -d /var/jb/usr/lib ]; then
+  _DATA_CANDIDATES="$_DATA_CANDIDATES /var/jb/var/mobile/.operit"
+elif [ -d /var/jb ]; then
+  # Leftover bogus /var/jb from an older build: don't extend it, but make any
+  # existing data dir inside it writable so an already-poisoned device recovers.
+  [ -d /var/jb/var/mobile/.operit ] && _DATA_CANDIDATES="$_DATA_CANDIDATES /var/jb/var/mobile/.operit"
+fi
+for _d in $_DATA_CANDIDATES; do
   mkdir -p "$_d" 2>/dev/null || true
   if chown -R mobile:mobile "$_d" 2>/dev/null; then
     echo "   chowned $_d -> mobile:mobile OK"

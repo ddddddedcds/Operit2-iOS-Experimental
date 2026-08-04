@@ -66,6 +66,8 @@ fn operit_data_writable() -> bool {
     if std::fs::create_dir_all(p).is_err() {
         return false;
     }
+    // If we are root and just created it, leave it writable for the app (mobile).
+    relax_dir_permissions(p);
     let probe = p.join(".writetest");
     match std::fs::write(&probe, b"x") {
         Ok(_) => {
@@ -76,23 +78,92 @@ fn operit_data_writable() -> bool {
     }
 }
 
+/// Physical jbroot prefix of the CURRENT executable, e.g.
+/// `/var/containers/Bundle/Application/.jbroot-58EAA282AAFACD0F`.
+///
+/// `None` when this binary was not installed by roothide.
+///
+/// This is the authoritative roothide test: roothide installs the whole
+/// jailbreak tree inside `/var/containers/Bundle/Application/.jbroot-XXXXXXXX/`,
+/// so every binary it ships (app, daemon, tweak dylib) carries that segment in
+/// its own path. Verified on device:
+///   `/var/containers/Bundle/Application/.jbroot-58EAA282AAFACD0F/Applications/Runner.app/Runner`
+pub fn self_jbroot_prefix() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let s = exe.to_string_lossy();
+    let idx = s.find("/.jbroot-")?;
+    let after = &s[idx + 1..];
+    let end = after.find('/').map(|i| idx + 1 + i).unwrap_or(s.len());
+    Some(PathBuf::from(&s[..end]))
+}
+
 /// Detect the active jailbreak environment at runtime.
 ///
-/// Resolution order:
-/// 1. `/var/jb` exists ⇒ rootless (Dopamine / ElleKit).
-/// 2. `/var/mobile/.operit` is writable by this process ⇒ roothide. The app is
-///    unsandboxed inside the jbroot container, so the path is writable; a plain
-///    sandboxed app cannot write there. We deliberately avoid the `.jbroot-*`
-///    markers (invisible to the jbroot-injected app).
-/// 3. Otherwise ⇒ non-jailbreak (local sandbox only).
+/// Resolution order (NEVER test bare `/var/jb` existence — see below):
+/// 1. our own path contains `/.jbroot-` ⇒ roothide.
+/// 2. our own path starts with `/var/jb/` ⇒ rootless (daemon / tweak).
+/// 3. `/var/jb/usr/lib` exists ⇒ rootless (covers the app, which rootless
+///    installs at the stock `/var/containers/...` location). We require a real
+///    subtree, not the bare directory.
+/// 4. `/var/mobile/.operit` writable ⇒ jailbroken with unknown flavour, treated
+///    as roothide (unsandboxed).
+/// 5. Otherwise ⇒ non-jailbreak (local sandbox only).
+///
+/// WHY NOT `Path::new("/var/jb").exists()`?
+/// That was the old rule and it is provably wrong. On a real roothide device our
+/// own tweak created `/var/jb/var/mobile/.operit` (its jbroot mapping was a
+/// compile-time no-op), after which every component saw `/var/jb` and
+/// mis-detected the device as rootless, pointed its data root at a root-owned
+/// directory the app could not write, and the Flutter app white-screened.
+/// A detection rule must not be falsifiable by the thing it detects.
 pub fn detect_jailbreak() -> JailbreakType {
-    if Path::new("/var/jb").exists() {
+    if self_jbroot_prefix().is_some() {
+        return JailbreakType::RootHide;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if exe.starts_with("/var/jb/") {
+            return JailbreakType::Rootless;
+        }
+    }
+    if Path::new("/var/jb/usr/lib").exists() {
         return JailbreakType::Rootless;
     }
     if operit_data_writable() {
         return JailbreakType::RootHide;
     }
     JailbreakType::NonJailbreak
+}
+
+/// Create the data root and make sure a non-root process (the Flutter app runs
+/// as `mobile`, uid 501) can write inside it.
+///
+/// The daemon runs as root under launchd; anything it creates first would
+/// otherwise be `root`-owned `755`, and the app could not create its log/client
+/// subdirectories. That exact situation white-screened the app on roothide.
+/// Widening the mode is enough (the app only needs to create its own children)
+/// and needs no libc dependency.
+pub fn ensure_data_root() -> PathBuf {
+    let root = data_root();
+    let _ = std::fs::create_dir_all(&root);
+    relax_dir_permissions(&root);
+    root
+}
+
+/// chmod 0o777 a directory, best effort. No-op on non-unix.
+pub fn relax_dir_permissions(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(dir) {
+            let mut perm = meta.permissions();
+            if perm.mode() & 0o777 != 0o777 {
+                perm.set_mode(0o777);
+                let _ = std::fs::set_permissions(dir, perm);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// Resolve the two roots for an explicit jailbreak type.
@@ -103,10 +174,14 @@ pub fn resolve_roots_for(jb: JailbreakType) -> Roots {
             data: PathBuf::from("/var/jb/var/mobile/.operit"),
         },
         JailbreakType::RootHide => Roots {
-            binary: std::env::var("JBROOT")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from),
+            // Prefer our own install path: launchd does NOT pass JBROOT to the
+            // daemon, so the env var is frequently absent where it matters.
+            binary: self_jbroot_prefix().or_else(|| {
+                std::env::var("JBROOT")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .map(PathBuf::from)
+            }),
             // roothide: the app (jbroot-injected) and the daemon (system launchd)
             // each resolve "/var/mobile/.operit" to their OWN physical dir. That
             // is fine, because the agent control channel + config now travel over
@@ -206,10 +281,12 @@ impl CapabilitiesProvider for RootHideProvider {
         true
     }
     fn binary_root(&self) -> Option<PathBuf> {
-        std::env::var("JBROOT")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
+        self_jbroot_prefix().or_else(|| {
+            std::env::var("JBROOT")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        })
     }
     fn data_root(&self) -> PathBuf {
         // See `resolve_roots_for` RootHide branch: the app and daemon exchange

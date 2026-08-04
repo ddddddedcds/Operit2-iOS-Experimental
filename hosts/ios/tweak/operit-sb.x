@@ -416,7 +416,7 @@ static NSString *cmd_screenshot(void) {
     @try { png = capture_screen_png(); }
     @catch (NSException *ex) { oc_log("screenshot: %s", ex.reason.UTF8String ?: ""); }
     if (!png || [png length] == 0) return @"ERR|screenshot: all tiers failed (see tweak.log)";
-    NSString *path = jbroot(@"/var/jb/var/mobile/.operit/screen.png");
+    NSString *path = operit_env_path(@"/var/jb/var/mobile/.operit/screen.png");
     if (![png writeToFile:path atomically:NO]) return @"ERR|screenshot: write failed";
     return [NSString stringWithFormat:@"OK|screenshot %lu bytes -> %@", (unsigned long)[png length], path];
 }
@@ -609,12 +609,12 @@ static NSString *cmd_longpress(double nx, double ny) {
 // SpringBoard 读 front.pid -> 连前台 app 的 per-pid socket -> 转给 operit-app 注入。
 static NSString *cmd_type(NSString *text) {
     if (!text || text.length == 0) return @"ERR|type: empty";
-    NSString *pidPath = jbroot(@"/var/jb/var/mobile/.operit/front.pid");
+    NSString *pidPath = operit_env_path(@"/var/jb/var/mobile/.operit/front.pid");
     NSString *pidStr = [NSString stringWithContentsOfFile:pidPath
                                                   encoding:NSUTF8StringEncoding error:nil];
     pidStr = [pidStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!pidStr || pidStr.length == 0) return @"ERR|type: no foreground app (front.pid empty)";
-    NSString *sock = [NSString stringWithFormat:@"%@/app.%@.sock", jbroot(@"/var/jb/var/mobile/.operit"), pidStr];
+    NSString *sock = [NSString stringWithFormat:@"%@/app.%@.sock", operit_env_path(@"/var/jb/var/mobile/.operit"), pidStr];
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return @"ERR|type: socket";
     struct sockaddr_un a; memset(&a, 0, sizeof(a)); a.sun_family = AF_UNIX;
@@ -781,6 +781,6 @@ static void start_server(void) {
 }
 
 %ctor {
-    g_sockpath = jbroot(@"/var/jb/var/mobile/.operit/operit.sock");
+    g_sockpath = operit_env_path(@"/var/jb/var/mobile/.operit/operit.sock");
     start_server();
 }

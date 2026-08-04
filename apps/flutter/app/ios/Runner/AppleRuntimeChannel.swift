@@ -419,37 +419,66 @@ final class AppleRuntimeChannel: NSObject {
   /// `/var/mobile` anywhere else in this file.
   ///
   /// Detection order (must match Rust `detect_jailbreak`):
-  /// 1. rootless  — `/var/jb` exists ⇒ `/var/jb/var/mobile/.operit`.
-  /// 2. roothide  — `/var/mobile/.operit` is writable by this (unsandboxed,
-  ///    jbroot-injected) app ⇒ `/var/mobile/.operit`. We test writability rather
-  ///    than the `.jbroot-*` markers, which are invisible in the app's view.
-  /// 3. non-jailbreak — app sandbox `Documents/.operit`.
+  /// 1. roothide — our OWN executable path contains `/.jbroot-`
+  ///    ⇒ `/var/mobile/.operit` (real root, shared with the root daemon).
+  /// 2. rootless — `/var/jb/usr/lib` exists ⇒ `/var/jb/var/mobile/.operit`.
+  /// 3. writable `/var/mobile/.operit` ⇒ jailbroken, unknown flavour.
+  /// 4. non-jailbreak — app sandbox `Documents/.operit`.
+  ///
+  /// WHY NOT `fileExists("/var/jb")`?
+  /// That was the old rule and it is provably wrong: on roothide our own tweak
+  /// created a real `/var/jb` tree, after which the app mis-detected the device
+  /// as rootless, pointed its data root at a root-owned directory it could not
+  /// write, and white-screened. A detection rule must not be falsifiable by the
+  /// thing it detects. The `.jbroot-` segment answers "who installed me?", which
+  /// nothing can forge. Verified on device:
+  ///   /var/containers/Bundle/Application/.jbroot-58EAA282AAFACD0F/Applications/Runner.app/Runner
+  ///
   /// The agent control channel + config travel over loopback TCP
-  /// (127.0.0.1:8890), shared across the per-process /var remap, so no /rootfs
-  /// anchor is needed.
-  private static func iosDataRoot() -> String {
-    if FileManager.default.fileExists(atPath: "/var/jb") {
+  /// (127.0.0.1:8890), shared across the per-process /var remap.
+  static func selfJbrootPrefix() -> String? {
+    let path = Bundle.main.executablePath
+      ?? ProcessInfo.processInfo.arguments.first
+      ?? ""
+    guard let marker = path.range(of: "/.jbroot-") else { return nil }
+    // Skip the leading '/', then cut at the next '/' (end of the jbroot dir).
+    let afterSlash = path.index(after: marker.lowerBound)
+    if let next = path[afterSlash...].firstIndex(of: "/") {
+      return String(path[path.startIndex..<next])
+    }
+    return path
+  }
+
+  /// Cached because the answer cannot change while the process lives.
+  private static let resolvedDataRoot: String = computeIosDataRoot()
+
+  private static func iosDataRoot() -> String { resolvedDataRoot }
+
+  private static func computeIosDataRoot() -> String {
+    if selfJbrootPrefix() != nil {
+      // roothide: the daemon (real root view) and this app both resolve
+      // "/var/mobile/.operit"; keep them on the same string.
+      return "/var/mobile/.operit"
+    }
+    // rootless needs a REAL subtree, not the bare directory (which anything,
+    // including our own tweak, may have created by accident).
+    if FileManager.default.fileExists(atPath: "/var/jb/usr/lib") {
       return "/var/jb/var/mobile/.operit"
     }
-    // roothide: the app runs unsandboxed inside the jbroot container, so
-    // /var/mobile/.operit is writable; a plain sandboxed app cannot write there.
-    let roothidePath = "/var/mobile/.operit"
-    let probe = (roothidePath as NSString).appendingPathComponent(".writetest")
-    var writable = false
-    if FileManager.default.fileExists(atPath: roothidePath) {
-      writable = FileManager.default.createFile(atPath: probe, contents: nil)
-    } else {
-      try? FileManager.default.createDirectory(atPath: roothidePath, withIntermediateDirectories: true)
-      writable = FileManager.default.createFile(atPath: probe, contents: nil)
+    let unsandboxedPath = "/var/mobile/.operit"
+    let probe = (unsandboxedPath as NSString).appendingPathComponent(".writetest")
+    if !FileManager.default.fileExists(atPath: unsandboxedPath) {
+      try? FileManager.default.createDirectory(
+        atPath: unsandboxedPath, withIntermediateDirectories: true)
     }
-    if writable {
+    if FileManager.default.createFile(atPath: probe, contents: nil) {
       try? FileManager.default.removeItem(atPath: probe)
-      return roothidePath
+      return unsandboxedPath
     }
     if let home = ProcessInfo.processInfo.environment["HOME"] {
       return (home as NSString).appendingPathComponent("Documents/.operit")
     }
-    return "/var/mobile/.operit"
+    return unsandboxedPath
   }
 
   /// Returns the default Apple runtime and workspace roots.

@@ -51,11 +51,19 @@ void OperitTraceAppend(const char *msg) {
 }
 
 static void trace_open(void) {
-    // 尽量保证 .operit 目录存在（忽略一切错误）
-    mkdir("/var/mobile/.operit", 0755);
-    mkdir("/var/jb/var/mobile/.operit", 0755);
+    // 只创建真实根下属于我们自己的目录。绝不 mkdir /var/jb 下任何东西：
+    // roothide 上那会凭空造出 /var/jb，进而毒化所有基于它的环境判定
+    // （真机已坐实：正是这样白屏的）。0777 是为了 root 先建时 mobile 仍可写。
+    mkdir("/var/mobile/.operit", 0777);
+    chmod("/var/mobile/.operit", 0777);
+    // 只有确认是 rootless（有完整 jb 树）时才允许写 /var/jb 候选。
+    int rootless = (access("/var/jb/usr/lib", F_OK) == 0);
     for (int i = 0; kTracePaths[i]; i++) {
-        int fd = open(kTracePaths[i], O_WRONLY | O_CREAT | O_APPEND, 0644);
+        const char *p = kTracePaths[i];
+        if (!rootless && strncmp(p, "/var/jb/", 8) == 0) {
+            continue;
+        }
+        int fd = open(p, O_WRONLY | O_CREAT | O_APPEND, 0666);
         if (fd >= 0 && g_trace_nfds < 8) {
             g_trace_fds[g_trace_nfds++] = fd;
         }

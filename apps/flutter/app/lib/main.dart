@@ -21,20 +21,40 @@ const String _appStartupLogTag = 'AppStartup';
 /// native tracer writes) so all startup diagnostics live in one place and are
 /// visible over SSH even when ClientLogger.initialize() throws. Best-effort;
 /// never throws.
+/// True only for a REAL rootless (Dopamine/ElleKit) install. A bare `/var/jb`
+/// directory proves nothing — on roothide our own code used to create one, and
+/// every `/var/jb`-based detection was poisoned from then on.
+final bool _isRootlessInstall = () {
+  try {
+    return Directory('/var/jb/usr/lib').existsSync();
+  } catch (_) {
+    return false;
+  }
+}();
+
 void _writeLaunchLog(String message) {
   try {
     final ts = DateTime.now().toIso8601String();
     final line = '[$ts] $message\n';
-    const paths = [
+    final paths = <String>[
       '/var/mobile/.operit/launch.log',
       '/var/mobile/trace.log',
       '/var/mobile/.operit/trace.log',
-      '/var/jb/var/mobile/.operit/trace.log',
+      if (_isRootlessInstall) '/var/jb/var/mobile/.operit/trace.log',
       '/tmp/trace.log',
     ];
     for (final p in paths) {
       try {
-        File(p).parent.createSync(recursive: true);
+        final parent = File(p).parent;
+        if (!parent.existsSync()) {
+          // Never create a whole new tree for a candidate that may not belong
+          // here — that is exactly how a bogus /var/jb got created. Only create
+          // the leaf directory, and only when its own parent already exists.
+          if (!parent.parent.existsSync()) {
+            continue;
+          }
+          parent.createSync();
+        }
         File(p).writeAsStringSync(line, mode: FileMode.append);
       } catch (_) {
         // Try next candidate path.
@@ -79,38 +99,62 @@ void main(List<String> _) async {
         'client log hooks installed elapsedMs=${hooksStopwatch.elapsedMilliseconds}',
         tag: _appStartupLogTag,
       );
+      // Every await below used to be able to abort startup before runApp(),
+      // which shows up as a pure white screen with no visible error. Each step
+      // is now individually guarded: a failure is recorded in the launch/trace
+      // log and startup continues, so the UI always comes up.
       final runtimeStopwatch = Stopwatch()..start();
-      await RuntimeConnectionManager.instance.initialize();
-      ClientLogger.i(
-        'runtime connection initialized elapsedMs=${runtimeStopwatch.elapsedMilliseconds}',
-        tag: _appStartupLogTag,
-      );
-      _writeLaunchLog('RUNTIME_INIT_OK');
+      try {
+        await RuntimeConnectionManager.instance.initialize();
+        ClientLogger.i(
+          'runtime connection initialized elapsedMs=${runtimeStopwatch.elapsedMilliseconds}',
+          tag: _appStartupLogTag,
+        );
+        _writeLaunchLog('RUNTIME_INIT_OK');
+      } catch (e, st) {
+        _writeLaunchLog('RUNTIME_INIT_FAILED: $e\n$st');
+      }
       final glassStopwatch = Stopwatch()..start();
-      await LiquidGlassWidgets.initialize();
-      ClientLogger.i(
-        'liquid glass initialized elapsedMs=${glassStopwatch.elapsedMilliseconds}',
-        tag: _appStartupLogTag,
-      );
-      _writeLaunchLog('LIQUID_GLASS_OK');
+      try {
+        await LiquidGlassWidgets.initialize();
+        ClientLogger.i(
+          'liquid glass initialized elapsedMs=${glassStopwatch.elapsedMilliseconds}',
+          tag: _appStartupLogTag,
+        );
+        _writeLaunchLog('LIQUID_GLASS_OK');
+      } catch (e, st) {
+        _writeLaunchLog('LIQUID_GLASS_INIT_FAILED: $e\n$st');
+      }
       final windowStopwatch = Stopwatch()..start();
-      final windowArguments = await readOperitWindowArguments();
-      ClientLogger.i(
-        'window arguments read type=${windowArguments.runtimeType} elapsedMs=${windowStopwatch.elapsedMilliseconds}',
-        tag: _appStartupLogTag,
-      );
-      _writeLaunchLog('WINDOW_ARGS_OK type=${windowArguments.runtimeType}');
-      switch (windowArguments) {
-        case MainWindowArguments():
-          final coreStopwatch = Stopwatch()..start();
+      Object? windowArguments;
+      try {
+        windowArguments = await readOperitWindowArguments();
+        ClientLogger.i(
+          'window arguments read type=${windowArguments.runtimeType} elapsedMs=${windowStopwatch.elapsedMilliseconds}',
+          tag: _appStartupLogTag,
+        );
+        _writeLaunchLog('WINDOW_ARGS_OK type=${windowArguments.runtimeType}');
+      } catch (e, st) {
+        _writeLaunchLog('WINDOW_ARGS_FAILED: $e\n$st');
+      }
+      final resolvedWindowArguments = windowArguments;
+      if (resolvedWindowArguments is DetachedChatWindowArguments) {
+        _runDetachedChatWindow(resolvedWindowArguments);
+      } else {
+        // MainWindowArguments, or window arguments could not be read at all:
+        // fall back to the main window instead of leaving a blank screen.
+        final coreStopwatch = Stopwatch()..start();
+        try {
           CoreApplicationService.instance.initialize();
           ClientLogger.i(
             'core application initialize dispatched elapsedMs=${coreStopwatch.elapsedMilliseconds}',
             tag: _appStartupLogTag,
           );
-          _runMainWindow();
-        case final DetachedChatWindowArguments detachedArguments:
-          _runDetachedChatWindow(detachedArguments);
+          _writeLaunchLog('CORE_APP_INIT_OK');
+        } catch (e, st) {
+          _writeLaunchLog('CORE_APP_INIT_FAILED: $e\n$st');
+        }
+        _runMainWindow();
       }
       ClientLogger.i(
         'startup done elapsedMs=${startupStopwatch.elapsedMilliseconds}',
@@ -141,17 +185,25 @@ void main(List<String> _) async {
 void _runMainWindow() {
   ClientLogger.i('run main window', tag: _appStartupLogTag);
   _writeLaunchLog('BEFORE_RUN_APP main');
-  runApp(
-    LiquidGlassWidgets.wrap(
-      respectSystemAccessibility: false,
-      theme: GlassThemeData.simple(
-        blur: 2.5,
-        thickness: 36,
-        quality: GlassQuality.standard,
+  try {
+    runApp(
+      LiquidGlassWidgets.wrap(
+        respectSystemAccessibility: false,
+        theme: GlassThemeData.simple(
+          blur: 2.5,
+          thickness: 36,
+          quality: GlassQuality.standard,
+        ),
+        child: const OperitApp(),
       ),
-      child: const OperitApp(),
-    ),
-  );
+    );
+    _writeLaunchLog('AFTER_RUN_APP main');
+  } catch (e, st) {
+    // Never let the glass wrapper keep the UI from mounting.
+    _writeLaunchLog('RUN_APP_WRAP_FAILED: $e\n$st');
+    runApp(const OperitApp());
+    _writeLaunchLog('AFTER_RUN_APP main(plain)');
+  }
 }
 
 /// Starts a detached chat window after runtime configuration is loaded.

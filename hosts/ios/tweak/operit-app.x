@@ -205,7 +205,7 @@ static void *app_server_thread(void *unused) {
 }
 
 %ctor {
-    g_frontpath = jbroot(@"/var/jb/var/mobile/.operit/front.pid");
+    g_frontpath = operit_env_path(@"/var/jb/var/mobile/.operit/front.pid");
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if ([bid isEqualToString:@"com.apple.SpringBoard"]) return;   // 不注入 SpringBoard
     // 不注入 Operit2 自身 app（bundle id = com.ai.assistance.operit2），避免无谓注入/递归；
@@ -218,7 +218,7 @@ static void *app_server_thread(void *unused) {
     // 注入，保留地址栏/搜索框的跨 App 打字能力。
     if ([bid hasPrefix:@"com.apple.WebKit."]) return;
     int pid = getpid();
-    g_oc_logpath = [NSString stringWithFormat:@"%@/logs/app-%d.log", jbroot(@"/var/jb/var/mobile/.operit"), pid];
+    g_oc_logpath = [NSString stringWithFormat:@"%@/logs/app-%d.log", operit_env_path(@"/var/jb/var/mobile/.operit"), pid];
     oc_log("app init bid=%s pid=%d", [bid UTF8String], pid);
 
     // 上报前台 pid：启动时写一次，上台时更新，进后台若为自身则清除（home 屏 front.pid 为空）。
@@ -233,7 +233,7 @@ static void *app_server_thread(void *unused) {
                 usingBlock:^(NSNotification *n){ (void)n; clear_front_pid_if_mine(getpid()); }];
     oc_log("front.pid observers registered");
 
-    NSString *path = [NSString stringWithFormat:@"%@/app.%d.sock", jbroot(@"/var/jb/var/mobile/.operit"), pid];
+    NSString *path = [NSString stringWithFormat:@"%@/app.%d.sock", operit_env_path(@"/var/jb/var/mobile/.operit"), pid];
     unlink([path UTF8String]);
     g_sockpath_app = path;   // 记下供退出清理
     g_appfd = socket(AF_UNIX, SOCK_STREAM, 0);
