@@ -80,7 +80,14 @@ class OperitClientPaths {
   static bool get _isRootHide {
     if (!Platform.isIOS) return false;
     try {
-      return Platform.resolvedExecutable.contains('/.jbroot-');
+      if (Platform.resolvedExecutable.contains('/.jbroot-')) return true;
+    } catch (_) {}
+    // roothide: /var/jb is a symlink to / (compat layer). A real rootless
+    // /var/jb is a directory, never a symlink. This test is reliable even when
+    // the executable path is remapped and hides the .jbroot- segment.
+    try {
+      Link('/var/jb').targetSync();
+      return true;
     } catch (_) {
       return false;
     }

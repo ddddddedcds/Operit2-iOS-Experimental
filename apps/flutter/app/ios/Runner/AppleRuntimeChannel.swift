@@ -449,15 +449,26 @@ final class AppleRuntimeChannel: NSObject {
     return path
   }
 
+  /// True on roothide. `selfJbrootPrefix()` reads the executable path, which
+  /// roothide may remap (hiding the `.jbroot-` segment), so also accept the
+  /// roothide compat-layer symlink `/var/jb -> /` (a real rootless `/var/jb` is
+  /// a directory, never a symlink).
+  private static func isRootHideInstall() -> Bool {
+    if selfJbrootPrefix() != nil { return true }
+    return (try? FileManager.default.destinationOfSymbolicLink(atPath: "/var/jb")) != nil
+  }
+
   /// Cached because the answer cannot change while the process lives.
   private static let resolvedDataRoot: String = computeIosDataRoot()
 
   private static func iosDataRoot() -> String { resolvedDataRoot }
 
   private static func computeIosDataRoot() -> String {
-    if selfJbrootPrefix() != nil {
-      // roothide: the daemon (real root view) and this app both resolve
-      // "/var/mobile/.operit"; keep them on the same string.
+    if isRootHideInstall() {
+      // roothide: the app runs in the jbroot view, so "/var/mobile/.operit"
+      // physically resolves to .jbroot-XXX/var/mobile/.operit — exactly the
+      // directory the daemon addresses via its .jbroot-XXX prefix. Keep them on
+      // the same physical location.
       return "/var/mobile/.operit"
     }
     // rootless needs a REAL subtree, not the bare directory (which anything,

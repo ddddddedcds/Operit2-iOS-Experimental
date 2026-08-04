@@ -97,27 +97,59 @@ pub fn self_jbroot_prefix() -> Option<PathBuf> {
     Some(PathBuf::from(&s[..end]))
 }
 
+/// True when `path` is a symbolic link (without following it).
+fn is_symlink(path: &str) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Locate the roothide jbroot container prefix WITHOUT relying on our own
+/// executable path.
+///
+/// roothide installs every jailbreak file (app, daemon, dylib, frameworks)
+/// under `/var/containers/Bundle/Application/.jbroot-XXXXXXXX/`. An app/tweak can
+/// read its own `.jbroot-` segment from `current_exe()` / `Bundle.main`, but a
+/// daemon's `current_exe()` is REMAPPED to `/usr/bin` by roothide (the segment
+/// is hidden), so `self_jbroot_prefix()` returns `None` for daemons. We discover
+/// the prefix by scanning that well-known directory instead.
+fn scan_jbroot_prefix() -> Option<PathBuf> {
+    let base = Path::new("/var/containers/Bundle/Application/");
+    let entries = std::fs::read_dir(base).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        if s.starts_with(".jbroot-") {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
 /// Detect the active jailbreak environment at runtime.
 ///
-/// Resolution order (NEVER test bare `/var/jb` existence — see below):
-/// 1. our own path contains `/.jbroot-` ⇒ roothide.
-/// 2. our own path starts with `/var/jb/` ⇒ rootless (daemon / tweak).
-/// 3. `/var/jb/usr/lib` exists ⇒ rootless (covers the app, which rootless
-///    installs at the stock `/var/containers/...` location). We require a real
-///    subtree, not the bare directory.
+/// Resolution order (NEVER test bare `/var/jb` existence as "rootless" — see
+/// below):
+/// 1. our own path contains `/.jbroot-` ⇒ roothide (app / tweak / dylib).
+/// 2. `/var/jb` is a SYMLINK ⇒ roothide. On roothide `/var/jb` is a compat-layer
+///    symlink pointing at `/` (so `/var/jb/usr/lib` *does* exist there); on
+///    rootless `/var/jb` is a real directory. This is the reliable daemon test.
+/// 3. `/var/jb/usr/lib` exists AND `/var/jb` is a real directory ⇒ rootless.
 /// 4. `/var/mobile/.operit` writable ⇒ jailbroken with unknown flavour, treated
 ///    as roothide (unsandboxed).
 /// 5. Otherwise ⇒ non-jailbreak (local sandbox only).
 ///
-/// WHY NOT `Path::new("/var/jb").exists()`?
-/// That was the old rule and it is provably wrong. On a real roothide device our
-/// own tweak created `/var/jb/var/mobile/.operit` (its jbroot mapping was a
-/// compile-time no-op), after which every component saw `/var/jb` and
-/// mis-detected the device as rootless, pointed its data root at a root-owned
-/// directory the app could not write, and the Flutter app white-screened.
-/// A detection rule must not be falsifiable by the thing it detects.
+/// WHY NOT `Path::new("/var/jb/usr/lib").exists()` alone?
+/// On a real roothide device `/var/jb` is a symlink to `/`, so `/var/jb/usr/lib`
+/// EXISTS too — that test alone mis-detects roothide as rootless, which then
+/// points the daemon's data root at the wrong physical directory and breaks the
+/// app↔daemon shared data dir (config / logs / tool packages). A detection rule
+/// must not be falsifiable by the thing it detects.
 pub fn detect_jailbreak() -> JailbreakType {
     if self_jbroot_prefix().is_some() {
+        return JailbreakType::RootHide;
+    }
+    if is_symlink("/var/jb") {
         return JailbreakType::RootHide;
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -176,18 +208,26 @@ pub fn resolve_roots_for(jb: JailbreakType) -> Roots {
         JailbreakType::RootHide => Roots {
             // Prefer our own install path: launchd does NOT pass JBROOT to the
             // daemon, so the env var is frequently absent where it matters.
-            binary: self_jbroot_prefix().or_else(|| {
-                std::env::var("JBROOT")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .map(PathBuf::from)
-            }),
-            // roothide: the app (jbroot-injected) and the daemon (system launchd)
-            // each resolve "/var/mobile/.operit" to their OWN physical dir. That
-            // is fine, because the agent control channel + config now travel over
-            // loopback TCP (127.0.0.1:8890), which is shared across the
-            // per-process /var remap. No /rootfs anchor is needed.
-            data: PathBuf::from("/var/mobile/.operit"),
+            // For daemons current_exe() is remapped to /usr/bin by roothide, so
+            // fall back to scanning the jbroot container directory.
+            binary: self_jbroot_prefix()
+                .or_else(scan_jbroot_prefix)
+                .or_else(|| {
+                    std::env::var("JBROOT")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .map(PathBuf::from)
+                }),
+            // The Flutter app (jbroot-injected) resolves "/var/mobile/.operit" to
+            // the jbroot view, which physically lands at
+            // .jbroot-XXX/var/mobile/.operit. A daemon runs in the REAL-ROOT view
+            // where "/var/mobile/.operit" is a DIFFERENT directory, so it must
+            // address the same physical location explicitly via the jbroot
+            // prefix. Otherwise the app and daemon write to two separate
+            // directories and shared data (config / logs / tool packages) splits.
+            data: scan_jbroot_prefix()
+                .map(|p| p.join("var/mobile/.operit"))
+                .unwrap_or_else(|| PathBuf::from("/var/mobile/.operit")),
         },
         JailbreakType::NonJailbreak => Roots {
             binary: None,
@@ -289,10 +329,13 @@ impl CapabilitiesProvider for RootHideProvider {
         })
     }
     fn data_root(&self) -> PathBuf {
-        // See `resolve_roots_for` RootHide branch: the app and daemon exchange
-        // the agent channel + config over loopback TCP, so a shared physical dir
-        // is not required.
-        PathBuf::from("/var/mobile/.operit")
+        // Must match the Flutter app's jbroot-view /var/mobile/.operit, which
+        // physically resolves to .jbroot-XXX/var/mobile/.operit. Address that
+        // same physical directory explicitly so daemon-written data (config /
+        // logs / tool packages) is visible to the app.
+        scan_jbroot_prefix()
+            .map(|p| p.join("var/mobile/.operit"))
+            .unwrap_or_else(|| PathBuf::from("/var/mobile/.operit"))
     }
     fn can_inject_tweaks(&self) -> bool {
         true
