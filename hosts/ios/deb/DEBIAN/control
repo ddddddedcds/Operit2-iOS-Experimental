@@ -5,7 +5,8 @@ Architecture: iphoneos-arm64
 Description: Operit2（iOS 越狱版）— 改编自 AAswordman/Operit2 的非官方
  实验性分支，内置 Operit2 的 Flutter 界面；截图、OCR、触控输入与
  设备自动化由设备上的 ios-mcp 后端处理
- （https://github.com/witchan/ios-mcp，localhost:8090）。
+ （https://github.com/witchan/ios-mcp，localhost:8090；
+ 本 fork 所用适配版：https://github.com/ddddddedcds/ios-mcp）。
  .
  项目地址：https://github.com/ddddddedcds/Operit2/tree/feat/ios-jailbreak-preview4
  改编自原作 Operit2（by AAswordman）：https://github.com/AAswordman/Operit2
