@@ -688,9 +688,18 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
     // terminal UI, only bash-internal character width may be slightly off.
     command.env("LANG", "C");
     command.env("PS1", "$PWD $ ");
-    let mut path = std::env::var("PATH").unwrap_or_else(|_| {
-        "/usr/bin:/bin:/usr/sbin:/sbin".to_string()
-    });
+    // Baseline POSIX PATH — iOS launchd often omits /bin (where bash lives)
+    // and may supply a minimal PATH like "/usr/bin:/usr/sbin:/sbin".  Always
+    // include the four standard directories so that a bare "bash" resolver can
+    // find /bin/bash even when the inherited environment is sparse.
+    let baseline = "/usr/bin:/bin:/usr/sbin:/sbin";
+    let mut path = match std::env::var("PATH") {
+        Ok(inherited) if !inherited.is_empty() => {
+            // Prepend baseline so our known-good dirs are checked first.
+            format!("{}:{}", baseline, inherited)
+        }
+        _ => baseline.to_string(),
+    };
     if let Some(bin) = operit_ios_env::binary_root() {
         for sub in ["bin", "usr/bin", "sbin", "usr/sbin"] {
             let dir = bin.join(sub);
@@ -700,6 +709,10 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
             }
         }
     }
+    // Deduplicate: keep first occurrence of each directory (O(N²) but PATH has <20 entries).
+    let mut seen = std::collections::HashSet::new();
+    let deduped: Vec<&str> = path.split(':').filter(|&s| seen.insert(s)).collect();
+    path = deduped.join(":");
     let prompt_marker = prompt_env.is_some();
     command.env("PATH", path.clone());
     if let Some(p) = prompt_env {
@@ -730,17 +743,26 @@ fn posixPtyCommand(workingDir: &str) -> CommandBuilder {
 #[cfg(target_os = "ios")]
 fn ios_pty_shell() -> String {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    // 1. jbroot-prefixed (works for both rootless and roothide when binary_root resolves)
     if let Some(bin) = operit_ios_env::binary_root() {
         candidates.push(bin.join("bin/bash"));
         candidates.push(bin.join("bin/sh"));
     }
+    // 2. Standard jailbreak locations (Procursus / Sileo / rootless)
+    candidates.push(std::path::PathBuf::from("/var/jb/bin/bash"));
+    candidates.push(std::path::PathBuf::from("/var/jb/bin/sh"));
+    // 3. System locations (rothide often symlinks these into jbroot)
     candidates.push(std::path::PathBuf::from("/bin/bash"));
     candidates.push(std::path::PathBuf::from("/bin/sh"));
+    candidates.push(std::path::PathBuf::from("/usr/bin/bash"));
+    candidates.push(std::path::PathBuf::from("/usr/bin/sh"));
     for candidate in candidates {
         if candidate.exists() {
             return candidate.to_string_lossy().into_owned();
         }
     }
+    // Last resort: bare name — portable-pty will search PATH (which now always
+    // contains /bin thanks to the baseline fix above).
     "bash".to_string()
 }
 
