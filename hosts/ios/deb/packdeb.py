@@ -10,12 +10,27 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 FILES = os.path.join(ROOT, "files")
 DEBIAN = os.path.join(ROOT, "DEBIAN")
 _SCHEME0 = os.environ.get("OPERIT_PACK_SCHEME", "rootless")
+
+
+def read_control_version():
+    """Single source of truth for the package version = DEBIAN/control `Version:`."""
+    try:
+        with open(os.path.join(DEBIAN, "control"), "r", encoding="utf-8") as f:
+            for line in f:
+                if line.lower().startswith("version:"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return "0.0.0"
+
+
 # roothide packages are tagged with the `iphoneos-arm64e` Architecture value
 # (per theapplewiki/roothide docs). NOTE: this is purely a package-manager
 # marker string — it has nothing to do with the actual arm64e CPU slice, so a
 # pure arm64 binary is fine inside such a package.
-OUT = os.path.join(ROOT, "operit2-ios_0.3.60_%s.deb" %
-                   ("iphoneos-arm64e" if _SCHEME0 == "roothide" else "iphoneos-arm64"))
+OUT = os.path.join(ROOT, "operit2-ios_%s_%s.deb" %
+                   (read_control_version(),
+                    "iphoneos-arm64e" if _SCHEME0 == "roothide" else "iphoneos-arm64"))
 
 # Package scheme is selected via the OPERIT_PACK_SCHEME env var (set by
 # build_deb.sh). roothide: the process rootfs view IS the jbroot, so the deb is

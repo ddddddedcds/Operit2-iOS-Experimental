@@ -16,7 +16,7 @@
 		<false/>
 	</dict>
     <key>UserName</key>
-    <string>root</string>
+    <string>mobile</string>
     <key>WorkingDirectory</key>
     <string>/var/mobile</string>
     <key>StandardOutPath</key>

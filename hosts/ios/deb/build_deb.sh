@@ -13,21 +13,27 @@ if [ "$SCHEME" = "roothide" ]; then
 else
   ENTITLEMENTS="$BASE/Runner.entitlements"
 fi
-# The daemon is a STANDALONE LaunchDaemon. It is launched by launchd as ROOT
-# (plist UserName=root) because on iOS a mobile user cannot create a Unix domain
-# socket in /var/mobile/.operit — it gets EACCES even though the directory is
-# mobile-writable for regular files; only root can bind the socket. It therefore
-# uses the SAME 4-key set as the app (platform-application + no-sandbox +
-# AppBundles + AppDataContainers), which roothide requires for any binary that
-# touches the jbroot. Running as root bypasses the mobile socket restriction.
-DAEMON_ENTITLEMENTS="$ENTITLEMENTS"
+# Standalone LaunchDaemon agent daemon (restored 0.3.65): launched by launchd as
+# the automation host on 127.0.0.1:8890 (TCP, so any user can bind it — the plist
+# runs it as mobile). Gives lock-screen / background automation the foreground app
+# can't (iOS suspends backgrounded apps). On-device postinst re-signs the daemon
+# with ldid and registers its cdhash in the jailbreak trustcache via
+# `jbctl trustcache add`, so AMFI does not SIGKILL it at exec (ExitCode 9).
+
+# Single source of truth for the package version = the `Version:` field in
+# DEBIAN/control. packdeb.py reads the SAME field, so bumping control bumps the
+# .deb AND .ipa names automatically — no more editing 3 files by hand.
+VERSION="$(awk -F': ' '/^Version:/{print $2; exit}' "$BASE/DEBIAN/control")"
 IOS="$BASE/.."                       # hosts/ios
 TWEAK="$IOS/tweak"
-DAEMON="$IOS/target/aarch64-apple-ios/release/operit_agent_daemon"
 FILES="$BASE/files"
-
-# --- sanity: artifacts must exist ---
+# Standalone agent daemon (restored 0.3.65): prebuilt release binary from the
+# Rust crate (hosts/ios/target/aarch64-apple-ios/release). Re-signed + trustcache
+# registered on-device by postinst; build-time sign is just so it ships signed.
+DAEMON="$IOS/target/aarch64-apple-ios/release/operit_agent_daemon"
 [ -f "$DAEMON" ] || { echo "ERROR: daemon not built: $DAEMON"; exit 1; }
+
+# --- sanity: tweak dylibs must exist ---
 # Copy the FAT (arm64+arm64e) dylib, NOT the per-arch slice — A12+ devices are arm64e,
 # an arm64-only dylib injected into an arm64e process (e.g. SpringBoard) fails / crashes.
 SB="$TWEAK/.theos/obj/debug/operit-sb.dylib"
@@ -36,32 +42,35 @@ APP="$TWEAK/.theos/obj/debug/operit-app.dylib"
 [ -f "$APP" ] || { echo "ERROR: operit-app.dylib not built (fat)"; exit 1; }
 
 # --- stage files into rootless layout (relative to /var/jb) ---
-mkdir -p "$FILES/usr/bin" "$FILES/Library/MobileSubstrate/DynamicLibraries" "$FILES/Library/LaunchDaemons"
+# Standalone agent daemon (restored 0.3.65): stage the binary, pre-sign it on
+# macOS, and ship the plist so postinst can re-sign + trustcache-register it.
+mkdir -p "$FILES/usr/bin" "$FILES/Library/LaunchDaemons"
 cp "$DAEMON" "$FILES/usr/bin/operit_agent_daemon"
-# ad-hoc sign the daemon (standalone LaunchDaemon binary) so AMFI does not SIGKILL it
-# on exec. An unsigned daemon -> launchctl reports ExitCode 9 and agent.sock never appears.
-# Sign with DAEMON_ENTITLEMENTS (= the scheme's 4-key set: platform-application +
-# no-sandbox + AppBundles + AppDataContainers), which roothide requires for any
-# binary that touches the jbroot. The actual EACCES-on-socket fix is running the
-# daemon as ROOT (plist UserName=root); a mobile user cannot bind a Unix socket
-# in /var/mobile/.operit even though the dir is mobile-writable for plain files.
-# Sign the daemon. roothide's AMFI REJECTS Apple ad-hoc codesign (SIGKILL on
-# exec -> launchctl ExitCode 9, agent.sock never appears); the roothide-ecosystem
-# signer is `ldid`. Prefer macOS ldid (stable) when building the roothide scheme;
-# fall back to codesign for rootless / when ldid is absent.
-if [ "$SCHEME" = "roothide" ] && [ -x /usr/local/bin/ldid ]; then
-  echo "   signing daemon (macOS ldid) with entitlements ..."
-  /usr/local/bin/ldid -S"$DAEMON_ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
-    echo "   (ldid failed; daemon will need 'sudo ldid -S' on-device)"
+# Pre-sign the daemon on macOS so it ships signed. The SCHEME entitlements are
+# used (same key set as the app): the daemon touches the jbroot and needs the
+# roothide platform keys. On-device postinst re-signs with ldid and registers
+# the new cdhash via `jbctl trustcache add` — THAT is what prevents AMFI SIGKILL.
+if [ "$SCHEME" = "roothide" ] && command -v ldid >/dev/null 2>&1; then
+  echo "   signing daemon (macOS ldid) with $ENTITLEMENTS ..."
+  ldid -S"$ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
+    echo "   (ldid pre-sign failed; postinst re-signs on-device)"
 else
-  echo "   ad-hoc signing daemon (macOS codesign) with daemon entitlements ..."
-  codesign --force --sign - --entitlements "$DAEMON_ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
-    echo "   (codesign unavailable; daemon will need 'sudo ldid -S' on-device)"
+  echo "   ad-hoc signing daemon (macOS codesign) with entitlements ..."
+  codesign --force --sign - --entitlements "$ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
+    echo "   (codesign unavailable; postinst re-signs on-device)"
 fi
-# Ship the entitlements file into the deb so postinst can re-sign the daemon
-# on-device with the EXACT same keys. A bare `ldid -S` (no file) would strip
-# platform-application + no-sandbox; under roothide that breaks the daemon
-# (sandbox/file-access failures) on top of the signature-trust problem.
+# Ship the daemon LaunchDaemon plist (paths are scheme-agnostic: /usr/bin and
+# /Library/LaunchDaemons resolve under both rootless /var/jb and roothide jbroot;
+# Dopamine's launchdhook auto-injects JBROOT/Library/LaunchDaemons). The plist
+# already lives in the files/ staging tree, so just assert it's present.
+if [ ! -f "$FILES/Library/LaunchDaemons/ai.operit.agent.plist" ]; then
+  echo "   WARN: daemon plist missing at files/Library/LaunchDaemons/"
+fi
+
+mkdir -p "$FILES/Library/MobileSubstrate/DynamicLibraries"
+# Ship the APP's full entitlements into the deb so postinst can re-sign the
+# frontend app on-device (platform-application + AppBundles/AppDataContainers +
+# iokit Metal + keychain — the app needs all of those).
 mkdir -p "$FILES/usr/share/operit"
 cp "$ENTITLEMENTS" "$FILES/usr/share/operit/operit.entitlements"
 
@@ -69,13 +78,17 @@ cp "$SB" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.dylib"
 cp "$TWEAK/operit-sb.plist" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-sb.plist"
 cp "$APP" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-app.dylib"
 cp "$TWEAK/operit-app.plist" "$FILES/Library/MobileSubstrate/DynamicLibraries/operit-app.plist"
-cp "$BASE/files/Library/LaunchDaemons/ai.operit.agent.plist" "$FILES/Library/LaunchDaemons/ai.operit.agent.plist" 2>/dev/null || true
 
 # --- stage frontend app (override source with APP_SRC=... ; default = local build output) ---
 APP_SRC="${APP_SRC:-/Users/mac/Downloads/Runner 2.app}"
 if [ -d "$APP_SRC" ]; then
   echo "== staging frontend app: $APP_SRC =="
-  rm -rf "$FILES/Applications"
+  # NOTE: use mv-to-tmp instead of `rm -rf` for the big app trees. A Runner.app
+  # is ~1000+ files and bulk-delete guards (and slow recursive unlinks) get in
+  # the way; renaming the directory is one syscall and the tmp copy is reaped by
+  # the OS. Same trick for the Payload dir below.
+  _stale="${TMPDIR:-/tmp}/operit-stale-$$-app"
+  [ -d "$FILES/Applications" ] && mv "$FILES/Applications" "$_stale" 2>/dev/null || true
   mkdir -p "$FILES/Applications"
   cp -R "$APP_SRC" "$FILES/Applications/Runner.app"
   # drop any download quarantine / resource-fork xattrs; strip stale sig if any
@@ -94,49 +107,17 @@ if [ -d "$APP_SRC" ]; then
     echo "   (codesign unavailable; rely on postinst ldid + AppSync Unified)"
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
   # --- produce IPA (app already ad-hoc signed above with $ENTITLEMENTS) ---
-  IPA_NAME="operit2-ios_0.3.60_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"
+  IPA_NAME="operit2-ios_${VERSION}_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"
   IPA_OUT="$BASE/$IPA_NAME"
   echo "   building IPA: $IPA_NAME"
-  ( cd "$FILES/Applications" && rm -rf Payload && mkdir Payload && cp -R Runner.app Payload/ && zip -q -r "$IPA_OUT" Payload && rm -rf Payload )
+  ( cd "$FILES/Applications" \
+      && { [ -d Payload ] && mv Payload "${TMPDIR:-/tmp}/operit-stale-$$-pre" 2>/dev/null || true; } \
+      && mkdir Payload && cp -R Runner.app Payload/ \
+      && rm -f "$IPA_OUT" && zip -q -r "$IPA_OUT" Payload \
+      && mv Payload "${TMPDIR:-/tmp}/operit-stale-$$-post" 2>/dev/null || true )
   echo "   wrote $IPA_NAME ($(du -h "$IPA_OUT" | cut -f1))"
 else
   echo "WARNING: APP_SRC not found ($APP_SRC); building backend-only deb"
-fi
-
-# --- verify key protocol strings before packaging (cargo cache guard) ---
-# Use byte-level search (macOS `strings` drops wide UTF-8, giving false MISS).
-echo "== verifying daemon binary strings (byte-level) =="
-python3 - "$FILES/usr/bin/operit_agent_daemon" <<'PY'
-import sys
-data=open(sys.argv[1],'rb').read()
-ok=True
-for s in [b'operit-agent daemon v', b'OK|pong', '设备上下文'.encode(), b'frontmost_app', b'127.0.0.1', b'operit.sock', b'0.3.9', '屏幕未变化'.encode()]:
-    if s in data:
-        print("  [OK]  ", s[:30])
-    else:
-        print("  [MISS]", s[:30]); ok=False
-if not ok:
-    print("STALE BUILD — rerun: cargo clean && cargo build --release --target aarch64-apple-ios --bin operit_agent_daemon")
-    sys.exit(1)
-PY
-echo "  all key strings present."
-
-# --- roothide layout fixups ---
-# Under roothide the process rootfs view IS the jbroot, so the launchd plist must
-# reference paths WITHOUT the /var/jb prefix (e.g. /usr/bin/... and /var/mobile);
-# otherwise the daemon binary / HOME would point at a non-existent /var/jb path.
-if [ "$SCHEME" = "roothide" ]; then
-  echo "   roothide scheme: rewriting launchd plist paths for real-root anchor"
-  PLIST="$FILES/Library/LaunchDaemons/ai.operit.agent.plist"
-  if [ -f "$PLIST" ]; then
-    # 1) drop the /var/jb prefix (roothide has no /var/jb; daemon lives in the
-    #    jbroot container at /usr/bin/...).
-    sed -i '' 's#/var/jb##g' "$PLIST"
-    # 2) the launchd plist already references /var/mobile/.operit (no /var/jb
-    #    prefix under roothide). The daemon and app exchange the agent control
-    #    channel + config over loopback TCP (127.0.0.1:8890), which is shared
-    #    across the per-process /var remap, so no /rootfs re-anchoring is needed.
-  fi
 fi
 
 # --- pack ---

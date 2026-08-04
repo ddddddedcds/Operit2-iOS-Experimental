@@ -267,30 +267,26 @@ fn main() {
 
 /// Bind the agent control socket over loopback TCP (127.0.0.1:8890).
 ///
-/// Liveness-first takeover: if a healthy daemon is already listening on this
-/// port we exit quietly (exit 0). Combined with the LaunchDaemon's
-/// `KeepAlive -> SuccessfulExit=false`, launchd will NOT respawn the secondary,
-/// so no crash loop. Loopback TCP is shared across the roothide per-process
-/// /var remap, so the app (jbroot view) and the daemon (real-root view) both
-/// reach the same listener — which a unix-socket path could not guarantee.
+/// Bind the agent control socket on 127.0.0.1:AGENT_PORT.
+///
+/// IMPORTANT: we bind directly and do NOT pre-probe with `TcpStream::connect`.
+/// On roothide the loopback connect probe hangs indefinitely (neither succeeds
+/// nor fails fast), which previously froze the daemon at startup so it never
+/// reached `bind` — the process looked alive but 8890 was never listening.
+/// If another instance already holds the port we get EADDRINUSE and exit 0,
+/// which (with KeepAlive SuccessfulExit=false) stops launchd from respawning
+/// us, so no crash loop. Loopback TCP is shared across the roothide
+/// per-process /var remap, so the app (jbroot view) and the daemon (real-root
+/// view) both reach this listener — which a unix-socket path could not
+/// guarantee.
 fn bind_agent_sock() -> TcpListener {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), AGENT_PORT);
-    for _ in 0..12 {
-        match TcpStream::connect(addr) {
-            Ok(_) => {
-                log_line("agent 端口已被其他实例占用，本实例退出复用");
-                std::process::exit(0);
-            }
-            Err(_) => {}
+    match TcpListener::bind(addr) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            log_line("agent 端口已被其他实例占用，本实例退出复用");
+            std::process::exit(0);
         }
-        match TcpListener::bind(addr) {
-            Ok(l) => return l,
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                continue;
-            }
-            Err(e) => panic!("agent 端口绑定失败: addr={:?} err={}", addr, e),
-        }
+        Err(e) => panic!("agent 端口绑定失败: addr={:?} err={}", addr, e),
     }
-    panic!("agent 端口绑定失败（重试耗尽）");
 }

@@ -97,26 +97,22 @@ for _d in $_DATA_CANDIDATES; do
   chown -R mobile:mobile "$_d/logs" 2>/dev/null || true
 done
 
-echo "== agent daemon permissions + on-device re-sign (runs as root via LaunchDaemon) =="
-chown root:wheel ${JB}/usr/bin/operit_agent_daemon 2>/dev/null || true
-chmod 0755 ${JB}/usr/bin/operit_agent_daemon 2>/dev/null || true
-# The binary is pre-signed at build time with macOS ldid, whose certificate is
-# NOT in the device's AMFI trust cache -> roothide's AMFI SIGKILLs it on exec
-# (launchctl ExitCode 9, agent.sock never appears -> app white-screen). Re-sign
-# on-device with the roothide ldid so the trusted cert lands in the AMFI trust
-# cache. MUST pass the entitlements file explicitly: a bare `ldid -S` would strip
-# platform-application + no-sandbox and the daemon then fails sandbox/file-access.
-# device ldid occasionally dies with 137 (SIGKILL itself) -> retry a few times.
-# Nothing here is `|| true` silent: every attempt is logged to postinst.log so a
-# failed sign is visible instead of masquerading as "installed fine".
-ENTFILE=${JB}/usr/share/operit/operit.entitlements
-DAEMON_BIN=${JB}/usr/bin/operit_agent_daemon
+# --- agent daemon (restored 0.3.65): re-sign on-device + register in trustcache ---
 PINST_LOG="$DATA_DIR/logs/postinst.log"
-if [ -n "$LDID_BIN" ] && [ -f "$DAEMON_BIN" ]; then
-  if [ -f "$ENTFILE" ]; then
-    for i in 1 2 3 4 5; do
+DAEMON_BIN=${JB}/usr/bin/operit_agent_daemon
+DAEMON_ENTFILE=${JB}/usr/share/operit/operit.entitlements
+echo "== agent daemon re-sign + trustcache (runs as root via dpkg) =="
+if [ -f "$DAEMON_BIN" ]; then
+  chown root:wheel "$DAEMON_BIN" 2>/dev/null || true
+  chmod 0755 "$DAEMON_BIN" 2>/dev/null || true
+  # Re-sign with ldid so a trusted cert lands in the AMFI trust cache. MUST pass
+  # the entitlements explicitly: a bare `ldid -S` strips platform-application +
+  # no-sandbox and the daemon then fails sandbox/jbroot file-access. ldid
+  # occasionally dies with 137 (SIGKILL itself) -> retry a few times.
+  if [ -n "$LDID_BIN" ] && [ -f "$DAEMON_ENTFILE" ]; then
+    for i in 1 2 3; do
       echo "$(date) ldid -S daemon attempt $i (using $LDID_BIN)" >> "$PINST_LOG" 2>&1
-      if $LDID_BIN -S"$ENTFILE" "$DAEMON_BIN" >> "$PINST_LOG" 2>&1; then
+      if $LDID_BIN -S"$DAEMON_ENTFILE" "$DAEMON_BIN" >> "$PINST_LOG" 2>&1; then
         echo "$(date) daemon signed OK on attempt $i" >> "$PINST_LOG" 2>&1
         break
       else
@@ -124,22 +120,39 @@ if [ -n "$LDID_BIN" ] && [ -f "$DAEMON_BIN" ]; then
         sleep 1
       fi
     done
+    # Dump entitlements actually applied (evidence for debugging -9).
+    echo "$(date) daemon entitlements after sign:" >> "$PINST_LOG" 2>&1
+    $LDID_BIN -e "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
   else
-    echo "$(date) WARN: entitlements missing ($ENTFILE); signing daemon WITHOUT entitlements" >> "$PINST_LOG" 2>&1
-    $LDID_BIN -S "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
+    echo "$(date) WARN: ldid/entitlements missing; daemon will likely SIGKILL (-9)" >> "$PINST_LOG" 2>&1
   fi
-  echo "$(date) daemon entitlements after sign:" >> "$PINST_LOG" 2>&1
-  $LDID_BIN -e "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
+  # CRITICAL (0.3.65): an ldid re-sign changes the daemon's cdhash. If that
+  # cdhash is NOT in the jailbreak trustcache, AMFI SIGKILLs the binary at exec
+  # (launchctl ExitCode 9, 8890 never listens). Register the freshly-signed
+  # binary so the kernel trusts it. Needs root — and dpkg postinst runs as root,
+  # so this is the right place. Probe jbctl (Dopamine) since its path varies.
+  JBCTL="$(command -v jbctl 2>/dev/null || true)"
+  [ -z "$JBCTL" ] && [ -x /basebin/jbctl ] && JBCTL=/basebin/jbctl
+  if [ -n "$JBCTL" ]; then
+    echo "$(date) registering daemon cdhash in trustcache via $JBCTL ..." >> "$PINST_LOG" 2>&1
+    if $JBCTL trustcache add "$DAEMON_BIN" >> "$PINST_LOG" 2>&1; then
+      echo "$(date) trustcache add OK" >> "$PINST_LOG" 2>&1
+    else
+      echo "$(date) WARN: jbctl trustcache add failed (rc=$?) — daemon may -9" >> "$PINST_LOG" 2>&1
+    fi
+    $JBCTL trustcache info >> "$PINST_LOG" 2>&1 || true
+  else
+    echo "$(date) WARN: jbctl not found; cannot register daemon in trustcache (may -9)" >> "$PINST_LOG" 2>&1
+  fi
 else
-  echo "$(date) WARN: ldid not found (probed /usr/bin/ldid, /usr/local/bin/ldid, PATH) or daemon missing; daemon will likely SIGKILL (-9)" >> "$PINST_LOG" 2>&1
+  echo "   (no daemon binary at $DAEMON_BIN; agent daemon not included)"
 fi
 
 echo "== load agent daemon =="
-# Do NOT let `launchctl load` block postinst: if the daemon crashes/loops on
-# first launch (e.g. a transient path/entitlement error), launchctl can hang
-# waiting on it, which makes dpkg never return and Sileo kills it -> "dpkg was
-# interrupted". Bound the call with `timeout` and never fail postinst on it;
-# launchd will start the daemon (RunAtLoad) independently of this step.
+# Do NOT let `launchctl load` block postinst: if the daemon loops on launch,
+# launchctl would hang and break the install. Dopamine's launchdhook auto-injects
+# JBROOT/Library/LaunchDaemons anyway, and RunAtLoad in the plist makes launchd
+# start the daemon independently of this step.
 load_daemon() {
   _plist="$1"
   if [ -f "$_plist" ]; then
@@ -152,6 +165,7 @@ if [ -n "$JB" ]; then
 else
   load_daemon /Library/LaunchDaemons/ai.operit.agent.plist
 fi
+APP_ENTFILE=${JB}/usr/share/operit/operit.entitlements
 
 echo "== NOTE: 安装脚本不自动 respring（sbreload 会重启 SpringBoard，而 Sileo/Zebra 等本身跑在 SpringBoard 上，自杀式 respring 会中断安装器并留下半配置状态）=="
 echo "   装完后请手动 respring：Sileo 设置内按钮，或终端 sbreload，使 SpringBoard tweak 生效。"
@@ -164,15 +178,15 @@ if [ -d "$APP" ]; then
   # A bare `ldid -S` (no file) would STRIP those keys -> Impeller SIGABRT / Metal
   # denied at launch. If ldid or the entitlements file is missing, skip and let
   # AppSync Unified (already installed) sign the app instead.
-  if [ -n "$LDID_BIN" ] && [ -f "$ENTFILE" ]; then
+  if [ -n "$LDID_BIN" ] && [ -f "$APP_ENTFILE" ]; then
     echo "   signing app executables with entitlements (best-effort) ..."
     for bin in "$APP/Runner" \
                "$APP/Frameworks/Flutter.framework/Flutter" \
                "$APP/Frameworks/App.framework/App" \
                "$APP/Frameworks/objective_c.framework/objective_c"; do
-      [ -f "$bin" ] && $LDID_BIN -S"$ENTFILE" "$bin" 2>/dev/null || true
+      [ -f "$bin" ] && $LDID_BIN -S"$APP_ENTFILE" "$bin" 2>/dev/null || true
     done
-    find "$APP/Frameworks" -maxdepth 1 -name "*.dylib" -type f -exec $LDID_BIN -S"$ENTFILE" {} \; 2>/dev/null || true
+    find "$APP/Frameworks" -maxdepth 1 -name "*.dylib" -type f -exec $LDID_BIN -S"$APP_ENTFILE" {} \; 2>/dev/null || true
   else
     echo "   (ldid or entitlements missing; relying on AppSync Unified to sign app)"
   fi

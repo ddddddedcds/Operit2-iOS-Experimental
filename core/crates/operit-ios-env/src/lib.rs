@@ -251,8 +251,31 @@ pub fn data_root() -> PathBuf {
 }
 
 /// Convenience: the binary root, or `None` when mach-o cannot be placed.
+///
+/// On rootless Dopamine `/var/jb` is a *symlink to the procursus root*
+/// (e.g. `/private/preboot/.../procursus`), so `detect_jailbreak()`'s
+/// "any `/var/jb` symlink ⇒ RootHide" rule mis-classifies it and yields
+/// `binary_root() == None`. That strips `/var/jb/usr/bin` from the terminal
+/// PATH (every command → "command not found"). Detect the rootless binary
+/// root directly via the symlink *target*: roothide targets `/`, rootless
+/// targets the procursus directory.
 pub fn binary_root() -> Option<PathBuf> {
-    resolve_roots().binary
+    // Prefer the classified root (handles roothide jbroot prefix correctly and
+    // is byte-for-byte identical to the old behaviour there).
+    if let Some(bin) = resolve_roots().binary {
+        return Some(bin);
+    }
+    // Fallback: rootless Dopamine where `/var/jb` is a procursus symlink.
+    if is_symlink("/var/jb") {
+        if let Ok(target) = std::fs::read_link("/var/jb") {
+            if target.to_string_lossy() != "/" {
+                return Some(PathBuf::from("/var/jb"));
+            }
+        }
+    } else if Path::new("/var/jb/usr/lib").exists() {
+        return Some(PathBuf::from("/var/jb"));
+    }
+    None
 }
 
 #[cfg(not(target_os = "ios"))]
