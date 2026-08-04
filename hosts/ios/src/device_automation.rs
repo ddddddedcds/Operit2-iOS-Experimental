@@ -2,11 +2,30 @@
 
 //! iOS device-automation host.
 //!
-//! Device automation is delegated to the `ios-mcp` jailbreak tweak, which exposes
-//! screenshot / tap / swipe / OCR / app control as MCP tools over HTTP
-//! (`127.0.0.1:8090/mcp`). This replaces the old `operit-sb` SpringBoard socket for
-//! the daemon device layer. The socket path is kept as a fallback when ios-mcp is
-//! unreachable, so Operit2 still works if only its own tweak is loaded.
+//! This module turns high-level automation intents (screenshot / tap / swipe /
+//! long-press / type / launch / home / back) into concrete device actions. It
+//! talks to the device through TWO independent channels, chosen per-call with an
+//! "ios-mcp first, unix-socket fallback" strategy:
+//!
+//! 1. **Primary — `ios-mcp` jailbreak tweak over HTTP**
+//!    (`127.0.0.1:8090/mcp`, JSON-RPC 2.0). The tweak exposes screenshot / tap /
+//!    swipe / OCR / app control as MCP tools. This is the modern path and works
+//!    whenever ios-mcp is installed. All entry points in the
+//!    `DeviceAutomationHost` impl call `self.mcp.*` first and only fall through
+//!    to the socket on error.
+//!
+//! 2. **Fallback — `operit-sb` SpringBoard control socket (Unix domain socket)**
+//!    at `data_root()/operit.sock`. Used only when ios-mcp is unavailable, so
+//!    Operit2 still works if only the old SpringBoard tweak is loaded. The only
+//!    code that touches this socket is [`IosDeviceAutomationHost::send_cmd`].
+//!
+//! **IMPORTANT — this is a DIFFERENT channel from the `127.0.0.1:8890` agent
+//! control TCP.** The 8890 socket is the daemon control plane used to (a) push
+//! LLM credentials from the App to the agent daemon
+//! (`operit_flutter_bridge::push_config_over_tcp` → `operit_agent_daemon`'s
+//! `config` command) and (b) send agent run commands (`start`/`stop`/`goal`/
+//! `status`) from `ToolRegistration` / `AppleRuntimeChannel`. This file NEVER
+//! opens 8890 — do not confuse the two subsystems.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -45,6 +64,10 @@ impl IosDeviceAutomationHost {
                     .to_string(),
             ));
         }
+        // NOTE: this is the *legacy* `operit-sb` unix socket (operit.sock), NOT
+        // the 8890 TCP agent-control channel. It is only reachable on jailbroken
+        // devices where a SpringBoard tweak injected the socket; on non-jb builds
+        // can_inject_tweaks() is false and we returned early above.
         let mut stream = UnixStream::connect(operit_ios_env::data_root().join("operit.sock")).map_err(|e| {
             HostError::new(format!(
                 "device bridge: cannot connect to {} (is the SpringBoard tweak loaded?)",

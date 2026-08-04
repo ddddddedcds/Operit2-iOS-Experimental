@@ -202,7 +202,23 @@ pub fn relax_dir_permissions(dir: &Path) {
 pub fn resolve_roots_for(jb: JailbreakType) -> Roots {
     match jb {
         JailbreakType::Rootless => Roots {
+            // binary_root is /var/jb: on rootless Dopamine this is a *symlink to
+            // the procursus root* (e.g. /private/preboot/.../dopamine-.../procursus),
+            // so mach-o we stage lands under /var/jb/usr/bin etc.
             binary: Some(PathBuf::from("/var/jb")),
+            // data_root is /var/jb/var/mobile/.operit. KEY difference from roothide:
+            // rootless does NOT remap /var per-process — the app AND the daemon
+            // BOTH run in the REAL-ROOT view (no jbroot injection). So for everyone
+            // `/var/jb` resolves to the same procursus tree, and inside procursus
+            // /var/mobile is remapped to the real /var/mobile, so this path
+            // physically lands at the real /var/mobile/.operit — writable by mobile.
+            // Because app and daemon share ONE filesystem view, the on-disk
+            // config.plist / logs / tool packages are visible to BOTH with no
+            // loopback TCP needed (unlike roothide, where the per-process /var
+            // remap splits them and we must push config over 127.0.0.1:8890).
+            // Do NOT "simplify" this to /var/mobile/.operit: it is equivalent on
+            // rootless, but keeping the /var/jb prefix makes the binary/data roots
+            // consistent and matches where the deb actually stages files.
             data: PathBuf::from("/var/jb/var/mobile/.operit"),
         },
         JailbreakType::RootHide => Roots {

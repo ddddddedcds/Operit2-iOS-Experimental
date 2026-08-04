@@ -62,6 +62,19 @@ def _is_junk(name):
     return name == ".DS_Store" or name.startswith("._")
 
 
+def tar_add_bytes(tar, data, arcname, mode):
+    """Like tar_add but from an in-memory bytes object (for rewriting a file's
+    content at pack time, e.g. the LaunchDaemon plist path for rootless)."""
+    ti = tarfile.TarInfo(arcname)
+    ti.size = len(data)
+    ti.mtime = 0
+    ti.uid = 0
+    ti.gid = 0
+    ti.type = tarfile.REGTYPE
+    ti.mode = mode
+    tar.addfile(ti, io.BytesIO(data))
+
+
 def make_data_tar():
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
@@ -99,7 +112,23 @@ def make_data_tar():
                     m |= 0o004
                     if m & 0o111:
                         m |= 0o111
-                    tar_add(tar, fp, arc, mode=m)
+                    # rootless path fix: the daemon is staged into /var/jb/usr/bin, but
+                    # ai.operit.agent.plist hardcodes /usr/bin/operit_agent_daemon
+                    # (correct for roothide — its dpkg installs to a real /usr/bin; WRONG
+                    # for rootless, where /usr/bin is the read-only system dir and the
+                    # binary lives at /var/jb/usr/bin). launchd resolves the absolute
+                    # ProgramArguments path verbatim, fails to find the daemon, and 8890
+                    # never comes up. Rewrite the path inside the plist for the rootless
+                    # scheme only; roothide keeps the original /usr/bin path.
+                    if (SCHEME == "rootless"
+                            and fn == "ai.operit.agent.plist"
+                            and arc.endswith("Library/LaunchDaemons/ai.operit.agent.plist")):
+                        data = open(fp, "rb").read()
+                        data = data.replace(b"/usr/bin/operit_agent_daemon",
+                                            b"/var/jb/usr/bin/operit_agent_daemon")
+                        tar_add_bytes(tar, data, arc, mode=m)
+                    else:
+                        tar_add(tar, fp, arc, mode=m)
     return buf.getvalue()
 
 

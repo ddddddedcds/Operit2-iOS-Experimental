@@ -3239,10 +3239,27 @@ pub unsafe extern "C" fn operit_flutter_bridge_free_bytes(value: OperitByteBuffe
 }
 
 /// Syncs the App-configured LLM credentials into the Operit2 device-agent
-/// daemon's shared `config.plist`, so the jailbreak daemon (which runs as a
-/// separate process and only reads that fixed file) picks up the key the user
-/// typed in the App's model settings panel — without anyone hand-editing the
-/// file on disk. iOS only; no-op on other platforms.
+/// daemon, so the jailbroken daemon process (which runs separately from the App
+/// and, on rootless/roothide, in a different filesystem view) picks up the API
+/// key the user typed in the App's model settings panel — without anyone
+/// hand-editing a file on disk. iOS only; no-op on other platforms.
+///
+/// **Direction: the App is the SENDER here; the daemon is the RECEIVER.** (Do not
+/// confuse this with `device_automation.rs`, an unrelated tap/swipe channel that
+/// never touches 8890.) Two delivery paths are used so the daemon receives the
+/// key under EVERY jailbreak scheme:
+///
+/// * **Path 1 — file write** (`data_root()/config.plist`, below): works on
+///   rootless and non-jb, where the App and daemon resolve `data_root()` to the
+///   SAME physical directory, so the daemon can simply read the plist back via
+///   `load_config`.
+/// * **Path 2 — TCP push** (`push_config_over_tcp`, 127.0.0.1:8890): REQUIRED on
+///   roothide, where the per-process `/var` remap makes the App's `data_root()`
+///   resolve to a DIFFERENT physical dir than the daemon's — so the plist the
+///   App just wrote is INVISIBLE to the daemon. Loopback TCP is shared across
+///   the remap, so it is the only cross-view channel. The daemon stores the
+///   pushed credentials in `CachedConfig` and prefers them over the file
+///   (`resolve_config`).
 #[cfg(target_os = "ios")]
 #[no_mangle]
 pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
@@ -3289,18 +3306,31 @@ pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
         escape_plist(&model),
     );
     let _ = std::fs::write(path, xml);
+    // --- Delivery Path 2: TCP push (roothide-safe) ---
     // Push credentials to the daemon over loopback TCP as well. On roothide the
-    // app and daemon resolve data_root() to DIFFERENT physical dirs, so this
-    // file is invisible to the daemon; TCP loopback is the only cross-view
-    // channel. Best-effort: if the daemon isn't up yet this is silently ignored
-    // and the daemon falls back to reading this file (works on rootless / non-jb).
+    // app and daemon resolve data_root() to DIFFERENT physical dirs (per-process
+    // /var remap), so the config.plist file written just above is invisible to
+    // the daemon; the only cross-view channel is loopback TCP 127.0.0.1:8890.
+    // Best-effort: if the daemon isn't up yet (e.g. launchd hasn't started it,
+    // or this is a fresh install) the connect silently fails and we return —
+    // the daemon will later fall back to reading this plist file, which works on
+    // rootless / non-jb where the two processes share the same data_root().
     push_config_over_tcp(&api_key, &provider, &base_url, &model);
 }
 
 /// Pushes LLM credentials to the on-device agent daemon over loopback TCP
-/// (127.0.0.1:8890) using the daemon's `config` control command. Best-effort
-/// and fire-and-forget; failures are ignored (the daemon may not be running
-/// yet, or this is a non-jb build where the file path is sufficient).
+/// (127.0.0.1:8890) using the daemon's `config` control command.
+///
+/// Wire format: a single line
+/// `config <apiKey>|<apiProvider>|<apiBaseUrl>|<apiModel>\n`.
+/// The daemon (`operit_agent_daemon`) parses it in `dispatch` and stores the
+/// four fields into `CachedConfig`, which `resolve_config` prefers over the
+/// on-disk plist.
+///
+/// Best-effort and fire-and-forget: any failure (daemon not listening yet, a
+/// non-jb build where the file path is sufficient, or a transient network
+/// error) is silently ignored. `#[cfg(target_os = "ios")]` — only compiled into
+/// the iOS app binary.
 #[cfg(target_os = "ios")]
 fn push_config_over_tcp(api_key: &str, provider: &str, base_url: &str, model: &str) {
     use std::io::{Read, Write};

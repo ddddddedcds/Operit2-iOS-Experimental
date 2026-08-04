@@ -59,10 +59,11 @@ else
   codesign --force --sign - --entitlements "$ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
     echo "   (codesign unavailable; postinst re-signs on-device)"
 fi
-# Ship the daemon LaunchDaemon plist (paths are scheme-agnostic: /usr/bin and
-# /Library/LaunchDaemons resolve under both rootless /var/jb and roothide jbroot;
-# Dopamine's launchdhook auto-injects JBROOT/Library/LaunchDaemons). The plist
-# already lives in the files/ staging tree, so just assert it's present.
+# Ship the daemon LaunchDaemon plist. IMPORTANT: it hardcodes
+# /usr/bin/operit_agent_daemon, which is correct for roothide (its dpkg installs
+# to a real /usr/bin) but WRONG for rootless (/usr/bin is the read-only system
+# dir; the binary is at /var/jb/usr/bin). packdeb.py rewrites that path inside
+# the plist for the rootless scheme, so launchd can find the daemon (8890).
 if [ ! -f "$FILES/Library/LaunchDaemons/ai.operit.agent.plist" ]; then
   echo "   WARN: daemon plist missing at files/Library/LaunchDaemons/"
 fi
