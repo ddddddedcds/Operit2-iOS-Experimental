@@ -224,17 +224,42 @@ ios-mcp tweak（设备上的「手」）：screenshot / tap / swipe / type / lau
 - App 与 daemon 之间走 `agent.sock`（rootless 物理路径
   `/var/jb/var/mobile/.operit/agent.sock`，roothide 为 `/var/mobile/.operit/agent.sock`）。
 - daemon 跑在后台（独立 LaunchDaemon），所以即使 App 被挂起或锁屏，自动化仍能继续。
-- LLM 凭证：在 App「设置 → 模型」里配置，App 通过 TCP `127.0.0.1:8890` 推给 daemon
+- LLM 凭证：在 App「设置 → 模型」里配置（详见下方「安装前提 → 配置 LLM 凭证」），App 通过 TCP `127.0.0.1:8890` 推给 daemon
   并缓存（roothide 双视图下文件不可见，TCP 是唯一跨视图通道）。
 
 ### 安装前提
-1. iOS 15+ 已越狱设备（rootless / Dopamine，或 roothide）。
-2. 安装两个 deb（互相依赖，需一并安装，由 Sileo / 包管理器解析依赖）：
-   - **Operit2 本体 deb**（含 daemon + SpringBoard tweak）；
-   - **ios-mcp 适配版 deb**：rootless 装 `..._iphoneos-arm64.deb`，
-     roothide 装 `..._iphoneos-arm64e.deb`。
-3. 在 Operit2 App「设置 → 模型」里配置一个可用的 LLM 服务商与 API Key
-   （云端 VLM 决策需要它）。
+
+#### 1. 越狱环境与依赖包
+- **iOS 15+ 已越狱设备**，二选一：
+  - **rootless 越狱（推荐，如 Dopamine）** —— 还需要注入框架 **ElleKit**（opa334 的 rootless 注入基座，Sileo 搜 `ellekit` 安装）；
+  - **roothide 越狱** —— 自带隔离视图，不需要 ElleKit。
+- **ios-mcp 适配版 deb（必装，本体 deb 已声明 `Depends: com.witchan.ios-mcp`）**：
+  - rootless 装 `com.witchan.ios-mcp_1.2.3-patched_iphoneos-arm64.deb`；
+  - roothide 装 `com.witchan.ios-mcp-roothide_1.2.3-patched_iphoneos-arm64e.deb`。
+  - 即本仓库 `hosts/ios/deb/third_party/ios-mcp/` 下随附的那两个包，或你的 apt 源里同名包。
+- **Operit2 本体 deb**（含 daemon + SpringBoard tweak，与上面 ios-mcp 一起由包管理器解析依赖安装）。
+- （可选）**AppSync Unified** —— 仅当你侧载 / 重签 App 缺 entitlements 或 ldid 时用它兜底签名（见 `postinst` 注释），正常 Dopamine/roothide 环境不需要手动装。
+
+> 一句话依赖链：越狱(Dopamine+ElleKit 或 roothide) → ios-mcp 适配版 deb → Operit2 本体 deb → Operit2 App。
+
+#### 2. 在 App 里配置 LLM 凭证（自动化「大脑」的 Key）
+自动化的「看屏决策」由**云端 VLM** 完成，它需要一个 API Key。配置位置与规则如下：
+
+- **在哪配**：Operit2 App → **设置 → 模型**。在这里「新建 / 编辑一个服务商（Provider）档案」并保存，App 会把该档案的
+  `apiKey / provider 类型 / endpoint / 首个模型 id` **自动推送**给后台 daemon（TCP `127.0.0.1:8890`）。
+  **注意：daemon 用的是「你最近一次保存的那个服务商档案」的凭证**，不是某个独立开关。
+
+- **配谁的 / 用哪个模型 / 写谁的 Key**（daemon 侧实测逻辑，见 `operit_agent_daemon.rs`）：
+  - **provider 类型 = `custom`（自定义）**：用你填的 `endpoint` + `模型 id` + **你自己的 Key**，
+    可接任意 OpenAI 兼容服务（如自建或第三方大模型网关）。
+  - **provider 类型 ≠ custom（默认 / 智谱等）**：daemon **强制走智谱 BigModel（Zhipu）AutoGLM 端点**
+    `https://open.bigmodel.cn/api/paas/v4/chat/completions`，endpoint 字段此时被忽略。
+    - **模型**：默认 `autoglm-phone`（智谱的手机端视觉操作模型）；如果你在模型档案里填了具体模型 id，则用你填的。
+    - **Key**：写**你自己的智谱 BigModel API Key**（在 https://open.bigmodel.cn 注册后获取）。
+  - 简言之，想跑默认自动化：**在「设置 → 模型」里加一个智谱(BigModel)服务商，填上你的 BigModel Key，模型留空（或填 `autoglm-phone`）即可**；想换别的云服务就选 `custom` 并填自己的 endpoint/key/model。
+
+- **为什么这么设计**：daemon 是独立后台进程、只读固定 `config.plist`；App 把 Key 推过去并缓存，
+  roothide 下 App 与 daemon 的文件视图不同，TCP 推送是唯一跨视图通道（详见本文档「通道架构」注释）。
 
 ### 怎么用
 **方式 A：在聊天里让主 AI 调用（推荐）**
