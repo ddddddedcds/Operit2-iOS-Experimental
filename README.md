@@ -196,3 +196,107 @@ cargo run --manifest-path apps/cli/Cargo.toml --bin operit2 -- cli version
 
 **免责声明（Disclaimer）**
 本工具为 **实验性、不稳定** 产品，使用风险自负。作者不对因安装或使用本包导致的任何数据丢失、财产损失、系统损坏或其他损害负责。迄今为止尚未报告过此类事件，但安装和使用即表示你承担全部风险。
+
+---
+
+## iOS 设备自动化使用教程
+
+### 它能做什么
+在越狱 iOS 设备上，Operit2 可以「看着屏幕」自动操控手机，完成你用自然语言描述的任务（例如「打开设置 App 并截一张图」「在微博搜索某话题并点赞」）。核心是一个**视觉代理循环**：
+
+```
+截图 → 云端 VLM（AutoGLM-Phone 风格）看屏决策 → ios-mcp 在设备上执行动作
+→ 重新截图观察 → ……循环，直到任务完成或被人工接管。
+```
+
+### 架构（一图看懂）
+```
+Operit2 App（聊天 / 界面）
+      │  Unix socket: agent.sock
+      ▼
+operit_agent_daemon（Rust，常驻 LaunchDaemon，监听 127.0.0.1:8890）
+      │  ① 用 App 推送来的 LLM 凭证调用云端 VLM 决策
+      │  ② 通过 ios-mcp（localhost:8090）下达系统级动作
+      ▼
+ios-mcp tweak（设备上的「手」）：screenshot / tap / swipe / type / launch / home / back
+```
+
+- App 与 daemon 之间走 `agent.sock`（rootless 物理路径
+  `/var/jb/var/mobile/.operit/agent.sock`，roothide 为 `/var/mobile/.operit/agent.sock`）。
+- daemon 跑在后台（独立 LaunchDaemon），所以即使 App 被挂起或锁屏，自动化仍能继续。
+- LLM 凭证：在 App「设置 → 模型」里配置，App 通过 TCP `127.0.0.1:8890` 推给 daemon
+  并缓存（roothide 双视图下文件不可见，TCP 是唯一跨视图通道）。
+
+### 安装前提
+1. iOS 15+ 已越狱设备（rootless / Dopamine，或 roothide）。
+2. 安装两个 deb（互相依赖，需一并安装，由 Sileo / 包管理器解析依赖）：
+   - **Operit2 本体 deb**（含 daemon + SpringBoard tweak）；
+   - **ios-mcp 适配版 deb**：rootless 装 `..._iphoneos-arm64.deb`，
+     roothide 装 `..._iphoneos-arm64e.deb`。
+3. 在 Operit2 App「设置 → 模型」里配置一个可用的 LLM 服务商与 API Key
+   （云端 VLM 决策需要它）。
+
+### 怎么用
+**方式 A：在聊天里让主 AI 调用（推荐）**
+- `device_automation` 是一个子代理工具包（默认未启用，需在插件 / 工具里开启）。
+- 直接在对话里说你的目标，例如：
+  > 帮我在设备上打开「设置」，进入「通用」，截一张图回来。
+- 主 AI 会调用 `run_subagent_main`，把自然语言目标交给自动化循环。也可显式调用三个动作：
+  - `run_subagent_main`（`goal` 参数）：启动自动化，给任务描述；
+  - `stop`：停止正在运行的循环；
+  - `status`：查询 daemon 当前状态（running / idle）。
+
+**方式 B：直接调用 native 桥（开发者）**
+```ts
+await Tools.Net.deviceAgentStart({ goal: "打开设置并截一张图" });
+await Tools.Net.deviceAgentStatus({});   // 查状态
+await Tools.Net.deviceAgentStop({});     // 停止
+```
+这三个方法由 App 的 native 桥实现，内部连 `agent.sock` 驱动 daemon。
+
+### 预期行为 / 排查
+- 启动后你会看到设备被自动操作（自动点按、滑动、输入）。任务完成或想接管时调用 `stop`。
+- 报「设备自动化暂未就绪 / native 桥未注册」：daemon 没起来或 sock 不通。SSH 确认：
+  `launchctl list | grep ai.operit` 或 `ps aux | grep operit_agent_daemon` 应有进程。
+- 动作不动：确认 ios-mcp 已安装并在 `127.0.0.1:8090` 监听。SSH：
+  `curl -s 127.0.0.1:8090/mcp` 应返回 JSON-RPC 端点。
+- daemon 起不来的常见原因：reload/重启后 `launchctl` 未刷新 job；重装 deb 后需 root
+  重新 `launchctl load`（mobile 无权管 system domain LaunchDaemon），或设备重启。
+
+---
+
+## 构建脚本（.sh）用法（简要）
+
+iOS 产物（deb / ipa）由本机脚本从 **CI 产出的未签名 Runner.app** 打包而来
+（本机无法跑 `flutter build ios`，缺 Python xcframework）。前置：macOS +
+Python3（`packdeb.py`）、Xcode `codesign`、可选 `ldid`；Rust `aarch64-apple-ios`
+目标用于编译 daemon；rootless theos 用于编译 tweak。
+
+### `build_deb.sh` —— 构建单个方案
+一次产出「一个方案的 deb + 配套 ipa」。默认 rootless，可用 `OPERIT_PACK_SCHEME`
+切到 roothide。前置：tweak 已 `make` 出 dylib、daemon 已
+`cargo build --target aarch64-apple-ios --bin operit_agent_daemon`、Runner.app 已就绪。
+```sh
+# rootless（默认）
+APP_SRC=/path/to/Runner.app bash hosts/ios/deb/build_deb.sh
+
+# roothide
+OPERIT_PACK_SCHEME=roothide APP_SRC=/path/to/Runner.app bash hosts/ios/deb/build_deb.sh
+```
+产物：`operit2-ios_<ver>_iphoneos-arm64.deb` + `.ipa`（rootless），或
+`..._iphoneos-arm64e.deb` + `.ipa`（roothide），版本号取自 `DEBIAN/control`。
+
+### `build_all_0.3.66.sh` —— 一次出全部三种产物
+从同一个 Runner.app 一次性构建 rootless deb+ipa、roothide deb+ipa、以及
+nonjb（非越狱）重签 ipa，最后做存在性校验。
+```sh
+APP_SRC=/path/to/Runner.app bash hosts/ios/deb/build_all_0.3.66.sh
+# 等价： bash hosts/ios/deb/build_all_0.3.66.sh /path/to/Runner.app
+```
+产物：`operit2-ios_0.3.66_iphoneos-arm64.deb/.ipa`、
+`operit2-ios_0.3.66_iphoneos-arm64e.deb/.ipa`、`operit2-ios_0.3.66_nonjb.ipa`。
+
+> 注：daemon 二进制用的是已验证的 0.3.65 release 构建（脚本不重编，规避风险）；
+> 脚本仅做打包 / 重签。若改了 Rust 源码，需先
+> `cargo build --target aarch64-apple-ios --release --bin operit_agent_daemon`
+> 再跑打包脚本。
