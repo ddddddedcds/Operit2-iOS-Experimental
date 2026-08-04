@@ -189,6 +189,7 @@ cargo run --manifest-path apps/cli/Cargo.toml --bin operit2 -- cli version
 - 分支：https://github.com/ddddddedcds/Operit2/tree/feat/ios-jailbreak-preview4
 - 改编自原作 **Operit2**（by AAswordman）：https://github.com/AAswordman/Operit2
 - 设备自动化（截图 / OCR / 触控输入）由设备上运行的 **ios-mcp** 后端提供（by witchan，localhost:8090）：https://github.com/witchan/ios-mcp
+- 本 fork 使用的 **ios-mcp 适配版**（含上述 iOS 越狱加固补丁）：https://github.com/ddddddedcds/ios-mcp
 
 **关于本 fork 的改编代码**
 本 fork 中**在原作基础上增加和修改的代码**（即 iOS 越狱适配相关的改动，而非整个 Operit2 项目）**全部由 AI 完成，没有一行是人类手写的**。
