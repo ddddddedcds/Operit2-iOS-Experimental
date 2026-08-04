@@ -230,9 +230,7 @@ ios-mcp tweak（设备上的「手」）：screenshot / tap / swipe / type / lau
 ### 安装前提
 
 #### 1. 越狱环境与依赖包
-- **iOS 15+ 已越狱设备**，二选一：
-  - **rootless 越狱（推荐，如 Dopamine）** —— 还需要注入框架 **ElleKit**（opa334 的 rootless 注入基座，Sileo 搜 `ellekit` 安装）；
-  - **roothide 越狱** —— 自带隔离视图，不需要 ElleKit。
+- **iOS 15+ 已越狱设备**，二选一：rootless（如 Dopamine）或 roothide。
 - **ios-mcp 适配版 deb（必装，本体 deb 已声明 `Depends: com.witchan.ios-mcp`）**：
   - rootless 装 `com.witchan.ios-mcp_1.2.3-patched_iphoneos-arm64.deb`；
   - roothide 装 `com.witchan.ios-mcp-roothide_1.2.3-patched_iphoneos-arm64e.deb`。
@@ -240,7 +238,7 @@ ios-mcp tweak（设备上的「手」）：screenshot / tap / swipe / type / lau
 - **Operit2 本体 deb**（含 daemon + SpringBoard tweak，与上面 ios-mcp 一起由包管理器解析依赖安装）。
 - （可选）**AppSync Unified** —— 仅当你侧载 / 重签 App 缺 entitlements 或 ldid 时用它兜底签名（见 `postinst` 注释），正常 Dopamine/roothide 环境不需要手动装。
 
-> 一句话依赖链：越狱(Dopamine+ElleKit 或 roothide) → ios-mcp 适配版 deb → Operit2 本体 deb → Operit2 App。
+> 一句话依赖链：越狱(rootless 或 roothide) → ios-mcp 适配版 deb → Operit2 本体 deb → Operit2 App。
 
 #### 2. 在 App 里配置 LLM 凭证（自动化「大脑」的 Key）
 自动化的「看屏决策」由**云端 VLM** 完成，它需要一个 API Key。配置位置与规则如下：
