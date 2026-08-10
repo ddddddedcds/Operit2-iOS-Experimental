@@ -122,11 +122,13 @@ impl ManagedRuntimeHost for IosManagedRuntimeHost {
     ) -> HostResult<String> {
         Ok(match executablePath.map(str::trim) {
             Some(value) if !value.is_empty() => value.to_string(),
+            // 系统 shell 通过 PATH 解析这些命令，不硬编码绝对路径（越狱环境
+            // node/python 可能装在 /usr/bin、/var/jb/usr/bin 等不同位置）。
             _ => match program {
-                ManagedRuntimeProgram::Node => "/usr/bin/node".to_string(),
-                ManagedRuntimeProgram::Python => "/usr/bin/python3".to_string(),
-                ManagedRuntimeProgram::Uv => "/usr/bin/uv".to_string(),
-                ManagedRuntimeProgram::Pnpm => "/usr/bin/pnpm".to_string(),
+                ManagedRuntimeProgram::Node => "node".to_string(),
+                ManagedRuntimeProgram::Python => "python3".to_string(),
+                ManagedRuntimeProgram::Uv => "uv".to_string(),
+                ManagedRuntimeProgram::Pnpm => "pnpm".to_string(),
             },
         })
     }
