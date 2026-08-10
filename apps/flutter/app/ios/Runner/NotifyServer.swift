@@ -145,7 +145,7 @@ final class NotifyServer: NSObject {
     do {
       let activity = try Activity<OperitLiveActivityAttributes>.request(
         attributes: OperitLiveActivityAttributes(name: "ai"),
-        content: ActivityContent(state: state),
+        content: ActivityContent(state: state, staleDate: nil),
         pushType: nil
       )
       liveActivity = activity
@@ -167,7 +167,7 @@ final class NotifyServer: NSObject {
       body: body
     )
     Task {
-      await liveActivity.update(using: state)
+      await liveActivity.update(state)
       reply(conn: conn, text: "OK|live activity updated")
     }
   }
