@@ -34,7 +34,7 @@ class ExternalAiBridge {
         return 'empty';
       }
       const clients = GeneratedCoreProxyClients(
-        coreProxy: ProxyCoreRuntimeBridge(coreProxy: platformCoreProxy),
+        ProxyCoreRuntimeBridge(coreProxy: platformCoreProxy),
       );
       await clients.chatRuntimeHolderMain.sendUserMessage(
         promptFunctionType: core_proxy.PromptFunctionType.chat,
