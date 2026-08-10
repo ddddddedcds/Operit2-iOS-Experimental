@@ -54,36 +54,70 @@ static BOOL lock_save(NSDictionary *dict) {
 }
 
 // 弹自定义屏蔽提示页（SpringBoard 进程内，UIAlertController）
+// 当前屏蔽页 window 引用（保持存活；点按钮移除）
+static UIWindow *g_lockWin = nil;
+
+static void lock_dismiss_alert(void) {
+    if (g_lockWin) {
+        [g_lockWin setHidden:YES];
+        g_lockWin = nil;
+    }
+}
+
+// 弹自定义全屏屏蔽页（独立 UIWindow，不依赖 SpringBoard window 的 rootViewController）
 static void lock_show_alert(NSString *bid, NSDictionary *cfg) {
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
             NSString *title = cfg[@"title"] ?: @"休息一下";
             NSString *subtitle = cfg[@"subtitle"] ?: [NSString stringWithFormat:@"%@ 已被 Operit 锁定", bid];
             NSString *btn = cfg[@"button"] ?: @"好的";
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-                                                                           message:subtitle
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:btn style:UIAlertActionStyleDefault handler:nil]];
-            UIWindow *keyWin = nil;
-            // iOS 15+ 用 UIWindowScene.windows（UIApplication.windows 已废弃，-Werror 拦截）
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-                UIWindowScene *winScene = (UIWindowScene *)scene;
-                if (winScene.activationState == UISceneActivationStateForegroundActive) {
-                    for (UIWindow *w in winScene.windows) { keyWin = w; break; }
-                    if (keyWin) break;
-                }
+            // 已有屏蔽页则先移除（避免堆叠）
+            if (g_lockWin) { [g_lockWin setHidden:YES]; g_lockWin = nil; }
+            UIWindow *win = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+            UIScene *scene = [UIApplication sharedApplication].connectedScenes.allObjects.firstObject;
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                win.windowScene = (UIWindowScene *)scene;
             }
-            if (!keyWin) {
-                for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                    if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-                    UIWindowScene *winScene = (UIWindowScene *)scene;
-                    if (winScene.windows.count) { keyWin = winScene.windows.firstObject; break; }
-                }
-            }
-            UIViewController *root = keyWin.rootViewController;
-            while (root.presentedViewController) root = root.presentedViewController;
-            if (root) [root presentViewController:alert animated:YES completion:nil];
+            win.windowLevel = 2100; // statusBar(1000)/alert(2000) 之上
+            win.backgroundColor = [UIColor systemBackgroundColor];
+            UIView *v = [[UIView alloc] initWithFrame:win.bounds];
+            v.backgroundColor = [UIColor systemBackgroundColor];
+            // 图标占位（圆形渐变色块）
+            UIView *icon = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 88, 88)];
+            icon.center = CGPointMake(win.bounds.size.width / 2, win.bounds.size.height * 0.30);
+            icon.backgroundColor = [UIColor systemIndigoColor];
+            icon.layer.cornerRadius = 24;
+            [v addSubview:icon];
+            // 主标题
+            UILabel *titleL = [[UILabel alloc] initWithFrame:CGRectMake(32, icon.frame.origin.y + 120, win.bounds.size.width - 64, 34)];
+            titleL.text = title;
+            titleL.font = [UIFont systemFontOfSize:26 weight:UIFontWeightSemibold];
+            titleL.textAlignment = NSTextAlignmentCenter;
+            [v addSubview:titleL];
+            // 副标题
+            UILabel *subL = [[UILabel alloc] initWithFrame:CGRectMake(40, titleL.frame.origin.y + 44, win.bounds.size.width - 80, 60)];
+            subL.text = subtitle;
+            subL.font = [UIFont systemFontOfSize:15];
+            subL.textColor = [UIColor secondaryLabelColor];
+            subL.textAlignment = NSTextAlignmentCenter;
+            subL.numberOfLines = 0;
+            [v addSubview:subL];
+            // 按钮
+            UIButton *btnB = [UIButton buttonWithType:UIButtonTypeSystem];
+            btnB.frame = CGRectMake(win.bounds.size.width / 2 - 80, win.bounds.size.height - 160, 160, 48);
+            [btnB setTitle:btn forState:UIControlStateNormal];
+            btnB.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+            btnB.backgroundColor = [UIColor systemIndigoColor];
+            btnB.layer.cornerRadius = 24;
+            [btnB setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+            [btnB addAction:[UIAction actionWithHandler:^(UIAction *action) {
+                lock_dismiss_alert();
+            }] forControlEvents:UIControlEventTouchUpInside];
+            [v addSubview:btnB];
+            [win addSubview:v];
+            g_lockWin = win;
+            [win makeKeyAndVisible];
+            oc_log("ALERT: fullscreen shown for %s", bid.UTF8String);
         } @catch (NSException *ex) {
             oc_log("lock_show_alert threw: %s", ex.reason.UTF8String ?: "");
         }
@@ -109,7 +143,7 @@ static BOOL lock_try_block(NSString *bid) {
         if (!bid || bid.length == 0) return NO;
         NSDictionary *cfg = lock_cfg_for(bid);
         if (!cfg) return NO;
-        oc_log("LOCK: blocking launch of %@", bid);
+        oc_log("LOCK: blocking launch of %s", bid.UTF8String);
         lock_show_alert(bid, cfg);
         return YES;
     } @catch (NSException *ex) {
@@ -919,30 +953,193 @@ static void start_server(void) {
     pthread_create(&t, NULL, server_thread, NULL);
 }
 
+// ---- app lock：前台监控拦截 ----
+// iOS 16.7 实测：用户点图标不走 FrontBoard 三个启动入口（FBSSystemService /
+// FBSystemService / FBSOpenApplicationService 均无调用记录）。改为后台线程轮询
+// 前台 app（复用 cmd_front 的 SBWorkspace frontmostApplication 探测）：前台命中
+// 锁名单 → 弹自定义提示页 + 杀进程回桌面。任何启动方式都能拦住。
+
+static NSString *lock_front_bid(void) {
+    __block NSString *r = nil;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        @try {
+            // 1) 首选：FBSceneManager.enumerateScenesWithBlock（iOS 16 全局 scene 枚举）
+            //    settings.isForeground 判定前台；identity.identifier 剥 sceneID:/-default 得 bundle id。
+            @try {
+                Class mgrCls = objc_getClass("FBSceneManager");
+                id mgr = (mgrCls && [mgrCls respondsToSelector:@selector(sharedInstance)])
+                             ? [mgrCls performSelector:@selector(sharedInstance)] : nil;
+                SEL enumSel = sel_registerName("enumerateScenesWithBlock:");
+                if (mgr && [mgr respondsToSelector:enumSel]) {
+                    __block NSString *foundBid = nil;
+                    void (^enumBlock)(id, BOOL *) = ^(id scene, BOOL *stop) {
+                        @try {
+                            NSNumber *fg = [scene valueForKeyPath:@"settings.isForeground"];
+                            NSString *bid = [[scene valueForKey:@"identity"] valueForKey:@"identifier"];
+                            // sceneID:<bundleId>-default → <bundleId>
+                            if ([bid hasPrefix:@"sceneID:"]) bid = [bid substringFromIndex:8];
+                            if ([bid hasSuffix:@"-default"]) bid = [bid substringToIndex:bid.length - 8];
+                            if ([fg boolValue] && bid && bid.length
+                                && ![bid isEqualToString:@"com.apple.springboard"]) {
+                                foundBid = bid;
+                                if (stop) *stop = YES;
+                            }
+                        } @catch (NSException *ex) {
+                            oc_log("lock_front: enum block threw %s", ex.reason.UTF8String ?: "");
+                        }
+                    };
+                    [mgr performSelector:enumSel withObject:enumBlock];
+                    if (foundBid) { r = foundBid; return; }
+                }
+            } @catch (NSException *ex) {
+                oc_log("lock_front: fbscenemgr threw %s", ex.reason.UTF8String ?: "");
+            }
+            // 2) 兜底：SBWorkspace frontmostApplication（iOS 16 实测多返回 nil，保留兼容）
+            @try {
+                Class wsCls = objc_getClass("SBWorkspace") ?: objc_getClass("FBWorkspace");
+                id ws = nil;
+                if (wsCls && [wsCls respondsToSelector:@selector(sharedInstance)])
+                    ws = [wsCls performSelector:@selector(sharedInstance)];
+                else if (wsCls && [wsCls respondsToSelector:@selector(mainWorkspace)])
+                    ws = [wsCls performSelector:@selector(mainWorkspace)];
+                SEL frontSel = sel_registerName("frontmostApplication");
+                id front = (ws && [ws respondsToSelector:frontSel]) ? [ws performSelector:frontSel] : nil;
+                r = [front valueForKey:@"bundleIdentifier"];
+            } @catch (NSException *ex) { r = nil; }
+        } @catch (NSException *ex) { r = nil; }
+    });
+    return r;
+}
+
+static void lock_kill_app(NSString *bid) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            // 1) 从 FBSceneManager 找前台 scene → clientHandle.pid → kill(SIGKILL)
+            //    （最直接可靠，不依赖 SBApplicationController/FBSSystemService 的 iOS16 方法）
+            Class mgrCls = objc_getClass("FBSceneManager");
+            id mgr = (mgrCls && [mgrCls respondsToSelector:@selector(sharedInstance)])
+                         ? [mgrCls performSelector:@selector(sharedInstance)] : nil;
+            SEL enumSel = sel_registerName("enumerateScenesWithBlock:");
+            if (mgr && [mgr respondsToSelector:enumSel]) {
+                __block BOOL killed = NO;
+                void (^enumBlock)(id, BOOL *) = ^(id scene, BOOL *stop) {
+                    @try {
+                        NSNumber *fg = [scene valueForKeyPath:@"settings.isForeground"];
+                        if (![fg boolValue]) return;
+                        NSString *sceneBid = [[scene valueForKey:@"identity"] valueForKey:@"identifier"];
+                        if ([sceneBid hasPrefix:@"sceneID:"]) sceneBid = [sceneBid substringFromIndex:8];
+                        if ([sceneBid hasSuffix:@"-default"]) sceneBid = [sceneBid substringToIndex:sceneBid.length - 8];
+                        if (![sceneBid isEqualToString:bid]) return;
+                        // 拿 pid：FBProcessHandle.pid（原始类型，用 NSInvocation 安全读取）
+                        pid_t pid = -1;
+                        id handle = nil;
+                        @try {
+                            SEL chSel = sel_registerName("clientHandle");
+                            handle = [scene respondsToSelector:chSel] ? [scene performSelector:chSel] : nil;
+                        } @catch (NSException *ex) {
+                            oc_log("KILL: clientHandle threw %s", ex.reason.UTF8String ?: "");
+                        }
+                        if (handle) {
+                            // 1) 直接 pid（FBProcessHandle 类才有）
+                            SEL pidSel = sel_registerName("pid");
+                            if ([handle respondsToSelector:pidSel]) {
+                                NSMethodSignature *sig = [handle methodSignatureForSelector:pidSel];
+                                if (sig) {
+                                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                                    [inv setTarget:handle]; [inv setSelector:pidSel]; [inv invoke];
+                                    [inv getReturnValue:&pid];
+                                }
+                            } else {
+                                // 2) legacyProcess（FBSceneClientHandle → FBProcessHandle → pid）
+                                SEL lpSel = sel_registerName("legacyProcess");
+                                id proc = ([handle respondsToSelector:lpSel]) ? [handle performSelector:lpSel] : nil;
+                                if (proc && [proc respondsToSelector:pidSel]) {
+                                    NSMethodSignature *sig = [proc methodSignatureForSelector:pidSel];
+                                    if (sig) {
+                                        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                                        [inv setTarget:proc]; [inv setSelector:pidSel]; [inv invoke];
+                                        [inv getReturnValue:&pid];
+                                    }
+                                } else {
+                                    oc_log("KILL: handle(%s) no pid, legacyProcess=%s",
+                                           NSStringFromClass([handle class]).UTF8String ?: "?", proc ? "Y" : "N");
+                                }
+                            }
+                        } else {
+                            oc_log("KILL: no clientHandle");
+                        }
+                        if (pid > 0) {
+                            kill(pid, SIGKILL);
+                            oc_log("KILL: SIGKILL pid=%d bid=%s", pid, bid.UTF8String);
+                            killed = YES;
+                        } else {
+                            oc_log("KILL: bad pid=%d for %s", pid, bid.UTF8String);
+                        }
+                        if (stop) *stop = YES;
+                    } @catch (NSException *ex) {
+                        oc_log("KILL: enum threw %s", ex.reason.UTF8String ?: "");
+                    }
+                };
+                [mgr performSelector:enumSel withObject:enumBlock];
+                if (!killed) oc_log("KILL: no pid for %s", bid.UTF8String);
+                return;
+            }
+            // 2) 回退：SBApplicationController → SBApplication → exit
+            Class appCtlCls = objc_getClass("SBApplicationController");
+            id appCtl = appCtlCls ? [appCtlCls performSelector:@selector(sharedInstance)] : nil;
+            SEL findSel = sel_registerName("applicationWithBundleIdentifier:");
+            id app = (appCtl && [appCtl respondsToSelector:findSel])
+                         ? [appCtl performSelector:findSel withObject:bid] : nil;
+            SEL exitSel = sel_registerName("exit");
+            if (app && [app respondsToSelector:exitSel]) {
+                [app performSelector:exitSel];
+                oc_log("KILL: exited %s", bid.UTF8String);
+            } else {
+                oc_log("KILL: no kill method for %s", bid.UTF8String);
+            }
+        } @catch (NSException *ex) {
+            oc_log("lock_kill_app threw: %s", ex.reason.UTF8String ?: "");
+        }
+    });
+}
+
+static void *lock_monitor_thread(void *unused) {
+    (void)unused;
+    static NSString *g_lastBid = nil;
+    static NSString *g_lastFront = nil;
+    static time_t g_lastBlockAt = 0;
+    while (1) {
+        usleep(500000); // 0.5s 轮询
+        @autoreleasepool {
+            @try {
+                NSString *bid = lock_front_bid();
+                if (!bid || bid.length == 0) continue; // 前台取不到：静默
+                if (![bid isEqualToString:g_lastFront]) {
+                    oc_log("FRONT: %s", bid.UTF8String);
+                    g_lastFront = bid;
+                }
+                NSDictionary *cfg = lock_cfg_for(bid);
+                if (!cfg) continue; // 未锁：静默（FRONT 已记录变化）
+                time_t now = time(NULL);
+                if (g_lastBid && [g_lastBid isEqualToString:bid] && (now - g_lastBlockAt) < 5) continue;
+                oc_log("LOCK: front=%s blocked", bid.UTF8String);
+                g_lastBid = bid;
+                g_lastBlockAt = now;
+                lock_show_alert(bid, cfg);
+                lock_kill_app(bid);
+            } @catch (NSException *ex) {
+                oc_log("lock_monitor threw: %s", ex.reason.UTF8String ?: "");
+            }
+        }
+    }
+    return NULL;
+}
+
 %ctor {
     g_sockpath = operit_env_path(@"/var/jb/var/mobile/.operit/operit.sock");
     start_server();
+    pthread_t lockT;
+    pthread_create(&lockT, NULL, lock_monitor_thread, NULL);
+    oc_log("operit-sb loaded, lockPath=%s, roothide=%d", g_lockPath.UTF8String, operit_is_roothide());
 }
 
-// ---- app lock：FrontBoard 启动拦截 ----
-// SpringBoard 前台启动（用户点图标）与外部启动请求都汇聚到 FrontBoard 的
-// FBSSystemService（launchApplication:options:environment:completion:，iOS 13+，
-// 参数全为对象指针，签名稳定）。命中锁名单 → 阻断 + 弹自定义提示页；未命中 → %orig。
-// 注：FBSOpenApplicationService.openApplication:withOptions:clientPort:completion:
-// 的 clientPort 是 mach_port_t（4 字节），与 id 声明不兼容，第一版不 hook（装机验证
-// 用户点图标路径是否走 FBSSystemService，不走再换点）。
-
-%hook FBSSystemService
-- (void)launchApplication:(id)application options:(id)options environment:(id)environment completion:(id)completion {
-    NSString *bid = lock_bid_from_arg(application);
-    if (lock_try_block(bid)) {
-        if (completion) {
-            void (^cb)(BOOL, NSError *) = completion;
-            cb(NO, [NSError errorWithDomain:@"OperitLock" code:1
-                                   userInfo:@{NSLocalizedDescriptionKey: @"App locked"}]);
-        }
-        return;
-    }
-    %orig;
-}
-%end
