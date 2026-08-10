@@ -256,7 +256,7 @@ fn registerScreenTimeTools(handler: &mut AIToolHandler) {
                 ToolResult {
                     toolName: tool.name.clone(),
                     success: value.starts_with("OK|"),
-                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
                     error: if value.starts_with("OK|") {
                         None
                     } else {
@@ -280,7 +280,7 @@ fn registerScreenTimeTools(handler: &mut AIToolHandler) {
                 ToolResult {
                     toolName: tool.name.clone(),
                     success: value.starts_with("OK|"),
-                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
                     error: if value.starts_with("OK|") {
                         None
                     } else {
@@ -313,7 +313,7 @@ fn registerScreenTimeTools(handler: &mut AIToolHandler) {
                 ToolResult {
                     toolName: tool.name.clone(),
                     success: value.starts_with("OK|"),
-                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
                     error: if value.starts_with("OK|") {
                         None
                     } else {
@@ -337,7 +337,7 @@ fn registerScreenTimeTools(handler: &mut AIToolHandler) {
                 ToolResult {
                     toolName: tool.name.clone(),
                     success: value.starts_with("OK|"),
-                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
                     error: if value.starts_with("OK|") {
                         None
                     } else {
@@ -376,7 +376,7 @@ fn registerScreenTimeTools(handler: &mut AIToolHandler) {
                 ToolResult {
                     toolName: tool.name.clone(),
                     success: value.starts_with("OK|"),
-                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
                     error: if value.starts_with("OK|") {
                         None
                     } else {
@@ -400,7 +400,7 @@ fn registerScreenTimeTools(handler: &mut AIToolHandler) {
                 ToolResult {
                     toolName: tool.name.clone(),
                     success: value.starts_with("OK|"),
-                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
                     error: if value.starts_with("OK|") {
                         None
                     } else {
@@ -424,7 +424,7 @@ fn registerScreenTimeTools(handler: &mut AIToolHandler) {
                 ToolResult {
                     toolName: tool.name.clone(),
                     success: value.starts_with("OK|"),
-                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
                     error: if value.starts_with("OK|") {
                         None
                     } else {
@@ -480,7 +480,7 @@ fn registerShortcutTools(handler: &mut AIToolHandler) {
                 ToolResult {
                     toolName: tool.name.clone(),
                     success: value.starts_with("OK|"),
-                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
                     error: if value.starts_with("OK|") {
                         None
                     } else {
