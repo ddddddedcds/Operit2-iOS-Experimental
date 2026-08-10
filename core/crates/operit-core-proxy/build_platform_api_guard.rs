@@ -358,6 +358,12 @@ fn cfg_condition_excludes_wasm(condition: &Meta) -> bool {
         Meta::NameValue(value) if value.path.is_ident("target_arch") => {
             value.value.to_token_stream().to_string() != "\"wasm32\""
         }
+        // iOS/macOS-only code (e.g. jailbreak device automation in operit-tools)
+        // is never selected for the wasm32-unknown-unknown web build, so its
+        // platform APIs (loopback TCP to in-app Swift servers, etc.) are exempt.
+        Meta::NameValue(value) if value.path.is_ident("target_os") => {
+            value.value.to_token_stream().to_string() != "\"wasm32\""
+        }
         Meta::List(list) if list.path.is_ident("not") => {
             parse_cfg_conditions(list).is_some_and(|conditions| {
                 conditions.len() == 1 && !cfg_condition_excludes_wasm(&conditions[0])
