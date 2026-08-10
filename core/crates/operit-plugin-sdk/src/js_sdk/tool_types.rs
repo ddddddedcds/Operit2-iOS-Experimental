@@ -143,6 +143,10 @@ pub struct ToolResultMap {
     pub screen_time_monitor_stop: String,
     pub screen_time_usage: String,
     pub shortcut_run: String,
+    pub notify: String,
+    pub live_activity_start: String,
+    pub live_activity_update: String,
+    pub live_activity_end: String,
 }
 
 include!(concat!(env!("OUT_DIR"), "/builtin_tool_names.rs"));

@@ -113,6 +113,8 @@ pub fn registerAllTools(handler: &mut AIToolHandler, context: &HostManager) {
     registerScreenTimeTools(handler);
     #[cfg(target_os = "ios")]
     registerShortcutTools(handler);
+    #[cfg(target_os = "ios")]
+    registerNotifyTools(handler);
     registerInternalTools(handler, context);
 }
 
@@ -485,6 +487,106 @@ fn registerShortcutTools(handler: &mut AIToolHandler) {
                         Some(value.clone())
                     },
                 }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+}
+
+/// Sends one notify line-command to the in-app Swift `NotifyServer` over loopback
+/// TCP (127.0.0.1:8893). iOS only.
+#[cfg(target_os = "ios")]
+fn notify_socket_command(command: &str) -> String {
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8893);
+    match TcpStream::connect(addr) {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(format!("{command}\n").as_bytes()) {
+                return format!("ERR|write failed: {e}");
+            }
+            let mut resp = String::new();
+            let _ = stream.read_to_string(&mut resp);
+            resp.trim().to_string()
+        }
+        Err(e) => format!("ERR|connect 127.0.0.1:8893 failed: {e}"),
+    }
+}
+
+/// Registers the `notify` / `live_activity_*` tools that let the AI reach the user
+/// via local notifications and Dynamic Island Live Activities (iOS 16.1+).
+#[cfg(target_os = "ios")]
+fn registerNotifyTools(handler: &mut AIToolHandler) {
+    fn notify_ok(value: &str) -> bool {
+        value.starts_with("OK|")
+    }
+    fn result_for(tool: &AITool, value: String) -> ToolResult {
+        ToolResult {
+            toolName: tool.name.clone(),
+            success: notify_ok(&value),
+            result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
+            error: if notify_ok(&value) { None } else { Some(value) },
+        }
+    }
+    handler.registerBuiltinTool(
+        BuiltinToolName::Notify,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let title = tool.parameters.iter().find(|p| p.name == "title").map(|p| p.value.clone()).unwrap_or_default();
+                let body = tool.parameters.iter().find(|p| p.name == "body").map(|p| p.value.clone()).unwrap_or_default();
+                let delay = tool.parameters.iter().find(|p| p.name == "delay_seconds").and_then(|p| p.value.parse::<u32>().ok()).unwrap_or(0);
+                result_for(tool, notify_socket_command(&format!("notify {delay} {title}|{body}")))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::LiveActivityStart,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let title = tool.parameters.iter().find(|p| p.name == "title").map(|p| p.value.clone()).unwrap_or_default();
+                let body = tool.parameters.iter().find(|p| p.name == "body").map(|p| p.value.clone()).unwrap_or_default();
+                result_for(tool, notify_socket_command(&format!("live_start {title}|{body}")))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::LiveActivityUpdate,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let title = tool.parameters.iter().find(|p| p.name == "title").map(|p| p.value.clone()).unwrap_or_default();
+                let body = tool.parameters.iter().find(|p| p.name == "body").map(|p| p.value.clone()).unwrap_or_default();
+                result_for(tool, notify_socket_command(&format!("live_update {title}|{body}")))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::LiveActivityEnd,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                result_for(tool, notify_socket_command("live_end"))
             }),
         }),
         ToolRegistrationVisibility::PUBLIC,

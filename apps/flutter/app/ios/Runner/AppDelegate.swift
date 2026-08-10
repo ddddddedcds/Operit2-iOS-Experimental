@@ -60,6 +60,8 @@ import UIKit
         }
         ShortcutsServer.shared.start()
         bootLog("AFTER_SHORTCUTS_SERVER")
+        NotifyServer.shared.start()
+        bootLog("AFTER_NOTIFY_SERVER")
       } else {
         bootLog("NO_FLUTTER_VIEWCONTROLLER")
       }

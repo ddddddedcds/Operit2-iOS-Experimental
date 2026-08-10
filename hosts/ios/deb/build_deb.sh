@@ -125,6 +125,22 @@ if [ -d "$APP_SRC" ]; then
   else
     echo "   WARN: ScreenTimeMonitor.appex not built at $EXT_SRC; skipping extension"
   fi
+  # --- embed LiveActivityWidget app extension (Dynamic Island / lock screen, iOS 16.1+) ---
+  WID_SRC="$BASE/../../../apps/flutter/app/ios/LiveActivityWidget/out/LiveActivityWidget.appex"
+  WID_ENT="$BASE/../../../apps/flutter/app/ios/LiveActivityWidget/Entitlements.plist"
+  if [ -d "$WID_SRC" ]; then
+    cp -R "$WID_SRC" "$FILES/Applications/Runner.app/PlugIns/LiveActivityWidget.appex"
+    xattr -cr "$FILES/Applications/Runner.app/PlugIns/LiveActivityWidget.appex" 2>/dev/null || true
+    if command -v ldid >/dev/null 2>&1; then
+      ldid -S"$WID_ENT" "$FILES/Applications/Runner.app/PlugIns/LiveActivityWidget.appex/LiveActivityWidget"
+      echo "   signed LiveActivityWidget.appex (ldid)"
+    else
+      codesign --force --sign - --entitlements "$WID_ENT" "$FILES/Applications/Runner.app/PlugIns/LiveActivityWidget.appex"
+      echo "   signed LiveActivityWidget.appex (codesign)"
+    fi
+  else
+    echo "   WARN: LiveActivityWidget.appex not built at $WID_SRC; skipping live activity widget"
+  fi
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
   # --- produce IPA (app already ad-hoc signed above with $ENTITLEMENTS) ---
   IPA_NAME="operit2-ios_${VERSION}_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"

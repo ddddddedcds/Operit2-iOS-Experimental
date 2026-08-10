@@ -550,6 +550,17 @@ pub struct NetHostShortcutRunOptions {
     pub name: String,
 }
 
+/// Options for `Net.notify` / `Net.liveActivityStart` / `Net.liveActivityUpdate`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostNotifyOptions {
+    /// Notification / live activity title.
+    pub title: String,
+    /// Notification / live activity body.
+    pub body: String,
+    /// Optional delay in seconds (notification only; live activities start immediately).
+    pub delay_seconds: Option<u32>,
+}
+
 pub trait NetHost: Send + Sync {
     ///
     ///Perform HTTP GET request
@@ -720,6 +731,14 @@ pub trait NetHost: Send + Sync {
     fn screenTimeUsage(&self) -> JsFuture<String>;
     /// Runs a user's iOS Shortcuts automation by name.
     fn runShortcut(&self, options: NetHostShortcutRunOptions) -> JsFuture<String>;
+    /// Sends a local notification (optionally delayed).
+    fn notify(&self, options: NetHostNotifyOptions) -> JsFuture<String>;
+    /// Starts a Live Activity on the Dynamic Island / lock screen (iOS 16.1+).
+    fn liveActivityStart(&self, options: NetHostNotifyOptions) -> JsFuture<String>;
+    /// Updates the active Live Activity content.
+    fn liveActivityUpdate(&self, options: NetHostNotifyOptions) -> JsFuture<String>;
+    /// Ends the active Live Activity.
+    fn liveActivityEnd(&self) -> JsFuture<String>;
 }
 /// Declares browser session and userscript APIs reserved for a future runtime capability.
 pub trait NetFutureHost: Send + Sync {
