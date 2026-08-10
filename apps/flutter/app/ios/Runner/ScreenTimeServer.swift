@@ -160,6 +160,12 @@ final class ScreenTimeServer: NSObject {
     }
   }
 
+  /// 锁应用名单文件：tweak（operit-sb.x）启动拦截读取的真实根路径。
+  /// rootless 下 app 无沙箱，直接写真实根；SpringBoard（mobile）同路径可读。
+  /// roothide 双视图下 app 的 /var/mobile 落到 jbroot 视图，与 SpringBoard 不共享——
+  /// 该场景需走 daemon(8890) 中转（TODO，当前设备为 rootless）。
+  private static let appLockPath = "/var/mobile/.operit/app_lock.plist"
+
   private func lock(bundleId: String, conn: NWConnection) {
     // 支持 `lock <bundleId>[|<title>|<subtitle>|<button>]`：| 分隔自定义文案。
     let fields = bundleId.split(separator: "|", maxSplits: 3).map(String.init)
@@ -168,47 +174,44 @@ final class ScreenTimeServer: NSObject {
       reply(conn: conn, text: "ERR|missing bundle id")
       return
     }
-    // 把 AI 生成的自定义文案写入 App Group（ShieldConfiguration 扩展读取渲染）。
-    // 文案含 | 时视为用户/AI 提供的自定义；只传 bundleId 时清除旧文案回默认。
-    if fields.count > 1 {
-      let title = fields.count > 1 ? fields[1] : ""
-      let subtitle = fields.count > 2 ? fields[2] : ""
-      let button = fields.count > 3 ? fields[3] : ""
-      let defaults = UserDefaults(suiteName: appGroupID)
-      defaults?.set(title, forKey: "operit.shield.title")
-      defaults?.set(subtitle, forKey: "operit.shield.subtitle")
-      defaults?.set(button, forKey: "operit.shield.button")
-    }
-    // ManagedSettings.Application 可从 bundle id 公开构造并携带 token（iOS 15+）。
-    let app = Application(bundleIdentifier: appId)
-    guard let token = app.token else {
-      reply(
-        conn: conn,
-        text: "ERR|cannot resolve app token for \(appId)（未安装或未授权屏幕使用时间）"
-      )
-      return
-    }
-    let store = ManagedSettingsStore()
-    store.shield.applications = [token]
-    reply(conn: conn, text: "OK|locked \(appId)")
+    // 解析 AI 生成的自定义屏蔽页文案（可选）。
+    let title = fields.count > 1 ? fields[1] : "休息一下"
+    let subtitle = fields.count > 2 ? fields[2] : "这个应用已被 Operit 锁定"
+    let button = fields.count > 3 ? fields[3] : "好的"
+    // 同时写入 App Group（ShieldConfiguration 扩展渲染用；FamilyControls 授权
+    // 可用时系统屏蔽页也显示相同文案）。
+    let defaults = UserDefaults(suiteName: appGroupID)
+    defaults?.set(title, forKey: "operit.shield.title")
+    defaults?.set(subtitle, forKey: "operit.shield.subtitle")
+    defaults?.set(button, forKey: "operit.shield.button")
+    // 主路径：写 tweak 启动拦截名单（无需 FamilyControls 授权，越狱 100% 可用）。
+    var dict = (NSDictionary(contentsOfFile: Self.appLockPath) as? [String: Any]) ?? [:]
+    dict[appId] = ["title": title, "subtitle": subtitle, "button": button]
+    let ok = (dict as NSDictionary).write(toFile: Self.appLockPath, atomically: true)
+    print("[ScreenTimeServer] lock \(appId) title=\(title) write=\(ok) total=\(dict.count)")
+    reply(conn: conn, text: ok ? "OK|locked \(appId)" : "ERR|写锁名单失败 \(appId)")
   }
 
   private func unlock(conn: NWConnection) {
-    let store = ManagedSettingsStore()
-    store.shield.applications = []
+    // 清空整个锁名单（tweak 拦截解除）。
+    let ok = ([:] as NSDictionary).write(toFile: Self.appLockPath, atomically: true)
     // 清除自定义屏蔽文案，回默认。
     let defaults = UserDefaults(suiteName: appGroupID)
     defaults?.removeObject(forKey: "operit.shield.title")
     defaults?.removeObject(forKey: "operit.shield.subtitle")
     defaults?.removeObject(forKey: "operit.shield.button")
+    print("[ScreenTimeServer] unlock all write=\(ok)")
     reply(conn: conn, text: "OK|unlocked all")
   }
 
   private func status(conn: NWConnection) {
     let st = AuthorizationCenter.shared.authorizationStatus
+    let locked = (NSDictionary(contentsOfFile: Self.appLockPath) as? [String: Any])?.count ?? 0
     reply(
       conn: conn,
-      text: st == .approved ? "OK|authorized" : "OK|not_authorized"
+      text: st == .approved
+        ? "OK|authorized locked=\(locked)"
+        : "OK|not_authorized(tweak lock works) locked=\(locked)"
     )
   }
 

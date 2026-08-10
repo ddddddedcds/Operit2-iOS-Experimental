@@ -28,10 +28,103 @@
 #include "operit_log.h"
 #import "roothide_compat.h"
 
+// ---- app lock（启动拦截名单）----
+// 名单文件：/var/mobile/.operit/app_lock.plist（真实根，SpringBoard mobile 可写/读；
+// rootless app 无沙箱也可写同一路径；roothide 双视图问题由写端负责，见 ScreenTimeServer）。
+// 格式：{ "<bundleId>": { "title": "...", "subtitle": "...", "button": "..." }, ... }
+// 拦截点：FBSSystemService / FBSOpenApplicationService（FrontBoard 统一启动入口，
+// SpringBoard 前台启动与外部请求都汇聚于此）+ 本 tweak 的 cmd_launch（AI 主动启动一致拦截）。
+
+static NSString *g_lockPath = @"/var/mobile/.operit/app_lock.plist";
+
+static NSDictionary *lock_load(void) {
+    return [NSDictionary dictionaryWithContentsOfFile:g_lockPath] ?: @{};
+}
+
+static NSDictionary *lock_cfg_for(NSString *bid) {
+    if (!bid || bid.length == 0) return nil;
+    return lock_load()[bid];
+}
+
+static BOOL lock_save(NSDictionary *dict) {
+    NSString *dir = [g_lockPath stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    return [dict writeToFile:g_lockPath atomically:YES];
+}
+
+// 弹自定义屏蔽提示页（SpringBoard 进程内，UIAlertController）
+static void lock_show_alert(NSString *bid, NSDictionary *cfg) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            NSString *title = cfg[@"title"] ?: @"休息一下";
+            NSString *subtitle = cfg[@"subtitle"] ?: [NSString stringWithFormat:@"%@ 已被 Operit 锁定", bid];
+            NSString *btn = cfg[@"button"] ?: @"好的";
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                           message:subtitle
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:btn style:UIAlertActionStyleDefault handler:nil]];
+            UIWindow *keyWin = nil;
+            // iOS 15+ 用 UIWindowScene.windows（UIApplication.windows 已废弃，-Werror 拦截）
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+                UIWindowScene *winScene = (UIWindowScene *)scene;
+                if (winScene.activationState == UISceneActivationStateForegroundActive) {
+                    for (UIWindow *w in winScene.windows) { keyWin = w; break; }
+                    if (keyWin) break;
+                }
+            }
+            if (!keyWin) {
+                for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                    if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+                    UIWindowScene *winScene = (UIWindowScene *)scene;
+                    if (winScene.windows.count) { keyWin = winScene.windows.firstObject; break; }
+                }
+            }
+            UIViewController *root = keyWin.rootViewController;
+            while (root.presentedViewController) root = root.presentedViewController;
+            if (root) [root presentViewController:alert animated:YES completion:nil];
+        } @catch (NSException *ex) {
+            oc_log("lock_show_alert threw: %s", ex.reason.UTF8String ?: "");
+        }
+    });
+}
+
+// 从 FrontBoard 启动参数提取 bundle id（FBApplicationProcess 对象或 NSString）
+static NSString *lock_bid_from_arg(id app) {
+    if (!app) return nil;
+    if ([app isKindOfClass:[NSString class]]) return app;
+    @try {
+        NSString *bid = [app valueForKey:@"bundleIdentifier"];
+        return bid;
+    } @catch (NSException *ex) {
+        return nil;
+    }
+}
+
+// 统一拦截判定：命中锁名单 → 阻断 + 弹提示 + 返回 YES（已拦截）；否则 NO（放行）。
+// fail-open：任何异常都视为"未命中"，保证拦截逻辑出问题只会放行、绝不进安全模式。
+static BOOL lock_try_block(NSString *bid) {
+    @try {
+        if (!bid || bid.length == 0) return NO;
+        NSDictionary *cfg = lock_cfg_for(bid);
+        if (!cfg) return NO;
+        oc_log("LOCK: blocking launch of %@", bid);
+        lock_show_alert(bid, cfg);
+        return YES;
+    } @catch (NSException *ex) {
+        oc_log("lock_try_block threw (fail-open): %s", ex.reason.UTF8String ?: "");
+        return NO;
+    }
+}
+
 // ---- commands ----
 
 static NSString *cmd_launch(NSString *bid) {
     if (!bid || bid.length == 0) return @"ERR|launch: empty bundleId";
+
+    // 锁名单拦截：AI 主动启动被锁 app 与用户点图标一致对待。
+    if (lock_try_block(bid)) return [NSString stringWithFormat:@"ERR|launch %@ 已被锁定", bid];
 
     BOOL launched = NO;
 
@@ -742,6 +835,52 @@ static void handle_conn(int fd) {
         } else if ([cmd isEqualToString:@"front"]) {
             @try { resp = cmd_front(); }
             @catch (NSException *ex) { resp = [NSString stringWithFormat:@"ERR|front: %@", ex.reason]; }
+        } else if ([cmd isEqualToString:@"applock"]) {
+            // applock <bundleId>|<title>|<subtitle>|<button>  （title/subtitle/button 可选）
+            if (parts.count < 2) { resp = @"ERR|usage: applock <bundleId>|<title>|<subtitle>|<button>"; }
+            else {
+                NSString *seg = [[parts subarrayWithRange:NSMakeRange(1, parts.count - 1)]
+                                 componentsJoinedByString:@" "];
+                NSArray *fields = [seg componentsSeparatedByString:@"|"];
+                if (fields.count < 1 || [fields[0] length] == 0) { resp = @"ERR|applock: empty bundleId"; }
+                else {
+                    NSString *bid = fields[0];
+                    NSMutableDictionary *dict = [lock_load() mutableCopy];
+                    NSMutableDictionary *cfg = [NSMutableDictionary dictionary];
+                    if (fields.count > 1 && [fields[1] length] > 0) cfg[@"title"] = fields[1];
+                    if (fields.count > 2 && [fields[2] length] > 0) cfg[@"subtitle"] = fields[2];
+                    if (fields.count > 3 && [fields[3] length] > 0) cfg[@"button"] = fields[3];
+                    dict[bid] = cfg;
+                    resp = lock_save(dict) ? [NSString stringWithFormat:@"OK|locked %@ (%ld apps)", bid, (long)dict.count]
+                                           : @"ERR|applock: 写名单失败";
+                }
+            }
+        } else if ([cmd isEqualToString:@"appunlock"]) {
+            if (parts.count < 2) { resp = @"ERR|usage: appunlock <bundleId>"; }
+            else {
+                NSString *bid = parts[1];
+                NSMutableDictionary *dict = [lock_load() mutableCopy];
+                if (dict[bid]) {
+                    [dict removeObjectForKey:bid];
+                    resp = lock_save(dict) ? [NSString stringWithFormat:@"OK|unlocked %@", bid]
+                                           : @"ERR|appunlock: 写名单失败";
+                } else {
+                    resp = [NSString stringWithFormat:@"OK|%@ 不在锁名单", bid];
+                }
+            }
+        } else if ([cmd isEqualToString:@"applock_list"]) {
+            NSDictionary *dict = lock_load();
+            if (dict.count == 0) { resp = @"OK|empty"; }
+            else {
+                NSMutableArray *lines = [NSMutableArray array];
+                for (NSString *bid in dict) {
+                    NSDictionary *cfg = dict[bid];
+                    [lines addObject:[NSString stringWithFormat:@"%@|%@|%@|%@", bid,
+                                      cfg[@"title"] ?: @"", cfg[@"subtitle"] ?: @"", cfg[@"button"] ?: @""]];
+                }
+                resp = [NSString stringWithFormat:@"OK|%ld|%@", (long)dict.count,
+                        [lines componentsJoinedByString:@"\n"]];
+            }
         }
     } @catch (NSException *ex) {
         resp = [NSString stringWithFormat:@"ERR|handle: %@", ex.reason];
@@ -784,3 +923,26 @@ static void start_server(void) {
     g_sockpath = operit_env_path(@"/var/jb/var/mobile/.operit/operit.sock");
     start_server();
 }
+
+// ---- app lock：FrontBoard 启动拦截 ----
+// SpringBoard 前台启动（用户点图标）与外部启动请求都汇聚到 FrontBoard 的
+// FBSSystemService（launchApplication:options:environment:completion:，iOS 13+，
+// 参数全为对象指针，签名稳定）。命中锁名单 → 阻断 + 弹自定义提示页；未命中 → %orig。
+// 注：FBSOpenApplicationService.openApplication:withOptions:clientPort:completion:
+// 的 clientPort 是 mach_port_t（4 字节），与 id 声明不兼容，第一版不 hook（装机验证
+// 用户点图标路径是否走 FBSSystemService，不走再换点）。
+
+%hook FBSSystemService
+- (void)launchApplication:(id)application options:(id)options environment:(id)environment completion:(id)completion {
+    NSString *bid = lock_bid_from_arg(application);
+    if (lock_try_block(bid)) {
+        if (completion) {
+            void (^cb)(BOOL, NSError *) = completion;
+            cb(NO, [NSError errorWithDomain:@"OperitLock" code:1
+                                   userInfo:@{NSLocalizedDescriptionKey: @"App locked"}]);
+        }
+        return;
+    }
+    %orig;
+}
+%end
