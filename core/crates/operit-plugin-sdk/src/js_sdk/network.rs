@@ -569,6 +569,22 @@ pub struct NetHostNotifyOptions {
     pub delay_seconds: Option<u32>,
 }
 
+/// Options for `Net.notificationsList` — reads recent device notifications
+/// captured by the SpringBoard tweak into notifications.json.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostNotificationsListOptions {
+    /// Maximum number of notifications to return (default 20).
+    pub limit: Option<u32>,
+}
+
+/// Options for `Net.notificationsBlock` / `Net.notificationsUnblock` —
+/// controls which app's notifications the tweak hides (independent of app lock).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostNotificationsBlockOptions {
+    /// App bundle identifier, e.g. "com.tencent.mqq".
+    pub bundle_id: String,
+}
+
 pub trait NetHost: Send + Sync {
     ///
     ///Perform HTTP GET request
@@ -749,6 +765,14 @@ pub trait NetHost: Send + Sync {
     fn liveActivityEnd(&self) -> JsFuture<String>;
     /// Opens a URL/scheme through UIApplication (universal links auto-open apps).
     fn openUrl(&self, options: NetHostOpenUrlOptions) -> JsFuture<String>;
+    /// Reads recent device notifications captured by the tweak (title/body/bid/ts).
+    fn notificationsList(&self, options: NetHostNotificationsListOptions) -> JsFuture<String>;
+    /// Hides one app's notifications (independent of app lock).
+    fn notificationsBlock(&self, options: NetHostNotificationsBlockOptions) -> JsFuture<String>;
+    /// Restores one app's notifications.
+    fn notificationsUnblock(&self, options: NetHostNotificationsBlockOptions) -> JsFuture<String>;
+    /// Lists app bundle ids currently having notifications blocked.
+    fn notificationsBlocked(&self) -> JsFuture<String>;
 }
 /// Declares browser session and userscript APIs reserved for a future runtime capability.
 pub trait NetFutureHost: Send + Sync {

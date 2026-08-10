@@ -109,6 +109,68 @@
                 "en": "End the current Live Activity (remove from island / lock screen)."
             },
             "parameters": []
+        },
+        {
+            "name": "notifications_list",
+            "description": {
+                "zh": "读取设备上最近收到的通知（来自所有 app，含被拦截的）。返回时间、app、标题、正文。可用于 AI 感知用户收到的消息/提醒。",
+                "en": "Read the most recent device notifications (from all apps, including blocked ones). Returns time, app, title, body. Lets the AI be aware of the user's incoming messages/reminders."
+            },
+            "parameters": [
+                {
+                    "name": "limit",
+                    "description": {
+                        "zh": "返回条数（默认 20，最多 100）。",
+                        "en": "Number of notifications to return (default 20, max 100)."
+                    },
+                    "type": "number",
+                    "required": false
+                }
+            ]
+        },
+        {
+            "name": "notifications_block",
+            "description": {
+                "zh": "屏蔽某个 app 的通知（横幅/锁屏/声音全不显示），不影响 app 本身使用。例：屏蔽某群通知轰炸的 app。",
+                "en": "Block one app's notifications (banner/lock-screen/sound all hidden) without affecting the app itself. E.g. silence a noisy app."
+            },
+            "parameters": [
+                {
+                    "name": "bundle_id",
+                    "description": {
+                        "zh": "App 的 bundle id，如 com.tencent.mqq。",
+                        "en": "App bundle id, e.g. com.tencent.mqq."
+                    },
+                    "type": "string",
+                    "required": true
+                }
+            ]
+        },
+        {
+            "name": "notifications_unblock",
+            "description": {
+                "zh": "恢复某个 app 的通知显示（与 notifications_block 相反）。",
+                "en": "Restore one app's notifications (opposite of notifications_block)."
+            },
+            "parameters": [
+                {
+                    "name": "bundle_id",
+                    "description": {
+                        "zh": "App 的 bundle id。",
+                        "en": "App bundle id."
+                    },
+                    "type": "string",
+                    "required": true
+                }
+            ]
+        },
+        {
+            "name": "notifications_blocked",
+            "description": {
+                "zh": "列出当前通知被屏蔽的所有 app 的 bundle id。",
+                "en": "List bundle ids of all apps whose notifications are currently blocked."
+            },
+            "parameters": []
         }
     ]
 }*/
@@ -168,8 +230,57 @@ async function live_activity_end() {
     }
 }
 
+async function notifications_list(params: { limit?: number } = {}) {
+    const limit = params.limit ?? 20;
+    try {
+        // @ts-ignore
+        return await Tools.Net.notificationsList({ limit });
+    } catch (e) {
+        return `读取通知失败：${String(e)}。native 桥 Tools.Net.notificationsList 尚未注册。`;
+    }
+}
+
+async function notifications_block(params: { bundle_id: string } = { bundle_id: "" }) {
+    const bid = (params.bundle_id ?? "").trim();
+    if (!bid) {
+        return "缺少参数 bundle_id：请提供要屏蔽通知的 app 的 bundle id。";
+    }
+    try {
+        // @ts-ignore
+        return await Tools.Net.notificationsBlock({ bundle_id: bid });
+    } catch (e) {
+        return `屏蔽通知失败：${String(e)}。native 桥 Tools.Net.notificationsBlock 尚未注册。`;
+    }
+}
+
+async function notifications_unblock(params: { bundle_id: string } = { bundle_id: "" }) {
+    const bid = (params.bundle_id ?? "").trim();
+    if (!bid) {
+        return "缺少参数 bundle_id：请提供要恢复通知的 app 的 bundle id。";
+    }
+    try {
+        // @ts-ignore
+        return await Tools.Net.notificationsUnblock({ bundle_id: bid });
+    } catch (e) {
+        return `恢复通知失败：${String(e)}。native 桥 Tools.Net.notificationsUnblock 尚未注册。`;
+    }
+}
+
+async function notifications_blocked() {
+    try {
+        // @ts-ignore
+        return await Tools.Net.notificationsBlocked({});
+    } catch (e) {
+        return `查询通知屏蔽名单失败：${String(e)}。native 桥 Tools.Net.notificationsBlocked 尚未注册。`;
+    }
+}
+
 exports.notify = notify;
 exports.live_activity_start = live_activity_start;
 exports.live_activity_update = live_activity_update;
 exports.live_activity_end = live_activity_end;
+exports.notifications_list = notifications_list;
+exports.notifications_block = notifications_block;
+exports.notifications_unblock = notifications_unblock;
+exports.notifications_blocked = notifications_blocked;
 exports.main = notify;

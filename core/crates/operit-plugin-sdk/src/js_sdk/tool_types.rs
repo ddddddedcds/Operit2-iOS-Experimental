@@ -147,6 +147,10 @@ pub struct ToolResultMap {
     pub live_activity_start: String,
     pub live_activity_update: String,
     pub live_activity_end: String,
+    pub notifications_list: String,
+    pub notifications_block: String,
+    pub notifications_unblock: String,
+    pub notifications_blocked: String,
     pub open_url: String,
 }
 

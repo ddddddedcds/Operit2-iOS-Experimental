@@ -136,6 +136,26 @@ static NSString *lock_bid_from_arg(id app) {
     }
 }
 
+// 从 SBIconView 的 icon（SBApplicationIcon）安全取 bundle id。
+// SBApplicationIcon 没有 applicationBundleIdentifier 这个 KVC 键（真机报
+// valueForUndefinedKey），正确路径是 application.bundleIdentifier；兜底直接
+// bundleIdentifier。fail-safe：取不到返回 nil。
+static NSString *sbicon_bundle_id(id icon) {
+    if (!icon) return nil;
+    @try {
+        id app = [icon valueForKey:@"application"];
+        if (app) {
+            NSString *b = [app valueForKey:@"bundleIdentifier"];
+            if (b && b.length) return b;
+        }
+    } @catch (NSException *ex) {}
+    @try {
+        NSString *b = [icon valueForKey:@"bundleIdentifier"];
+        if (b && b.length) return b;
+    } @catch (NSException *ex) {}
+    return nil;
+}
+
 // 统一拦截判定：命中锁名单 → 阻断 + 弹提示 + 返回 YES（已拦截）；否则 NO（放行）。
 // fail-open：任何异常都视为"未命中"，保证拦截逻辑出问题只会放行、绝不进安全模式。
 static BOOL lock_try_block(NSString *bid) {
@@ -956,57 +976,42 @@ static void start_server(void) {
 // ---- app lock：前台监控拦截 ----
 // iOS 16.7 实测：用户点图标不走 FrontBoard 三个启动入口（FBSSystemService /
 // FBSystemService / FBSOpenApplicationService 均无调用记录）。改为后台线程轮询
-// 前台 app（复用 cmd_front 的 SBWorkspace frontmostApplication 探测）：前台命中
-// 锁名单 → 弹自定义提示页 + 杀进程回桌面。任何启动方式都能拦住。
+// FBSceneManager（必须在 SpringBoard 主线程调用，否则触发 safe mode）。
+// 权衡：dispatch_sync(main) 在 app 启动动画期间会等主线程空闲，最大延迟约 1-2s
+//（app 启动本身时间 + 主线程繁忙），但稳定可靠。
 
 static NSString *lock_front_bid(void) {
     __block NSString *r = nil;
     dispatch_sync(dispatch_get_main_queue(), ^{
         @try {
-            // 1) 首选：FBSceneManager.enumerateScenesWithBlock（iOS 16 全局 scene 枚举）
-            //    settings.isForeground 判定前台；identity.identifier 剥 sceneID:/-default 得 bundle id。
-            @try {
-                Class mgrCls = objc_getClass("FBSceneManager");
-                id mgr = (mgrCls && [mgrCls respondsToSelector:@selector(sharedInstance)])
-                             ? [mgrCls performSelector:@selector(sharedInstance)] : nil;
-                SEL enumSel = sel_registerName("enumerateScenesWithBlock:");
-                if (mgr && [mgr respondsToSelector:enumSel]) {
-                    __block NSString *foundBid = nil;
-                    void (^enumBlock)(id, BOOL *) = ^(id scene, BOOL *stop) {
-                        @try {
-                            NSNumber *fg = [scene valueForKeyPath:@"settings.isForeground"];
-                            NSString *bid = [[scene valueForKey:@"identity"] valueForKey:@"identifier"];
-                            // sceneID:<bundleId>-default → <bundleId>
-                            if ([bid hasPrefix:@"sceneID:"]) bid = [bid substringFromIndex:8];
-                            if ([bid hasSuffix:@"-default"]) bid = [bid substringToIndex:bid.length - 8];
-                            if ([fg boolValue] && bid && bid.length
-                                && ![bid isEqualToString:@"com.apple.springboard"]) {
-                                foundBid = bid;
-                                if (stop) *stop = YES;
-                            }
-                        } @catch (NSException *ex) {
-                            oc_log("lock_front: enum block threw %s", ex.reason.UTF8String ?: "");
+            Class mgrCls = objc_getClass("FBSceneManager");
+            id mgr = (mgrCls && [mgrCls respondsToSelector:@selector(sharedInstance)])
+                         ? [mgrCls performSelector:@selector(sharedInstance)] : nil;
+            SEL enumSel = sel_registerName("enumerateScenesWithBlock:");
+            if (mgr && [mgr respondsToSelector:enumSel]) {
+                __block NSString *foundBid = nil;
+                void (^enumBlock)(id, BOOL *) = ^(id scene, BOOL *stop) {
+                    @try {
+                        NSNumber *fg = [scene valueForKeyPath:@"settings.isForeground"];
+                        NSString *bid = [[scene valueForKey:@"identity"] valueForKey:@"identifier"];
+                        // sceneID:<bundleId>-default → <bundleId>
+                        if ([bid hasPrefix:@"sceneID:"]) bid = [bid substringFromIndex:8];
+                        if ([bid hasSuffix:@"-default"]) bid = [bid substringToIndex:bid.length - 8];
+                        if ([fg boolValue] && bid && bid.length
+                            && ![bid isEqualToString:@"com.apple.springboard"]) {
+                            foundBid = bid;
+                            if (stop) *stop = YES;
                         }
-                    };
-                    [mgr performSelector:enumSel withObject:enumBlock];
-                    if (foundBid) { r = foundBid; return; }
-                }
-            } @catch (NSException *ex) {
-                oc_log("lock_front: fbscenemgr threw %s", ex.reason.UTF8String ?: "");
+                    } @catch (NSException *ex) {
+                        oc_log("lock_front: enum block threw %s", ex.reason.UTF8String ?: "");
+                    }
+                };
+                [mgr performSelector:enumSel withObject:enumBlock];
+                if (foundBid) r = foundBid;
             }
-            // 2) 兜底：SBWorkspace frontmostApplication（iOS 16 实测多返回 nil，保留兼容）
-            @try {
-                Class wsCls = objc_getClass("SBWorkspace") ?: objc_getClass("FBWorkspace");
-                id ws = nil;
-                if (wsCls && [wsCls respondsToSelector:@selector(sharedInstance)])
-                    ws = [wsCls performSelector:@selector(sharedInstance)];
-                else if (wsCls && [wsCls respondsToSelector:@selector(mainWorkspace)])
-                    ws = [wsCls performSelector:@selector(mainWorkspace)];
-                SEL frontSel = sel_registerName("frontmostApplication");
-                id front = (ws && [ws respondsToSelector:frontSel]) ? [ws performSelector:frontSel] : nil;
-                r = [front valueForKey:@"bundleIdentifier"];
-            } @catch (NSException *ex) { r = nil; }
-        } @catch (NSException *ex) { r = nil; }
+        } @catch (NSException *ex) {
+            oc_log("lock_front: fbscenemgr threw %s", ex.reason.UTF8String ?: "");
+        }
     });
     return r;
 }
@@ -1109,7 +1114,7 @@ static void *lock_monitor_thread(void *unused) {
     static NSString *g_lastFront = nil;
     static time_t g_lastBlockAt = 0;
     while (1) {
-        usleep(500000); // 0.5s 轮询
+        usleep(1000000); // 1s 轮询（省电；正常点击已由手势拦截兜住，轮询只兜已运行 app 切前台）
         @autoreleasepool {
             @try {
                 NSString *bid = lock_front_bid();
@@ -1135,11 +1140,360 @@ static void *lock_monitor_thread(void *unused) {
     return NULL;
 }
 
+// ---- 图标点击拦截：SBIconView.performTap（iOS 16 点击图标执行启动的方法）----
+// 穷举确认：SBIconController 类 iOS 16 已不存在；SBIconView 有 performTap（无参）。
+// 命中锁名单 → 拦截（不启动 app，弹全屏屏蔽页），与官方"锁 app 本身"一致。
+
+@interface SBIconView : UIView
+- (void)performTap;
+- (id)icon;
+- (BOOL)_delegateTapAllowed;
+- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event;
+- (void)setIcon:(id)icon;
+- (UIGestureRecognizer *)tapGestureRecognizer;
+@end
+
+%hook SBIconView
+- (void)setIcon:(id)icon {
+    %orig;
+}
+
+- (void)performTap {
+    NSString *bid = nil;
+    @try {
+        id icon = [self valueForKey:@"icon"];
+        if (icon) {
+            bid = sbicon_bundle_id(icon);
+        }
+    } @catch (NSException *ex) { bid = nil; }
+    oc_log("TAP: performTap bid=%s", bid.UTF8String ?: "?");
+    if (lock_try_block(bid)) {
+        oc_log("TAP: blocked %s", bid.UTF8String ?: "?");
+        return; // 拦截：不启动，屏蔽页已弹
+    }
+    %orig;
+}
+
+- (BOOL)_delegateTapAllowed {
+    BOOL r = %orig;
+    NSString *bid = nil;
+    @try {
+        id icon = [self valueForKey:@"icon"];
+        if (icon) {
+            bid = sbicon_bundle_id(icon);
+        }
+    } @catch (NSException *ex) { bid = nil; }
+    oc_log("TAPD: _delegateTapAllowed=%d bid=%s", r ? 1 : 0, bid.UTF8String ?: "?");
+    // 命中锁名单 → 不允许点击启动（先只记录，确认路径后启用拦截）
+    // if (lock_try_block(bid)) return NO;
+    return r;
+}
+
+- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
+    %orig;
+    NSString *bid = nil;
+    @try {
+        id icon = [self valueForKey:@"icon"];
+        if (icon) {
+            bid = sbicon_bundle_id(icon);
+        }
+    } @catch (NSException *ex) { bid = nil; }
+    oc_log("TAPT: touchesEnded bid=%s", bid.UTF8String ?: "?");
+}
+%end
+
+// ---- 手势级拦截：UIGestureRecognizer.setState ----
+// iOS 16.7 点图标由 tap 手势识别器接管（SBIconView 的 touchesEnded/performTap 不触发）。
+// 手势进入 Began 时若 self.view 是 SBIconView 且命中锁名单 → 手势设 Failed（action 不触发
+// → app 不启动）+ 弹屏蔽页。fail-open：任何异常只放行。
+
+%hook UIGestureRecognizer
+- (void)setState:(UIGestureRecognizerState)state {
+    if (state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateEnded) {
+        @try {
+            UIView *v = [self valueForKey:@"view"];
+            if (v && [NSStringFromClass([v class]) isEqualToString:@"SBIconView"]) {
+                id icon = [v valueForKey:@"icon"];
+                NSString *bid = nil;
+                if (icon) {
+                    bid = sbicon_bundle_id(icon);
+                }
+                if (bid && bid.length && lock_try_block(bid)) {
+                    oc_log("GESTURE: blocked %s at state=%ld", bid.UTF8String, (long)state);
+                    // 拦截：手势失败 → 不触发启动 action
+                    state = UIGestureRecognizerStateFailed;
+                    %orig(state);
+                    return;
+                }
+            }
+        } @catch (NSException *ex) {
+            oc_log("GESTURE setState threw: %s", ex.reason.UTF8String ?: "");
+        }
+    }
+    %orig(state);
+}
+%end
+
+// ---- 通知拦截：BBObserver ----
+// iOS 16 通知进 SpringBoard 的汇聚点：UserNotificationsServer 推送每条通知经
+// BBObserver 的 _queue_updateBulletin:withReply:（或 updateBulletin:withReply:）。
+// ⚠️ iOS 16 参数是 BBBulletinUpdateTransaction（不是 BBBulletin），sectionID 要
+// 从 txn.bulletin.sectionID 取（txn 本身无 sectionID，真机 valueForUndefinedKey 实锤）。
+// 命中锁名单 → 丢弃（不 %orig）→ 横幅/锁屏/通知中心全不显示，声音也不响。
+// fail-open：异常只放行，不进安全模式。
+// 从 BBBulletinUpdateTransaction 取 bulletin 对象（iOS 16 三层结构：
+// txn.bulletinUpdate.bulletin，真机属性 dump 实锤：txn 只有 bulletinUpdate+transactionID，
+// bulletinUpdate 里才有 bulletin，bulletin 有 sectionID 方法）
+static id notif_bulletin(id obj) {
+    if (!obj) return nil;
+    @try {
+        id bu = [obj valueForKey:@"bulletinUpdate"];
+        if (bu) {
+            @try {
+                id b = [bu valueForKey:@"bulletin"];
+                if (b) return b;
+            } @catch (NSException *ex) {}
+        }
+    } @catch (NSException *ex) {}
+    // 兜底：obj 直接是 bulletinUpdate 或 bulletin
+    @try {
+        id b = [obj valueForKey:@"bulletin"];
+        if (b) return b;
+    } @catch (NSException *ex) {}
+    return obj;
+}
+
+static NSString *notif_section_id(id obj) {
+    if (!obj) return nil;
+    id bulletin = notif_bulletin(obj);
+    @try {
+        NSString *s = [bulletin valueForKey:@"sectionID"];
+        if (s && s.length) return s;
+    } @catch (NSException *ex) {}
+    // 再兜底一层：section 方法（BULL2 有 sectionID 方法，非属性）
+    @try {
+        SEL sel = sel_registerName("sectionID");
+        if (bulletin && [bulletin respondsToSelector:sel]) {
+            id s = [bulletin performSelector:sel];
+            if (s && [s isKindOfClass:[NSString class]] && [(NSString *)s length]) return s;
+        }
+    } @catch (NSException *ex) {}
+    return nil;
+}
+
+// 诊断：dump 属性名（section 取不到时打印一次，拿全结构再改正式代码）
+static void dump_props(Class cls, const char *tag) {
+    if (!cls) { oc_log("DP[%s]: class missing", tag); return; }
+    unsigned int c = 0;
+    objc_property_t *ps = class_copyPropertyList(cls, &c);
+    for (unsigned int i = 0; i < c; i++) {
+        oc_log("DP[%s].prop: %s", tag, property_getName(ps[i]));
+    }
+    if (ps) free(ps);
+    unsigned int mc = 0;
+    Method *ms = class_copyMethodList(cls, &mc);
+    for (unsigned int i = 0; i < mc; i++) {
+        const char *n = sel_getName(method_getName(ms[i]));
+        if (strstr(n, "ection") || strstr(n, "bulletin") || strstr(n, "Bulletin")) {
+            oc_log("DP[%s].method: %s", tag, n);
+        }
+    }
+    if (ms) free(ms);
+}
+
+static void notif_diag(id obj) {
+    static BOOL diagDone = NO;
+    if (diagDone) return;
+    diagDone = YES;
+    @try {
+        dump_props([obj class], "TXN");
+        // txn.bulletinUpdate（iOS 16 实锤：txn 无 bulletin 属性，数据在 bulletinUpdate）
+        id bu = nil;
+        @try { bu = [obj valueForKey:@"bulletinUpdate"]; } @catch (NSException *ex) {
+            oc_log("DP: txn.bulletinUpdate threw %s", ex.reason.UTF8String ?: "");
+        }
+        if (bu) {
+            dump_props([bu class], "BU");
+            // bulletinUpdate 里可能还有 bulletin
+            id b2 = nil;
+            @try { b2 = [bu valueForKey:@"bulletin"]; } @catch (NSException *ex) {}
+            if (b2) { dump_props([b2 class], "BULL2"); }
+        } else {
+            oc_log("DP: txn.bulletinUpdate nil");
+        }
+    } @catch (NSException *ex) {
+        oc_log("DP: diag threw %s", ex.reason.UTF8String ?: "");
+    }
+}
+
+// ---- 通知记录（AI 读取）----
+// 每条通知（无论是否拦截）追加到 /var/mobile/.operit/notifications.json，
+// AI 用文件工具读。格式：{"bid","title","body","ts"} 数组，新在前，最多 50 条。
+// 去重：queue/update 对同一条通知会各触发一次，与上一条相同(bid+title+body)则只更新时间。
+static NSString *g_notifPath = @"/var/mobile/.operit/notifications.json";
+static NSMutableArray *g_notifs = nil;
+static NSLock *g_notifLock = nil;
+
+static void notif_record(NSString *bid, NSString *title, NSString *body) {
+    if (!bid || bid.length == 0) return;
+    @try {
+        if (!g_notifLock) g_notifLock = [NSLock new];
+        [g_notifLock lock];
+        if (!g_notifs) {
+            NSData *d = [NSData dataWithContentsOfFile:g_notifPath];
+            if (d) {
+                id arr = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+                if ([arr isKindOfClass:[NSArray class]]) g_notifs = [arr mutableCopy];
+            }
+            if (!g_notifs) g_notifs = [NSMutableArray new];
+        }
+        NSDictionary *last = g_notifs.firstObject;
+        if (last && [last[@"bid"] isEqualToString:bid]
+            && [last[@"title"] isEqualToString:title ?: @""]
+            && [last[@"body"] isEqualToString:body ?: @""]) {
+            // 同一条重复触发：只更新时间戳，不新增
+            NSMutableDictionary *m = [last mutableCopy];
+            m[@"ts"] = @((long long)time(NULL));
+            [g_notifs replaceObjectAtIndex:0 withObject:m];
+        } else {
+            [g_notifs insertObject:@{
+                @"bid": bid,
+                @"title": title ?: @"",
+                @"body": body ?: @"",
+                @"ts": @((long long)time(NULL)),
+            } atIndex:0];
+        }
+        if (g_notifs.count > 50) {
+            [g_notifs removeObjectsInRange:NSMakeRange(50, g_notifs.count - 50)];
+        }
+        NSData *out = [NSJSONSerialization dataWithJSONObject:g_notifs options:0 error:nil];
+        if (out) [out writeToFile:g_notifPath atomically:YES];
+        [g_notifLock unlock];
+        oc_log("NOTIF: recorded %s", bid.UTF8String);
+    } @catch (NSException *ex) {
+        oc_log("NOTIF: record threw %s", ex.reason.UTF8String ?: "");
+        @try { [g_notifLock unlock]; } @catch (NSException *e2) {}
+    }
+}
+
+// ---- 通知拦截名单（独立于 app 锁定）----
+// /var/mobile/.operit/notif_block.plist：{ "<bundleId>": { "ts": ... }, ... }
+// Swift NotifyServer 的 notif_block/notif_unblock 读写；tweak 只读。
+// 命中 → 该 app 通知不显示（横幅/锁屏/声音全无），但 app 本身不受影响。
+static NSString *g_notifBlockPath = @"/var/mobile/.operit/notif_block.plist";
+static NSDictionary *g_notifBlockCache = nil;
+
+static BOOL notif_blocked_for(NSString *bid) {
+    if (!bid || bid.length == 0) return NO;
+    @try {
+        if (!g_notifBlockCache) {
+            g_notifBlockCache = [NSDictionary dictionaryWithContentsOfFile:g_notifBlockPath] ?: @{};
+        }
+        return g_notifBlockCache[bid] != nil;
+    } @catch (NSException *ex) {
+        return NO;
+    }
+}
+
+%hook BBObserver
+- (void)_queue_updateBulletin:(id)txn withReply:(id)reply {
+    @try {
+        NSString *section = notif_section_id(txn);
+        if (!section || section.length == 0) notif_diag(txn);
+        oc_log("NOTIF: queue section=%s", section.UTF8String ?: "?");
+        if (section && section.length && (lock_cfg_for(section) || notif_blocked_for(section))) {
+            oc_log("NOTIF: BLOCKED %s (locked app)", section.UTF8String);
+            return; // 丢弃：不显示横幅/锁屏/通知中心
+        }
+    } @catch (NSException *ex) {
+        oc_log("NOTIF: queue threw %s", ex.reason.UTF8String ?: "");
+    }
+    %orig;
+}
+- (void)updateBulletin:(id)txn withReply:(id)reply {
+    @try {
+        NSString *section = notif_section_id(txn);
+        oc_log("NOTIF: update section=%s", section.UTF8String ?: "?");
+        // 记录到 JSON（AI 读取用）；被锁的也记（AI 知道"谁发了但被拦"）
+        id bulletin = notif_bulletin(txn);
+        NSString *title = nil, *body = nil;
+        if (bulletin) {
+            @try { title = [bulletin valueForKey:@"title"]; } @catch (NSException *ex) {}
+            @try {
+                body = [bulletin valueForKey:@"message"];
+                if (!body || body.length == 0) { @try { body = [bulletin valueForKey:@"body"]; } @catch (NSException *ex) {} }
+            } @catch (NSException *ex) {}
+        }
+        notif_record(section, title, body);
+        if (section && section.length && (lock_cfg_for(section) || notif_blocked_for(section))) {
+            oc_log("NOTIF: BLOCKED %s (locked app)", section.UTF8String);
+            return;
+        }
+    } @catch (NSException *ex) {
+        oc_log("NOTIF: update threw %s", ex.reason.UTF8String ?: "");
+    }
+    %orig;
+}
+%end
+
+// ---- 图标点击 hook 诊断：穷举 SBIconController/SBIconView 方法 ----
+static void dump_icon_methods(Class cls, const char *tag) {
+    if (!cls) { oc_log("DUMP[%s]: class missing", tag); return; }
+    unsigned int c = 0;
+    Method *ms = class_copyMethodList(cls, &c);
+    for (unsigned int i = 0; i < c; i++) {
+        const char *n = sel_getName(method_getName(ms[i]));
+        // 只打跟"点击/启动/激活/打开"相关的方法，避免全量刷屏
+        if (strstr(n, "Icon") || strstr(n, "icon") || strstr(n, "Tap") || strstr(n, "tap")
+            || strstr(n, "Launch") || strstr(n, "launch") || strstr(n, "Open") || strstr(n, "open")
+            || strstr(n, "Activate") || strstr(n, "activate") || strstr(n, "Touch") || strstr(n, "touch")
+            || strstr(n, "Press") || strstr(n, "press") || strstr(n, "Request") || strstr(n, "request")
+            || strstr(n, "Execute") || strstr(n, "execute")) {
+            oc_log("DUMP[%s]: %s", tag, n);
+        }
+    }
+    if (ms) free(ms);
+}
+
+// ---- 通知 hook 诊断：穷举 BBObserver 方法（通知相关）----
+static void dump_notif_methods(Class cls, const char *tag) {
+    if (!cls) { oc_log("DUMP[%s]: class missing", tag); return; }
+    unsigned int c = 0;
+    Method *ms = class_copyMethodList(cls, &c);
+    for (unsigned int i = 0; i < c; i++) {
+        const char *n = sel_getName(method_getName(ms[i]));
+        if (strstr(n, "Bulletin") || strstr(n, "bulletin") || strstr(n, "Notif") || strstr(n, "notif")
+            || strstr(n, "Queue") || strstr(n, "queue") || strstr(n, "Update") || strstr(n, "update")
+            || strstr(n, "Publish") || strstr(n, "publish") || strstr(n, "Insert") || strstr(n, "insert")
+            || strstr(n, "Add") || strstr(n, "add") || strstr(n, "Section") || strstr(n, "section")) {
+            oc_log("DUMP[%s]: %s", tag, n);
+        }
+    }
+    if (ms) free(ms);
+}
+
 %ctor {
-    g_sockpath = operit_env_path(@"/var/jb/var/mobile/.operit/operit.sock");
-    start_server();
-    pthread_t lockT;
-    pthread_create(&lockT, NULL, lock_monitor_thread, NULL);
-    oc_log("operit-sb loaded, lockPath=%s, roothide=%d", g_lockPath.UTF8String, operit_is_roothide());
+    // @try 保护：dylib 初始化抛异常不让 SpringBoard 进 safe mode
+    @try {
+        g_sockpath = operit_env_path(@"/var/jb/var/mobile/.operit/operit.sock");
+        start_server();
+        pthread_t lockT;
+        pthread_create(&lockT, NULL, lock_monitor_thread, NULL);
+        oc_log("operit-sb loaded, lockPath=%s, roothide=%d", g_lockPath.UTF8String, operit_is_roothide());
+        // 延迟 3s 等 SpringBoard 完全启动后枚举图标点击相关方法（一次拿全，不猜）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            dump_icon_methods(objc_getClass("SBIconController"), "SBIconController");
+            dump_icon_methods(objc_getClass("SBIconView"), "SBIconView");
+        });
+        // 延迟 5s + 10s 各 dump 一次 BBObserver（类可能晚加载）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            dump_notif_methods(objc_getClass("BBObserver"), "BBObserver");
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            dump_notif_methods(objc_getClass("BBObserver"), "BBObserver");
+        });
+    } @catch (NSException *ex) {
+        oc_log("ctor threw: %s", ex.reason.UTF8String ?: "");
+    }
 }
 

@@ -80,6 +80,14 @@ final class NotifyServer: NSObject {
         self.liveUpdate(args: rest, conn: conn)
       case "live_end":
         self.liveEnd(conn: conn)
+      case "notif_list":
+        self.notifList(args: rest, conn: conn)
+      case "notif_block":
+        self.notifBlock(args: rest, conn: conn, block: true)
+      case "notif_unblock":
+        self.notifBlock(args: rest, conn: conn, block: false)
+      case "notif_blocked":
+        self.notifBlocked(conn: conn)
       default:
         self.reply(conn: conn, text: "ERR|unknown command: \(cmd)")
       }
@@ -184,6 +192,72 @@ final class NotifyServer: NSObject {
       await liveActivity.end()
       reply(conn: conn, text: "OK|live activity ended")
     }
+  }
+
+  // MARK: - 通知读取 / 拦截（tweak 采集 + 名单）
+
+  /// 通知采集文件：SpringBoard tweak 把每条通知（bid/title/body/ts）写到这里。
+  private var notificationsPath: String {
+    "/var/mobile/.operit/notifications.json"
+  }
+  /// 通知拦截名单（独立于 app 锁定；tweak 读它决定拦谁的横幅/锁屏/声音）。
+  private var notifBlockPath: String {
+    "/var/mobile/.operit/notif_block.plist"
+  }
+
+  /// notif_list [limit] —— 读 tweak 采集的通知，返回最近 limit 条（默认 20）。
+  private func notifList(args: String, conn: NWConnection) {
+    let limit = Int(args.trimmingCharacters(in: .whitespaces)) ?? 20
+    guard let data = FileManager.default.contents(atPath: notificationsPath) else {
+      reply(conn: conn, text: "ERR|no notifications captured yet")
+      return
+    }
+    guard
+      let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+    else {
+      reply(conn: conn, text: "ERR|bad notifications.json")
+      return
+    }
+    let items = Array(arr.prefix(max(1, min(limit, 100))))
+    var lines: [String] = []
+    for it in items {
+      let bid = it["bid"] as? String ?? "?"
+      let title = it["title"] as? String ?? ""
+      let body = it["body"] as? String ?? ""
+      let ts = it["ts"] as? Int64 ?? 0
+      let date = ts > 0
+        ? DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval(ts)), dateStyle: .short, timeStyle: .short)
+        : "?"
+      lines.append("[\(date)] \(bid): \(title) — \(body)")
+    }
+    reply(conn: conn, text: lines.isEmpty ? "OK|(empty)" : "OK|\n" + lines.joined(separator: "\n"))
+  }
+
+  /// notif_block <bundleId> / notif_unblock <bundleId> —— 增删通知拦截名单。
+  private func notifBlock(args: String, conn: NWConnection, block: Bool) {
+    let bid = args.trimmingCharacters(in: .whitespaces)
+    guard !bid.isEmpty else {
+      reply(conn: conn, text: "ERR|usage: notif_\(block ? "block" : "unblock") <bundleId>")
+      return
+    }
+    var dict = (NSDictionary(contentsOfFile: notifBlockPath) as? [String: Any]) ?? [:]
+    if block {
+      dict[bid] = ["ts": Int64(Date().timeIntervalSince1970)]
+    } else {
+      dict.removeValue(forKey: bid)
+    }
+    let ok = (dict as NSDictionary).write(toFile: notifBlockPath, atomically: true)
+    reply(conn: conn, text: ok ? "OK|\(block ? "blocked" : "unblocked") \(bid)" : "ERR|write failed")
+  }
+
+  /// notif_blocked —— 列出当前通知拦截名单。
+  private func notifBlocked(conn: NWConnection) {
+    guard let dict = NSDictionary(contentsOfFile: notifBlockPath) as? [String: Any], !dict.isEmpty else {
+      reply(conn: conn, text: "OK|(none)")
+      return
+    }
+    let ids = dict.keys.sorted()
+    reply(conn: conn, text: "OK|" + ids.joined(separator: ", "))
   }
 
   // MARK: - 工具

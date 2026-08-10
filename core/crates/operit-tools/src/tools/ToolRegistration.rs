@@ -593,6 +593,65 @@ fn registerNotifyTools(handler: &mut AIToolHandler) {
         }),
         ToolRegistrationVisibility::PUBLIC,
     );
+    handler.registerBuiltinTool(
+        BuiltinToolName::NotificationsList,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::READ,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let limit = tool.parameters.iter().find(|p| p.name == "limit").and_then(|p| p.value.parse::<u32>().ok()).unwrap_or(20);
+                result_for(tool, notify_socket_command(&format!("notif_list {limit}")))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::NotificationsBlock,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let bid = tool.parameters.iter().find(|p| p.name == "bundle_id").map(|p| p.value.clone()).unwrap_or_default();
+                result_for(tool, notify_socket_command(&format!("notif_block {bid}")))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::NotificationsUnblock,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let bid = tool.parameters.iter().find(|p| p.name == "bundle_id").map(|p| p.value.clone()).unwrap_or_default();
+                result_for(tool, notify_socket_command(&format!("notif_unblock {bid}")))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::NotificationsBlocked,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::READ,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                result_for(tool, notify_socket_command("notif_blocked"))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
 }
 
 /// Sends one open-url line-command to the in-app Swift `OpenURLServer` over
