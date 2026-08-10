@@ -167,7 +167,7 @@ final class NotifyServer: NSObject {
       body: body
     )
     Task {
-      await liveActivity.update(state)
+      await liveActivity.update(ActivityContent(state: state, staleDate: nil))
       reply(conn: conn, text: "OK|live activity updated")
     }
   }
