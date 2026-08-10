@@ -50,9 +50,12 @@ final class ShortcutsServer: NSObject {
   }
 
   private func dispatch(_ line: String, conn: NWConnection) {
-    let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+    // 协议兼容：Rust 端发 "shortcuts <cmd> [args]"，剥掉命名空间前缀。
+    let stripped = line.hasPrefix("shortcuts ") ? String(line.dropFirst("shortcuts ".count)) : line
+    let parts = stripped.split(separator: " ", maxSplits: 1).map(String.init)
     let cmd = parts.first ?? ""
     let arg = parts.count > 1 ? parts[1] : ""
+    print("[ShortcutsServer] received: \(line) → cmd=\(cmd) arg=\(arg)")
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       switch cmd {
@@ -83,6 +86,7 @@ final class ShortcutsServer: NSObject {
   }
 
   private func reply(conn: NWConnection, text: String) {
+    print("[ShortcutsServer] reply: \(text)")
     conn.send(
       content: Data((text + "\n").utf8),
       completion: .contentProcessed { _ in conn.cancel() }

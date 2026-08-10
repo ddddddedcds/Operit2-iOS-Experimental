@@ -68,6 +68,7 @@ final class NotifyServer: NSObject {
     let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
     let cmd = parts.first ?? ""
     let rest = parts.count > 1 ? parts[1...].joined(separator: " ") : ""
+    print("[NotifyServer] received: \(line) → cmd=\(cmd) rest=\(rest)")
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       switch cmd {
@@ -86,6 +87,7 @@ final class NotifyServer: NSObject {
   }
 
   private func reply(conn: NWConnection, text: String) {
+    print("[NotifyServer] reply: \(text)")
     conn.send(
       content: Data((text + "\n").utf8),
       completion: .contentProcessed { _ in conn.cancel() }

@@ -53,9 +53,12 @@ final class OpenURLServer: NSObject {
   }
 
   private func dispatch(_ line: String, conn: NWConnection) {
-    let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+    // 协议兼容：Rust 端发 "open_url <url>"，剥掉命名空间前缀。
+    let stripped = line.hasPrefix("open_url ") ? String(line.dropFirst("open_url ".count)) : line
+    let parts = stripped.split(separator: " ", maxSplits: 1).map(String.init)
     let cmd = parts.first ?? ""
     let arg = parts.count > 1 ? parts[1] : ""
+    print("[OpenURLServer] received: \(line) → cmd=\(cmd) arg=\(arg)")
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       switch cmd {
@@ -68,6 +71,7 @@ final class OpenURLServer: NSObject {
   }
 
   private func reply(conn: NWConnection, text: String) {
+    print("[OpenURLServer] reply: \(text)")
     conn.send(
       content: Data((text + "\n").utf8),
       completion: .contentProcessed { _ in conn.cancel() }
