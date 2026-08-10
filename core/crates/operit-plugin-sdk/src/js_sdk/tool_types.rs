@@ -135,6 +135,14 @@ pub struct ToolResultMap {
     pub device_agent_start: String,
     pub device_agent_stop: String,
     pub device_agent_status: String,
+    pub screen_time_authorize: String,
+    pub screen_time_pick: String,
+    pub screen_time_lock: String,
+    pub screen_time_unlock: String,
+    pub screen_time_monitor_start: String,
+    pub screen_time_monitor_stop: String,
+    pub screen_time_usage: String,
+    pub shortcut_run: String,
 }
 
 include!(concat!(env!("OUT_DIR"), "/builtin_tool_names.rs"));

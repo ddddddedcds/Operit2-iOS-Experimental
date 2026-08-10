@@ -54,6 +54,12 @@ import UIKit
       if let controller = window?.rootViewController as? FlutterViewController {
         AppleRuntimeChannel.register(binaryMessenger: controller.binaryMessenger)
         bootLog("AFTER_CHANNEL_REG")
+        if #available(iOS 16.0, *) {
+          ScreenTimeServer.shared.start()
+          bootLog("AFTER_SCREEN_TIME_SERVER")
+        }
+        ShortcutsServer.shared.start()
+        bootLog("AFTER_SHORTCUTS_SERVER")
       } else {
         bootLog("NO_FLUTTER_VIEWCONTROLLER")
       }
@@ -70,6 +76,38 @@ import UIKit
   override func applicationDidBecomeActive(_ application: UIApplication) {
     bootLog("APP_BECAME_ACTIVE")
   }
+
+  // ---- 外部 AI 任务入口（iOS 快捷指令 → operit://ask?text=...&x-success=...） ----
+  override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+  ) -> Bool {
+    bootLog("OPEN_URL \(url.absoluteString)")
+    guard url.scheme == "operit" else { return false }
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+      let queryItems = components.queryItems
+    else {
+      return false
+    }
+    let text = queryItems.first { $0.name == "text" }?.value ?? ""
+    let xSuccess = queryItems.first { $0.name == "x-success" }?.value
+    if !text.isEmpty, let messenger = window?.rootViewController?.binaryMessenger {
+      let channel = FlutterMethodChannel(
+        name: "operit/ai",
+        binaryMessenger: messenger
+      )
+      channel.invokeMethod("ask", arguments: ["text": text]) { result in
+        if let xSuccess, let url = URL(string: xSuccess) {
+          UIApplication.shared.open(url)
+        }
+        bootLog("OPEN_URL_ASK_DONE result=\(String(describing: result))")
+      }
+      return true
+    }
+    return false
+  }
+
   override func applicationWillResignActive(_ application: UIApplication) {
     bootLog("APP_WILL_RESIGN_ACTIVE")
   }

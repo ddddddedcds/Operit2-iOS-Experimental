@@ -35,6 +35,14 @@
     <true/>
     <key>get-task-allow</key>
     <true/>
+    <!-- Screen Time (FamilyControls) shield API, iOS 16+. -->
+    <key>com.apple.developer.family-controls</key>
+    <true/>
+    <!-- Shared container with the ScreenTimeMonitor app extension. -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.ai.assistance.operit</string>
+    </array>
     <key>application-identifier</key>
     <string>com.ai.assistance.operit2</string>
     <key>keychain-access-groups</key>

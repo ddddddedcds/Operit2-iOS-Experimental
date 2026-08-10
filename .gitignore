@@ -181,3 +181,4 @@ AGENTS.md
 hosts/ios/deb/files/Applications/
 hosts/ios/deb/files/usr/bin/
 hosts/ios/deb/files/Library/MobileSubstrate/DynamicLibraries/*.dylib
+apps/flutter/app/ios/ScreenTimeMonitor/out/

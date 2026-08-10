@@ -525,6 +525,31 @@ pub struct NetHostDeviceAgentStartOptions {
     pub goal: String,
 }
 
+/// Options for `Net.screenTimeLock` — shields one app by Bundle ID via Apple's
+/// Screen Time (FamilyControls) API (iOS 16+).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostScreenTimeLockOptions {
+    /// Bundle ID of the app to lock, e.g. "com.tencent.xin".
+    pub bundle_id: String,
+}
+
+/// Options for `Net.screenTimeMonitorStart` — registers per-app overuse
+/// monitoring (DeviceActivityMonitor extension) with a daily cumulative threshold.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostScreenTimeMonitorStartOptions {
+    /// Comma-separated bundle IDs to monitor, e.g. "com.tencent.xin,com.ss.iphone.ugc.Aweme".
+    pub bundle_ids: String,
+    /// Daily cumulative usage threshold in minutes; the monitor fires when exceeded.
+    pub minutes: u32,
+}
+
+/// Options for `Net.runShortcut` — runs a user's iOS Shortcuts automation by name.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostShortcutRunOptions {
+    /// Name of the shortcut to run, e.g. "打开勿扰模式".
+    pub name: String,
+}
+
 pub trait NetHost: Send + Sync {
     ///
     ///Perform HTTP GET request
@@ -676,6 +701,25 @@ pub trait NetHost: Send + Sync {
     fn deviceAgentStop(&self) -> JsFuture<String>;
     /// Reports whether the on-device automation agent is idle or running.
     fn deviceAgentStatus(&self) -> JsFuture<String>;
+    /// Requests Apple Screen Time authorization (iOS 16+; must succeed before locking).
+    fn screenTimeAuthorize(&self) -> JsFuture<String>;
+    /// Shows the system FamilyActivityPicker so the user selects apps the AI may control.
+    fn screenTimePick(&self) -> JsFuture<String>;
+    /// Shields (locks) one app by Bundle ID.
+    fn screenTimeLock(&self, options: NetHostScreenTimeLockOptions) -> JsFuture<String>;
+    /// Unshields (unlocks) all apps.
+    fn screenTimeUnlock(&self) -> JsFuture<String>;
+    /// Registers per-app overuse monitoring (DeviceActivityMonitor extension).
+    fn screenTimeMonitorStart(
+        &self,
+        options: NetHostScreenTimeMonitorStartOptions,
+    ) -> JsFuture<String>;
+    /// Stops all overuse monitoring.
+    fn screenTimeMonitorStop(&self) -> JsFuture<String>;
+    /// Reads overuse events recorded by the DeviceActivityMonitor extension.
+    fn screenTimeUsage(&self) -> JsFuture<String>;
+    /// Runs a user's iOS Shortcuts automation by name.
+    fn runShortcut(&self, options: NetHostShortcutRunOptions) -> JsFuture<String>;
 }
 /// Declares browser session and userscript APIs reserved for a future runtime capability.
 pub trait NetFutureHost: Send + Sync {

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
+import 'core/ai/ExternalAiBridge.dart';
 import 'core/application/CoreApplicationService.dart';
 import 'core/errors/UnhandledErrorReporter.dart';
 import 'core/logging/ClientLogger.dart';
@@ -185,6 +186,8 @@ void main(List<String> _) async {
 void _runMainWindow() {
   ClientLogger.i('run main window', tag: _appStartupLogTag);
   _writeLaunchLog('BEFORE_RUN_APP main');
+  // External AI task bridge (iOS Shortcuts -> operit://ask?text=...).
+  ExternalAiBridge.install();
   try {
     runApp(
       LiquidGlassWidgets.wrap(

@@ -106,6 +106,25 @@ if [ -d "$APP_SRC" ]; then
   echo "   ad-hoc signing app (macOS codesign) with entitlements ..."
   codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$FILES/Applications/Runner.app" 2>&1 | tail -3 || \
     echo "   (codesign unavailable; rely on postinst ldid + AppSync Unified)"
+  # --- embed ScreenTimeMonitor app extension (DeviceActivityMonitor, iOS 16+) ---
+  # Embed AFTER the app's --deep codesign so this ad-hoc sign is not overwritten
+  # with the app's entitlements (the extension needs its own App Group keys).
+  EXT_SRC="$BASE/../../../apps/flutter/app/ios/ScreenTimeMonitor/out/ScreenTimeMonitor.appex"
+  EXT_ENT="$BASE/../../../apps/flutter/app/ios/ScreenTimeMonitor/Entitlements.plist"
+  if [ -d "$EXT_SRC" ]; then
+    mkdir -p "$FILES/Applications/Runner.app/PlugIns"
+    cp -R "$EXT_SRC" "$FILES/Applications/Runner.app/PlugIns/ScreenTimeMonitor.appex"
+    xattr -cr "$FILES/Applications/Runner.app/PlugIns/ScreenTimeMonitor.appex" 2>/dev/null || true
+    if command -v ldid >/dev/null 2>&1; then
+      ldid -S"$EXT_ENT" "$FILES/Applications/Runner.app/PlugIns/ScreenTimeMonitor.appex/ScreenTimeMonitor"
+      echo "   signed ScreenTimeMonitor.appex (ldid)"
+    else
+      codesign --force --sign - --entitlements "$EXT_ENT" "$FILES/Applications/Runner.app/PlugIns/ScreenTimeMonitor.appex"
+      echo "   signed ScreenTimeMonitor.appex (codesign)"
+    fi
+  else
+    echo "   WARN: ScreenTimeMonitor.appex not built at $EXT_SRC; skipping extension"
+  fi
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
   # --- produce IPA (app already ad-hoc signed above with $ENTITLEMENTS) ---
   IPA_NAME="operit2-ios_${VERSION}_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"

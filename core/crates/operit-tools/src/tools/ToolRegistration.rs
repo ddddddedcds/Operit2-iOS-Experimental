@@ -109,6 +109,10 @@ pub fn registerAllTools(handler: &mut AIToolHandler, context: &HostManager) {
     registerPublicTools(handler, context);
     #[cfg(target_os = "ios")]
     registerDeviceAgentTools(handler);
+    #[cfg(target_os = "ios")]
+    registerScreenTimeTools(handler);
+    #[cfg(target_os = "ios")]
+    registerShortcutTools(handler);
     registerInternalTools(handler, context);
 }
 
@@ -205,6 +209,281 @@ fn registerDeviceAgentTools(handler: &mut AIToolHandler) {
                     success: true,
                     result: ToolResultData::StringResultData(StringResultData { value }),
                     error: None,
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+}
+
+/// Sends one screen-time line-command to the in-app Swift `ScreenTimeServer`
+/// over loopback TCP (127.0.0.1:8891) and returns its textual response. iOS only.
+/// Commands: `screen_time authorize | pick | lock <bundleId> | unlock | status`.
+#[cfg(target_os = "ios")]
+fn screen_time_socket_command(command: &str) -> String {
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8891);
+    match TcpStream::connect(addr) {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(format!("{command}\n").as_bytes()) {
+                return format!("ERR|write failed: {e}");
+            }
+            let mut resp = String::new();
+            let _ = stream.read_to_string(&mut resp);
+            resp.trim().to_string()
+        }
+        Err(e) => format!("ERR|connect 127.0.0.1:8891 failed: {e}"),
+    }
+}
+
+/// Registers the four `screen_time.*` tools that drive Apple's Screen Time
+/// (FamilyControls) shield API through the in-app Swift server. iOS 16+ only.
+#[cfg(target_os = "ios")]
+fn registerScreenTimeTools(handler: &mut AIToolHandler) {
+    handler.registerBuiltinTool(
+        BuiltinToolName::ScreenTimeAuthorize,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let value = screen_time_socket_command("screen_time authorize");
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::ScreenTimePick,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let value = screen_time_socket_command("screen_time pick");
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::ScreenTimeLock,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let bundle_id = tool
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == "bundle_id")
+                    .map(|parameter| parameter.value.clone())
+                    .unwrap_or_default();
+                let value = screen_time_socket_command(&format!(
+                    "screen_time lock {}",
+                    bundle_id
+                ));
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::ScreenTimeUnlock,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let value = screen_time_socket_command("screen_time unlock");
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::ScreenTimeMonitorStart,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let bundle_ids = tool
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == "bundle_ids")
+                    .map(|parameter| parameter.value.clone())
+                    .unwrap_or_default();
+                let minutes = tool
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == "minutes")
+                    .and_then(|parameter| parameter.value.parse::<u32>().ok())
+                    .unwrap_or(60);
+                let value = screen_time_socket_command(&format!(
+                    "screen_time monitor_start {} {}",
+                    bundle_ids, minutes
+                ));
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::ScreenTimeMonitorStop,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let value = screen_time_socket_command("screen_time monitor_stop");
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+    handler.registerBuiltinTool(
+        BuiltinToolName::ScreenTimeUsage,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::READ,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let value = screen_time_socket_command("screen_time usage");
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
+                }
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+}
+
+/// Sends one shortcut line-command to the in-app Swift `ShortcutsServer` over
+/// loopback TCP (127.0.0.1:8892). iOS only.
+#[cfg(target_os = "ios")]
+fn shortcuts_socket_command(command: &str) -> String {
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8892);
+    match TcpStream::connect(addr) {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(format!("{command}\n").as_bytes()) {
+                return format!("ERR|write failed: {e}");
+            }
+            let mut resp = String::new();
+            let _ = stream.read_to_string(&mut resp);
+            resp.trim().to_string()
+        }
+        Err(e) => format!("ERR|connect 127.0.0.1:8892 failed: {e}"),
+    }
+}
+
+/// Registers the `run_shortcut` tool that runs a user's iOS Shortcuts automation
+/// by name (via the in-app Swift ShortcutsServer → shortcuts:// URL scheme).
+#[cfg(target_os = "ios")]
+fn registerShortcutTools(handler: &mut AIToolHandler) {
+    handler.registerBuiltinTool(
+        BuiltinToolName::ShortcutRun,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let name = tool
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == "name")
+                    .map(|parameter| parameter.value.clone())
+                    .unwrap_or_default();
+                let value = shortcuts_socket_command(&format!("shortcuts run {name}"));
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
                 }
             }),
         }),
