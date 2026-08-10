@@ -6,7 +6,6 @@ import 'dart:ui' as ui;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../../../data/preferences/UserPreferencesManager.dart';
 import '../../../../l10n/generated/app_localizations.dart';
@@ -605,24 +604,16 @@ class AppearanceSettingsPanel extends StatelessWidget {
   }
 }
 
-Future<void> _pickBackgroundImage(OperitThemeController themeController) async {
-  if (Platform.isIOS) {
-    final result = await const MethodChannel('operit/runtime')
-        .invokeMethod<Map<dynamic, dynamic>>('pickImage');
-    final path = result?['path'] as String?;
-    if (path == null || path.isEmpty) {
-      return;
-    }
-    await themeController.saveThemeSettings(
-      useBackgroundImage: true,
-      backgroundImageUri: path,
-      backgroundMediaType: UserPreferencesManager.MEDIA_TYPE_IMAGE,
-    );
-    return;
-  }
-  const imageGroup = XTypeGroup(
-    label: 'image',
-    extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
+/// Crops, imports, and saves a selected image as the active background asset.
+Future<void> _pickBackgroundImage(
+  BuildContext context,
+  OperitThemeController themeController,
+) async {
+  final screenSize = MediaQuery.sizeOf(context);
+  final imported = await _pickCroppedThemeImage(
+    context,
+    aspectRatio: screenSize.width / screenSize.height,
+    outputRole: 'background',
   );
   if (imported == null) {
     return;
@@ -636,22 +627,6 @@ Future<void> _pickBackgroundImage(OperitThemeController themeController) async {
 
 /// Imports and saves a selected video as the active background asset.
 Future<void> _pickBackgroundVideo(OperitThemeController themeController) async {
-  if (Platform.isIOS) {
-    final result = await const MethodChannel('operit/runtime')
-        .invokeMethod<Map<dynamic, dynamic>>('pickVideo');
-    final path = result?['path'] as String?;
-    if (path == null || path.isEmpty) {
-      return;
-    }
-    await themeController.saveThemeSettings(
-      useBackgroundImage: true,
-      backgroundImageUri: path,
-      backgroundMediaType: UserPreferencesManager.MEDIA_TYPE_VIDEO,
-      videoBackgroundMuted: true,
-      videoBackgroundLoop: true,
-    );
-    return;
-  }
   const videoGroup = XTypeGroup(
     label: 'video',
     extensions: <String>['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi'],
@@ -670,29 +645,51 @@ Future<void> _pickBackgroundVideo(OperitThemeController themeController) async {
   );
 }
 
-Future<void> _pickUserAvatarImage(OperitThemeController themeController) async {
-  String? pickedPath;
-  if (Platform.isIOS) {
-    // iOS 走原生图片选择器，与背景图一致。
-    final result = await const MethodChannel('operit/runtime')
-        .invokeMethod<Map<dynamic, dynamic>>('pickImage');
-    pickedPath = result?['path'] as String?;
-    if (pickedPath == null || pickedPath.isEmpty) {
-      return;
-    }
-  } else {
-    const imageGroup = XTypeGroup(
-      label: 'image',
-      extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
-    );
-    final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
-    if (file == null) {
-      return;
-    }
-    pickedPath = file.path;
+/// Crops, imports, and saves a selected image as the active user avatar asset.
+Future<void> _pickUserAvatarImage(
+  BuildContext context,
+  OperitThemeController themeController,
+) async {
+  final imported = await _pickCroppedThemeImage(
+    context,
+    aspectRatio: 1,
+    outputRole: 'avatar',
+  );
+  if (imported == null) {
+    return;
   }
   await themeController.saveActiveThemeUserAvatarSettings(
-    customUserAvatarUri: pickedPath!,
+    customUserAvatarUri: imported.storagePath,
+  );
+}
+
+/// Lets the user select and crop one image before importing it.
+Future<ThemeAssetImport?> _pickCroppedThemeImage(
+  BuildContext context, {
+  required double aspectRatio,
+  required String outputRole,
+}) async {
+  const imageGroup = XTypeGroup(
+    label: 'image',
+    extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
+  );
+  final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
+  if (file == null) {
+    return null;
+  }
+  final bytes = await file.readAsBytes();
+  final croppedBytes = await _showThemeImageCropDialog(
+    // ignore: use_build_context_synchronously
+    context,
+    bytes: bytes,
+    aspectRatio: aspectRatio,
+  );
+  if (croppedBytes == null) {
+    return null;
+  }
+  return ThemeAssetStore().importBytes(
+    bytes: croppedBytes,
+    fileName: _croppedThemeImageFileName(file.name, outputRole),
   );
 }
 
@@ -966,8 +963,6 @@ Future<void> _pickCustomFont(OperitThemeController themeController) async {
   const fontGroup = XTypeGroup(
     label: 'font',
     extensions: <String>['ttf', 'otf', 'ttc'],
-    // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
-    uniformTypeIdentifiers: <String>['public.data'],
   );
   final file = await openFile(acceptedTypeGroups: <XTypeGroup>[fontGroup]);
   if (file == null) {
@@ -1012,8 +1007,6 @@ Future<void> _showBubbleFontDialog(
             const fontGroup = XTypeGroup(
               label: 'font',
               extensions: <String>['ttf', 'otf', 'ttc'],
-              // iOS 要求 uniformTypeIdentifiers 或 allowsAll，否则 openFile 抛错。
-              uniformTypeIdentifiers: <String>['public.data'],
             );
             final file = await openFile(
               acceptedTypeGroups: <XTypeGroup>[fontGroup],
@@ -1136,26 +1129,13 @@ Future<void> _pickBubbleImage(
   required ThemePreferenceSnapshot snapshot,
   required bool isUser,
 }) async {
-  final String filePath;
-  if (Platform.isIOS) {
-    // iOS 走原生图片选择器，与背景图一致。
-    final result = await const MethodChannel('operit/runtime')
-        .invokeMethod<Map<dynamic, dynamic>>('pickImage');
-    final picked = result?['path'] as String?;
-    if (picked == null || picked.isEmpty) {
-      return;
-    }
-    filePath = picked;
-  } else {
-    const imageGroup = XTypeGroup(
-      label: 'image',
-      extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
-    );
-    final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
-    if (file == null) {
-      return;
-    }
-    filePath = file.path;
+  const imageGroup = XTypeGroup(
+    label: 'image',
+    extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
+  );
+  final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
+  if (file == null) {
+    return;
   }
   final imported = await ThemeAssetStore().importFile(file);
   final useImage = !snapshot.transparentSurfaceEnabled;
@@ -3092,9 +3072,6 @@ String _themeTargetLabel(
   AppLocalizations l10n,
   OperitThemeController themeController,
 ) {
-  if (!themeController.hasActiveThemeTarget) {
-    return '未选择角色或群组';
-  }
   final name = themeController.activeThemeTargetName;
   if (themeController.isActiveThemeTargetGroup) {
     return l10n.settingsAppearanceThemeTargetGroup(name);
