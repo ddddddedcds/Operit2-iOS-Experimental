@@ -30,18 +30,11 @@ final class ScreenTimeServer: NSObject {
 
   private var listener: NWListener?
   private let queue = DispatchQueue(label: "operit.screen-time.server", qos: .userInitiated)
-  private var selection: FamilyActivitySelection?
-  private let selectionKey = "operit.screenTime.savedSelection"
   private var pickConn: NWConnection?
+  private var authorizeConn: NWConnection?
 
   func start() {
     guard listener == nil else { return }
-    // 恢复上次用户选择（全选结果）
-    if let data = UserDefaults.standard.data(forKey: selectionKey),
-      let saved = try? JSONDecoder().decode(FamilyActivitySelection.self, from: data)
-    {
-      selection = saved
-    }
     do {
       let l = try NWListener(using: .tcp, on: 8891)
       l.newConnectionHandler = { [weak self] conn in
@@ -116,19 +109,26 @@ final class ScreenTimeServer: NSObject {
   // MARK: - 命令实现
 
   private func authorize(conn: NWConnection) {
-    Task {
-      do {
-        try await AuthorizationCenter.shared.requestAuthorization(for: .individual)
-        let status = AuthorizationCenter.shared.authorizationStatus
-        let ok = (status == .approved)
-        reply(
-          conn: conn,
-          text: ok ? "OK|authorized" : "ERR|not_authorized: \(status.rawValue)"
-        )
-      } catch {
-        reply(conn: conn, text: "ERR|\(error.localizedDescription)")
-      }
+    // 越狱实现：不需要 FamilyControls 系统授权（ad-hoc 签名下必失败）。
+    // 弹仿官方确认页，用户点"允许"即标记，返回 OK。
+    guard authorizeConn == nil else {
+      reply(conn: conn, text: "ERR|authorize already active")
+      return
     }
+    authorizeConn = conn
+    let vc = AppLockAuthorizeViewController(appName: "Operit") { [weak self] allowed in
+      guard let self else { return }
+      if allowed {
+        UserDefaults.standard.set(true, forKey: "operit.applock.authorized")
+        self.reply(conn: conn, text: "OK|authorized")
+      } else {
+        self.reply(conn: conn, text: "ERR|denied by user")
+      }
+      self.authorizeConn = nil
+    }
+    vc.modalPresentationStyle = .pageSheet
+    Self.topViewController()?.present(vc, animated: true)
+    print("[ScreenTimeServer] authorize UI presented")
   }
 
   private func pick(conn: NWConnection) {
@@ -137,27 +137,39 @@ final class ScreenTimeServer: NSObject {
       return
     }
     pickConn = conn
-    let base = selection ?? FamilyActivitySelection()
-    let hosting = UIHostingController(
-      rootView: ScreenTimePickerView(server: self, selection: base)
-    )
-    hosting.modalPresentationStyle = .pageSheet
-    Self.topViewController()?.present(hosting, animated: true)
-  }
-
-  /// 用户在选择器里点了「完成」后回调（保持连接直到此刻，一次 pick 等待一次）。
-  func pickerDone(_ newSelection: FamilyActivitySelection) {
-    selection = newSelection
-    if let data = try? JSONEncoder().encode(newSelection) {
-      UserDefaults.standard.set(data, forKey: selectionKey)
-    }
-    if let conn = pickConn {
-      pickConn = nil
-      reply(
-        conn: conn,
-        text: "OK|saved \(newSelection.applicationTokens.count) apps"
+    let nav = UINavigationController(
+      rootViewController: AppLockPickerViewController(
+        onDone: { [weak self] bids in
+          guard let self else { return }
+          if bids.isEmpty {
+            self.reply(conn: conn, text: "OK|no apps selected")
+          } else {
+            let ok = AppLockStore.save(
+              bundleIds: bids,
+              title: "休息一下",
+              subtitle: "这个应用已被 Operit 锁定",
+              button: "好的"
+            )
+            self.reply(
+              conn: conn,
+              text: ok
+                ? "OK|locked \(bids.count) apps: \(bids.joined(separator: ","))"
+                : "ERR|写锁名单失败"
+            )
+          }
+          self.pickConn = nil
+        },
+        onCancel: { [weak self] in
+          guard let self else { return }
+          self.reply(conn: conn, text: "OK|cancelled")
+          self.pickConn = nil
+          Self.topViewController()?.dismiss(animated: true)
+        }
       )
-    }
+    )
+    nav.modalPresentationStyle = .pageSheet
+    Self.topViewController()?.present(nav, animated: true)
+    print("[ScreenTimeServer] pick UI presented")
   }
 
   /// 锁应用名单文件：tweak（operit-sb.x）启动拦截读取的真实根路径。
@@ -335,33 +347,3 @@ final class ScreenTimeServer: NSObject {
 }
 
 /// FamilyActivityPicker 的 SwiftUI 包装：用户全选后点「完成」→ 回调保存。
-@available(iOS 16.0, *)
-struct ScreenTimePickerView: View {
-  let server: ScreenTimeServer
-  @Environment(\.dismiss) private var dismiss
-  @State private var selection: FamilyActivitySelection
-
-  init(server: ScreenTimeServer, selection: FamilyActivitySelection) {
-    self.server = server
-    _selection = State(initialValue: selection)
-  }
-
-  var body: some View {
-    NavigationView {
-      FamilyActivityPicker(selection: $selection)
-        .navigationTitle("选择要控制的应用")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-          ToolbarItem(placement: .confirmationAction) {
-            Button("完成") {
-              server.pickerDone(selection)
-              dismiss()
-            }
-          }
-          ToolbarItem(placement: .cancellationAction) {
-            Button("取消") { dismiss() }
-          }
-        }
-    }
-  }
-}
