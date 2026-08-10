@@ -1,4 +1,4 @@
-platform :ios, '16.4'
+platform :ios, '16.1'
 
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
