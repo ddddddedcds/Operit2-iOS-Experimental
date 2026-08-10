@@ -144,17 +144,13 @@ final class ScreenTimeServer: NSObject {
           if bids.isEmpty {
             self.reply(conn: conn, text: "OK|no apps selected")
           } else {
-            let ok = AppLockStore.save(
-              bundleIds: bids,
-              title: "休息一下",
-              subtitle: "这个应用已被 Operit 锁定",
-              button: "好的"
-            )
+            // 写入"AI 可管理名单"（不锁定——AI 之后可自由 lock/unlock 这些 app）
+            let ok = (bids as NSArray).write(toFile: Self.appManagedPath, atomically: true)
             self.reply(
               conn: conn,
               text: ok
-                ? "OK|locked \(bids.count) apps: \(bids.joined(separator: ","))"
-                : "ERR|写锁名单失败"
+                ? "OK|managed \(bids.count) apps，AI 现可自由锁定/解锁：\(bids.joined(separator: ","))"
+                : "ERR|写可管理名单失败"
             )
           }
           self.pickConn = nil
@@ -177,6 +173,13 @@ final class ScreenTimeServer: NSObject {
   /// roothide 双视图下 app 的 /var/mobile 落到 jbroot 视图，与 SpringBoard 不共享——
   /// 该场景需走 daemon(8890) 中转（TODO，当前设备为 rootless）。
   private static let appLockPath = "/var/mobile/.operit/app_lock.plist"
+  private static let appManagedPath = "/var/mobile/.operit/app_managed.plist"
+
+  /// 用户通过 pick 一次性授权的"AI 可自由管理"的应用集合。
+  /// AI 的 lock/unlock 只能作用于这个集合内的 app（unlock 不受限，防止锁死）。
+  private static func managedApps() -> Set<String> {
+    Set(NSArray(contentsOfFile: appManagedPath) as? [String] ?? [])
+  }
 
   private func lock(bundleId: String, conn: NWConnection) {
     // 支持 `lock <bundleId>[|<title>|<subtitle>|<button>]`：| 分隔自定义文案。
@@ -184,6 +187,14 @@ final class ScreenTimeServer: NSObject {
     let appId = fields[0]
     guard !appId.isEmpty else {
       reply(conn: conn, text: "ERR|missing bundle id")
+      return
+    }
+    // 只能锁用户授权过的 app（pick 选过的）。不在名单 → 提示 AI 先 pick。
+    if !Self.managedApps().contains(appId) {
+      reply(
+        conn: conn,
+        text: "ERR|\(appId) 不在 AI 可管理名单——先让用户 screen_time_pick 添加"
+      )
       return
     }
     // 解析 AI 生成的自定义屏蔽页文案（可选）。
@@ -217,13 +228,11 @@ final class ScreenTimeServer: NSObject {
   }
 
   private func status(conn: NWConnection) {
-    let st = AuthorizationCenter.shared.authorizationStatus
     let locked = (NSDictionary(contentsOfFile: Self.appLockPath) as? [String: Any])?.count ?? 0
+    let managed = Self.managedApps().count
     reply(
       conn: conn,
-      text: st == .approved
-        ? "OK|authorized locked=\(locked)"
-        : "OK|not_authorized(tweak lock works) locked=\(locked)"
+      text: "OK|locked=\(locked) managed=\(managed)"
     )
   }
 

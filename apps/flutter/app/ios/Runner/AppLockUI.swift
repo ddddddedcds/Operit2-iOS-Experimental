@@ -156,7 +156,7 @@ final class AppLockPickerViewController: UITableViewController, UISearchResultsU
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    title = "选取要限制的应用"
+    title = "选择允许 AI 管理的应用"
     navigationItem.leftBarButtonItem = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(cancelTapped))
     navigationItem.rightBarButtonItem = UIBarButtonItem(title: "完成", style: .done, target: self, action: #selector(doneTapped))
     toolbarItems = [

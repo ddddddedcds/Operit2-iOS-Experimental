@@ -23,8 +23,8 @@
         {
             "name": "screen_time_pick",
             "description": {
-                "zh": "弹出系统选择器，让用户选择可被 AI 控制的应用（建议用户全选）。选择结果会被记住，之后 screen_time_lock 按 bundle id 锁任意已选应用。",
-                "en": "Show the system picker so the user selects apps the AI may control (select all recommended). The selection is remembered; screen_time_lock can then lock any selected app by bundle id."
+                "zh": "弹出原生选择列表，让用户一次性授权 AI 可自由管理的应用（不锁定）。之后 AI 可随时 screen_time_lock/unlock 这些应用，无需再打扰用户。",
+                "en": "Show a native picker so the user grants the AI management over apps (not locked yet). The AI can then freely lock/unlock these apps without prompting again."
             },
             "parameters": []
         },
