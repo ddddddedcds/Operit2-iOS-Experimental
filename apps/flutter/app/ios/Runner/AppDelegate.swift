@@ -107,7 +107,7 @@ import UserNotifications
         if let xSuccess, let url = URL(string: xSuccess) {
           UIApplication.shared.open(url)
         }
-        bootLog("OPEN_URL_ASK_DONE result=\(String(describing: result))")
+        self.bootLog("OPEN_URL_ASK_DONE result=\(String(describing: result))")
       }
       return true
     }
