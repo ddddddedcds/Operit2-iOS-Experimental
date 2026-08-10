@@ -14,6 +14,7 @@ use operit_host_api::RuntimeStorageHost;
 // system_operation（屏幕截图/OCR 走 ios-mcp）、device_agent（AutoGLM 循环）、
 // runtime（managed runtime host 的 iOS 实现）。
 #[cfg(target_os = "ios")]
+pub mod bridge;
 pub mod runtime;
 pub mod terminal;
 

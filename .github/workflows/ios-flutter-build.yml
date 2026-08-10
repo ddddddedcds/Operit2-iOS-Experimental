@@ -187,8 +187,18 @@ jobs:
       - name: Build iOS Toybox runtime
         run: python3 tools/ios-runtime/toybox/build.py
 
+      - name: Stage Toybox framework
+        run: |
+          mkdir -p apps/flutter/app/apple/Frameworks
+          cp -R tools/ios-runtime/toybox/output/OperitToybox.xcframework apps/flutter/app/apple/Frameworks/
+
       - name: Build iOS scientific runtime
         run: python3 tools/ios-runtime/native/build_scientific.py
+
+      - name: Stage scientific framework
+        run: |
+          mkdir -p apps/flutter/app/apple/Frameworks
+          cp -R tools/ios-runtime/native/output/OperitPythonScientific.xcframework apps/flutter/app/apple/Frameworks/
 
       - name: Build and package unsigned iOS app
         run: python3 tools/build_scripts/build_flutter_ios.py

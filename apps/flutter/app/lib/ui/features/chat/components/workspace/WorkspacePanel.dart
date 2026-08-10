@@ -319,18 +319,24 @@ class _WorkspacePanelState extends State<WorkspacePanel> {
     );
   }
 
-  /// Creates and opens a manual terminal session using the host-declared type.
+  /// Creates and opens a manual terminal session after letting the user pick
+  /// the terminal implementation and type (iSH / native toybox / python / node
+  /// / system shell).
   Future<void> _createAndOpenTerminalSession() async {
     try {
-      final terminalType = await _terminalSessions.defaultTerminalType();
-      if (terminalType.isEmpty) {
-        _showTerminalNotSupportedToast();
+      final info = await _terminalSessions.terminalInfo();
+      final selected = await _selectTerminalType(info);
+      if (selected == null || !mounted) {
         return;
       }
-      final workingDirectory = await _manualTerminalWorkingDirectory();
+      final workingDirectory = await _manualTerminalWorkingDirectory(
+        selected.terminal,
+        selected.terminalType,
+      );
       final sessionId = await _terminalSessions.startPtySession(
         sessionName: _nextManualTerminalSessionName(),
-        terminalType: terminalType,
+        terminal: selected.terminal,
+        terminalType: selected.terminalType,
         workingDirectory: workingDirectory,
         rows: 24,
         columns: 80,
