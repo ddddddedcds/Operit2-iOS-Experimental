@@ -166,8 +166,9 @@ final class NotifyServer: NSObject {
       title: title.isEmpty ? " " : title,
       body: body
     )
-    liveActivity.update(using: state) { _ in
-      self.reply(conn: conn, text: "OK|live activity updated")
+    Task {
+      await liveActivity.update(using: state)
+      reply(conn: conn, text: "OK|live activity updated")
     }
   }
 
@@ -177,8 +178,9 @@ final class NotifyServer: NSObject {
       return
     }
     self.liveActivity = nil
-    liveActivity.end() { _ in
-      self.reply(conn: conn, text: "OK|live activity ended")
+    Task {
+      await liveActivity.end()
+      reply(conn: conn, text: "OK|live activity ended")
     }
   }
 

@@ -111,9 +111,8 @@ final class ScreenTimeServer: NSObject {
   private func authorize(conn: NWConnection) {
     Task {
       do {
-        let status = try await AuthorizationCenter.shared.requestAuthorization(
-          for: .individual
-        )
+        try await AuthorizationCenter.shared.requestAuthorization(for: .individual)
+        let status = AuthorizationCenter.shared.authorizationStatus
         let ok = (status == .approved)
         reply(
           conn: conn,
@@ -168,16 +167,14 @@ final class ScreenTimeServer: NSObject {
       )
       return
     }
-    var sel = FamilyActivitySelection()
-    sel.applicationTokens = [token]
-    FamilyControlsManager.shared.setShieldApplications(sel)
+    let store = ManagedSettingsStore()
+    store.shield.applications = [token]
     reply(conn: conn, text: "OK|locked \(bundleId)")
   }
 
   private func unlock(conn: NWConnection) {
-    FamilyControlsManager.shared.setShieldApplications(
-      FamilyActivitySelection(applicationTokens: [])
-    )
+    let store = ManagedSettingsStore()
+    store.shield.applications = []
     reply(conn: conn, text: "OK|unlocked all")
   }
 
@@ -211,7 +208,7 @@ final class ScreenTimeServer: NSObject {
         failed.append(bundleId)
         continue
       }
-      events[bundleId] = DeviceActivityEvent(
+      events[DeviceActivityEvent.Name(bundleId)] = DeviceActivityEvent(
         applications: [token],
         threshold: DateComponents(minute: minutes)
       )
@@ -224,14 +221,14 @@ final class ScreenTimeServer: NSObject {
     let schedule = DeviceActivitySchedule(
       intervalStart: DateComponents(hour: 0, minute: 0),
       intervalEnd: DateComponents(hour: 23, minute: 59),
-      repeatedInterval: .daily
+      repeats: true
     )
     for bundleId in started {
       do {
-        try DeviceActivityCenter.shared.startMonitoring(
+        try DeviceActivityCenter().startMonitoring(
           DeviceActivityName(bundleId),
           during: schedule,
-          events: [bundleId: events[bundleId]!]
+          events: [DeviceActivityEvent.Name(bundleId): events[DeviceActivityEvent.Name(bundleId)]!]
         )
       } catch {
         failed.append("\(bundleId)(\(error.localizedDescription))")
@@ -254,7 +251,7 @@ final class ScreenTimeServer: NSObject {
       names = saved.map { DeviceActivityName($0) }
     }
     if !names.isEmpty {
-      DeviceActivityCenter.shared.stopMonitoring(names)
+      DeviceActivityCenter().stopMonitoring(names)
     }
     UserDefaults.standard.removeObject(forKey: monitoringKey)
     reply(conn: conn, text: "OK|stopped monitoring \(names.count) apps")
