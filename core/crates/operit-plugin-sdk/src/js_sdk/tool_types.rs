@@ -147,6 +147,7 @@ pub struct ToolResultMap {
     pub live_activity_start: String,
     pub live_activity_update: String,
     pub live_activity_end: String,
+    pub open_url: String,
 }
 
 include!(concat!(env!("OUT_DIR"), "/builtin_tool_names.rs"));

@@ -141,6 +141,22 @@ if [ -d "$APP_SRC" ]; then
   else
     echo "   WARN: LiveActivityWidget.appex not built at $WID_SRC; skipping live activity widget"
   fi
+  # --- embed ShieldConfig app extension (custom AI shield text, iOS 16+) ---
+  SHIELD_SRC="$BASE/../../../apps/flutter/app/ios/ShieldConfig/out/OperitShieldConfig.appex"
+  SHIELD_ENT="$BASE/../../../apps/flutter/app/ios/ShieldConfig/Entitlements.plist"
+  if [ -d "$SHIELD_SRC" ]; then
+    cp -R "$SHIELD_SRC" "$FILES/Applications/Runner.app/PlugIns/OperitShieldConfig.appex"
+    xattr -cr "$FILES/Applications/Runner.app/PlugIns/OperitShieldConfig.appex" 2>/dev/null || true
+    if command -v ldid >/dev/null 2>&1; then
+      ldid -S"$SHIELD_ENT" "$FILES/Applications/Runner.app/PlugIns/OperitShieldConfig.appex/OperitShieldConfig"
+      echo "   signed OperitShieldConfig.appex (ldid)"
+    else
+      codesign --force --sign - --entitlements "$SHIELD_ENT" "$FILES/Applications/Runner.app/PlugIns/OperitShieldConfig.appex"
+      echo "   signed OperitShieldConfig.appex (codesign)"
+    fi
+  else
+    echo "   WARN: OperitShieldConfig.appex not built at $SHIELD_SRC; skipping shield config extension"
+  fi
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
   # --- produce IPA (app already ad-hoc signed above with $ENTITLEMENTS) ---
   IPA_NAME="operit2-ios_${VERSION}_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"

@@ -35,6 +35,75 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>weixin</string>
+		<string>weixin10</string>
+		<string>weixin11</string>
+		<string>weixin12</string>
+		<string>weixin13</string>
+		<string>bilibili</string>
+		<string>snssdk1128</string>
+		<string>snssdk2329</string>
+		<string>snssdk1233</string>
+		<string>snssdk141</string>
+		<string>kwai</string>
+		<string>gifshow</string>
+		<string>taobao</string>
+		<string>tmall</string>
+		<string>openjd</string>
+		<string>openapp.jdmobile</string>
+		<string>pinduoduo</string>
+		<string>fleamarket</string>
+		<string>alipay</string>
+		<string>alipays</string>
+		<string>alipayqr</string>
+		<string>imeituan</string>
+		<string>meituanwaimai</string>
+		<string>dianping</string>
+		<string>sinaweibo</string>
+		<string>weibointernational</string>
+		<string>xhsdiscover</string>
+		<string>zhihu</string>
+		<string>qqmusic</string>
+		<string>orpheus</string>
+		<string>orpheuswidget</string>
+		<string>iosamap</string>
+		<string>baidumap</string>
+		<string>qqmap</string>
+		<string>tenvideo</string>
+		<string>iqiyi</string>
+		<string>youku</string>
+		<string>youtube</string>
+		<string>diditaxi</string>
+		<string>cn.12306</string>
+		<string>trainassist</string>
+		<string>CtripWireless</string>
+		<string>taobaotravel</string>
+		<string>hellobike</string>
+		<string>mobike</string>
+		<string>upwallet</string>
+		<string>cmbmobilebank</string>
+		<string>baiduyun</string>
+		<string>com.baidu.tieba</string>
+		<string>bdboxiosqrcode</string>
+		<string>newsapp</string>
+		<string>qqnews</string>
+		<string>mqqapi</string>
+		<string>mqq</string>
+		<string>kugouURL</string>
+		<string>com.kuwo.kwmusic.kwmusicForKwsing</string>
+		<string>tel</string>
+		<string>sms</string>
+		<string>mailto</string>
+		<string>maps</string>
+		<string>itms-apps</string>
+		<string>App-Prefs</string>
+		<string>clock-alarm</string>
+		<string>clock-worldclock</string>
+		<string>mobilenotes</string>
+		<string>shortcuts</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

@@ -5,9 +5,12 @@
 //  屏幕使用时间（FamilyControls）本地服务，iOS 16+。
 //  链路：主 AI 工具（screen_time.*）→ Tools.Net.screenTime*（Rust 桥）
 //        → 127.0.0.1:8891 文本协议 → 本服务 → 苹果官方 FamilyControls / ManagedSettings。
-//  协议（每连接一行）：screen_time authorize | pick | lock <bundleId> | unlock | status
+//  协议（每连接一行）：screen_time authorize | pick | lock <bundleId>[|<title>|<subtitle>|<button>] | unlock | status
 //  首次使用：authorize 弹系统授权；pick 弹系统选择器（用户全选 → 记住）。
 //  之后：lock <bundleId> / unlock 由 AI 按 bundle id 自由控制，无需再弹窗。
+//  lock 支持可选自定义文案（AI 生成，经 ShieldConfiguration 扩展渲染）：
+//    lock com.tencent.xin|保持专注|休息一下再回来|好的
+//  文案字段用 | 分隔；缺省时扩展用默认文案。
 //
 
 import DeviceActivity
@@ -154,27 +157,46 @@ final class ScreenTimeServer: NSObject {
   }
 
   private func lock(bundleId: String, conn: NWConnection) {
-    guard !bundleId.isEmpty else {
+    // 支持 `lock <bundleId>[|<title>|<subtitle>|<button>]`：| 分隔自定义文案。
+    let fields = bundleId.split(separator: "|", maxSplits: 3).map(String.init)
+    let appId = fields[0]
+    guard !appId.isEmpty else {
       reply(conn: conn, text: "ERR|missing bundle id")
       return
     }
+    // 把 AI 生成的自定义文案写入 App Group（ShieldConfiguration 扩展读取渲染）。
+    // 文案含 | 时视为用户/AI 提供的自定义；只传 bundleId 时清除旧文案回默认。
+    if fields.count > 1 {
+      let title = fields.count > 1 ? fields[1] : ""
+      let subtitle = fields.count > 2 ? fields[2] : ""
+      let button = fields.count > 3 ? fields[3] : ""
+      let defaults = UserDefaults(suiteName: appGroupID)
+      defaults?.set(title, forKey: "operit.shield.title")
+      defaults?.set(subtitle, forKey: "operit.shield.subtitle")
+      defaults?.set(button, forKey: "operit.shield.button")
+    }
     // ManagedSettings.Application 可从 bundle id 公开构造并携带 token（iOS 15+）。
-    let app = Application(bundleIdentifier: bundleId)
+    let app = Application(bundleIdentifier: appId)
     guard let token = app.token else {
       reply(
         conn: conn,
-        text: "ERR|cannot resolve app token for \(bundleId)（未安装或未授权屏幕使用时间）"
+        text: "ERR|cannot resolve app token for \(appId)（未安装或未授权屏幕使用时间）"
       )
       return
     }
     let store = ManagedSettingsStore()
     store.shield.applications = [token]
-    reply(conn: conn, text: "OK|locked \(bundleId)")
+    reply(conn: conn, text: "OK|locked \(appId)")
   }
 
   private func unlock(conn: NWConnection) {
     let store = ManagedSettingsStore()
     store.shield.applications = []
+    // 清除自定义屏蔽文案，回默认。
+    let defaults = UserDefaults(suiteName: appGroupID)
+    defaults?.removeObject(forKey: "operit.shield.title")
+    defaults?.removeObject(forKey: "operit.shield.subtitle")
+    defaults?.removeObject(forKey: "operit.shield.button")
     reply(conn: conn, text: "OK|unlocked all")
   }
 

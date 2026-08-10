@@ -13,6 +13,7 @@
 		5A7F10012D000001005A7F10 /* ScreenTimeServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F10022D000001005A7F10 /* ScreenTimeServer.swift */; };
 		5A7F10032D000001005A7F10 /* ShortcutsServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F10042D000001005A7F10 /* ShortcutsServer.swift */; };
 		5A7F10052D000001005A7F10 /* NotifyServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F10062D000001005A7F10 /* NotifyServer.swift */; };
+		5A7F10072D000001005A7F10 /* OpenURLServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F10082D000001005A7F10 /* OpenURLServer.swift */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		3D2A10012D000001003D2A10 /* AppleRuntimeChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D2A10002D000001003D2A10 /* AppleRuntimeChannel.swift */; };
@@ -66,6 +67,7 @@
 		5A7F10022D000001005A7F10 /* ScreenTimeServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenTimeServer.swift; sourceTree = "<group>"; };
 		5A7F10042D000001005A7F10 /* ShortcutsServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsServer.swift; sourceTree = "<group>"; };
 		5A7F10062D000001005A7F10 /* NotifyServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotifyServer.swift; sourceTree = "<group>"; };
+		5A7F10082D000001005A7F10 /* OpenURLServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenURLServer.swift; sourceTree = "<group>"; };
 		3D2A10122D000001003D2A10 /* AppleSnapshotImportInputChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSnapshotImportInputChannel.swift; sourceTree = "<group>"; };
 		3D2A10022D000001003D2A10 /* OperitFlutterBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OperitFlutterBridge.h; sourceTree = "<group>"; };
 		3D2A10042D000001003D2A10 /* AppleLocalInferenceRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleLocalInferenceRunner.swift; sourceTree = "<group>"; };
@@ -182,6 +184,7 @@
 				5A7F10022D000001005A7F10 /* ScreenTimeServer.swift */,
 				5A7F10042D000001005A7F10 /* ShortcutsServer.swift */,
 				5A7F10062D000001005A7F10 /* NotifyServer.swift */,
+				5A7F10082D000001005A7F10 /* OpenURLServer.swift */,
 
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				3D2A10002D000001003D2A10 /* AppleRuntimeChannel.swift */,
@@ -451,6 +454,7 @@
 				5A7F10012D000001005A7F10 /* ScreenTimeServer.swift in Sources */,
 				5A7F10032D000001005A7F10 /* ShortcutsServer.swift in Sources */,
 				5A7F10052D000001005A7F10 /* NotifyServer.swift in Sources */,
+				5A7F10072D000001005A7F10 /* OpenURLServer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

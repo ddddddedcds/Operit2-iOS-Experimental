@@ -31,8 +31,8 @@
         {
             "name": "screen_time_lock",
             "description": {
-                "zh": "锁定指定应用（给它盖盾牌，打开会被拦截）。参数 bundle_id 为目标应用的 Bundle ID，例如 com.tencent.xin。",
-                "en": "Lock (shield) the given app by Bundle ID, e.g. com.tencent.xin."
+                "zh": "锁定指定应用（给它盖盾牌，打开会被拦截）。参数 bundle_id 为目标应用的 Bundle ID，例如 com.tencent.xin。可选 title/subtitle/button 自定义屏蔽页文案（AI 可自由发挥，如「保持活力与激情」）——不传则用默认文案。",
+                "en": "Lock (shield) the given app by Bundle ID, e.g. com.tencent.xin. Optional title/subtitle/button customize the shield screen text (AI may write anything); defaults are used when omitted."
             },
             "parameters": [
                 {
@@ -43,6 +43,33 @@
                     },
                     "type": "string",
                     "required": true
+                },
+                {
+                    "name": "title",
+                    "description": {
+                        "zh": "屏蔽页主标题（AI 自由编写，例如「保持活力与激情」）。",
+                        "en": "Shield screen main title (AI-written, e.g. \"Stay energized\")."
+                    },
+                    "type": "string",
+                    "required": false
+                },
+                {
+                    "name": "subtitle",
+                    "description": {
+                        "zh": "屏蔽页副标题（例如「专注时不使用该应用」）。",
+                        "en": "Shield screen subtitle (e.g. \"Don't open this app while focusing\")."
+                    },
+                    "type": "string",
+                    "required": false
+                },
+                {
+                    "name": "button",
+                    "description": {
+                        "zh": "屏蔽页主按钮文字（默认「好的」）。",
+                        "en": "Shield screen primary button label (default \"OK\")."
+                    },
+                    "type": "string",
+                    "required": false
                 }
             ]
         },
@@ -102,6 +129,9 @@
 
 type ScreenTimeLockParams = {
     bundle_id?: string;
+    title?: string;
+    subtitle?: string;
+    button?: string;
 };
 
 type ScreenTimeMonitorStartParams = {
@@ -132,9 +162,14 @@ async function screen_time_lock(params: ScreenTimeLockParams = {}) {
     if (!bundle_id) {
         return "缺少参数 bundle_id：请提供要锁定的应用的 Bundle ID，例如 com.tencent.xin。";
     }
+    // 自定义文案按 | 拼接传给 Swift 服务（AI 写的标题/副标题/按钮）。
+    const parts = [bundle_id];
+    if (params.title || params.subtitle || params.button) {
+        parts.push(params.title ?? "", params.subtitle ?? "", params.button ?? "");
+    }
     try {
         // @ts-ignore
-        return await Tools.Net.screenTimeLock({ bundle_id });
+        return await Tools.Net.screenTimeLock({ bundle_id: parts.join("|") });
     } catch (e) {
         return `锁定失败：${String(e)}。native 桥 Tools.Net.screenTimeLock 尚未注册或 iOS < 16。`;
     }

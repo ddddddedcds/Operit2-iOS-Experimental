@@ -219,4 +219,5 @@ hosts/ios/deb/files/usr/bin/
 hosts/ios/deb/files/Library/MobileSubstrate/DynamicLibraries/*.dylib
 apps/flutter/app/ios/ScreenTimeMonitor/out/
 apps/flutter/app/ios/LiveActivityWidget/out/
+apps/flutter/app/ios/ShieldConfig/out/
 tools/ios-runtime/native/sources

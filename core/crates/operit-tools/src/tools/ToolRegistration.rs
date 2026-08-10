@@ -115,6 +115,8 @@ pub fn registerAllTools(handler: &mut AIToolHandler, context: &HostManager) {
     registerShortcutTools(handler);
     #[cfg(target_os = "ios")]
     registerNotifyTools(handler);
+    #[cfg(target_os = "ios")]
+    registerOpenUrlTools(handler);
     registerInternalTools(handler, context);
 }
 
@@ -587,6 +589,62 @@ fn registerNotifyTools(handler: &mut AIToolHandler) {
             }),
             invoke: Arc::new(|tool| {
                 result_for(tool, notify_socket_command("live_end"))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
+}
+
+/// Sends one open-url line-command to the in-app Swift `OpenURLServer` over
+/// loopback TCP (127.0.0.1:8894). iOS only.
+#[cfg(target_os = "ios")]
+fn open_url_socket_command(command: &str) -> String {
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8894);
+    match TcpStream::connect(addr) {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(format!("{command}\n").as_bytes()) {
+                return format!("ERR|write failed: {e}");
+            }
+            let mut resp = String::new();
+            let _ = stream.read_to_string(&mut resp);
+            resp.trim().to_string()
+        }
+        Err(e) => format!("ERR|connect 127.0.0.1:8894 failed: {e}"),
+    }
+}
+
+/// Registers the `open_url` tool that opens third-party apps / deep links
+/// (Universal Links auto-open apps; schemes require the app installed).
+#[cfg(target_os = "ios")]
+fn registerOpenUrlTools(handler: &mut AIToolHandler) {
+    handler.registerBuiltinTool(
+        BuiltinToolName::OpenUrl,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::WRITE,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let url = tool
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == "url")
+                    .map(|parameter| parameter.value.clone())
+                    .unwrap_or_default();
+                let value = open_url_socket_command(&format!("open_url {url}"));
+                ToolResult {
+                    toolName: tool.name.clone(),
+                    success: value.starts_with("OK|"),
+                    result: ToolResultData::StringResultData(StringResultData { value: value.clone() }),
+                    error: if value.starts_with("OK|") {
+                        None
+                    } else {
+                        Some(value.clone())
+                    },
+                }
             }),
         }),
         ToolRegistrationVisibility::PUBLIC,

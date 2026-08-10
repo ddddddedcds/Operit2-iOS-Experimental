@@ -550,6 +550,14 @@ pub struct NetHostShortcutRunOptions {
     pub name: String,
 }
 
+/// Options for `Net.openUrl` — opens a URL/scheme through Apple's UIApplication
+/// (universal links auto-open apps; schemes require the app installed).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostOpenUrlOptions {
+    /// URL to open, e.g. "https://example.com" or "weixin://".
+    pub url: String,
+}
+
 /// Options for `Net.notify` / `Net.liveActivityStart` / `Net.liveActivityUpdate`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NetHostNotifyOptions {
@@ -739,6 +747,8 @@ pub trait NetHost: Send + Sync {
     fn liveActivityUpdate(&self, options: NetHostNotifyOptions) -> JsFuture<String>;
     /// Ends the active Live Activity.
     fn liveActivityEnd(&self) -> JsFuture<String>;
+    /// Opens a URL/scheme through UIApplication (universal links auto-open apps).
+    fn openUrl(&self, options: NetHostOpenUrlOptions) -> JsFuture<String>;
 }
 /// Declares browser session and userscript APIs reserved for a future runtime capability.
 pub trait NetFutureHost: Send + Sync {

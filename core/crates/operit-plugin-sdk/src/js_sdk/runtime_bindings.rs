@@ -106,6 +106,7 @@ pub const JS_TOOL_BINDINGS: &[JsToolBinding] = &[
     JsToolBinding { namespace: "Net", method: "liveActivityStart", tool: BuiltinToolName::LiveActivityStart },
     JsToolBinding { namespace: "Net", method: "liveActivityUpdate", tool: BuiltinToolName::LiveActivityUpdate },
     JsToolBinding { namespace: "Net", method: "liveActivityEnd", tool: BuiltinToolName::LiveActivityEnd },
+    JsToolBinding { namespace: "Net", method: "openUrl", tool: BuiltinToolName::OpenUrl },
     JsToolBinding { namespace: "Net.cookies", method: "clear", tool: BuiltinToolName::ManageCookies },
     JsToolBinding { namespace: "Net.cookies", method: "get", tool: BuiltinToolName::ManageCookies },
     JsToolBinding { namespace: "Net.cookies", method: "set", tool: BuiltinToolName::ManageCookies },
