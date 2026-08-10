@@ -594,6 +594,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Flutter/ephemeral/rust/$(PLATFORM_NAME)/$(CURRENT_ARCH)",
+					"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)",
 				);
 				OTHER_LDFLAGS = (
 					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
@@ -797,6 +798,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Flutter/ephemeral/rust/$(PLATFORM_NAME)/$(CURRENT_ARCH)",
+					"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)",
 				);
 				OTHER_LDFLAGS = (
 					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
@@ -840,6 +842,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Flutter/ephemeral/rust/$(PLATFORM_NAME)/$(CURRENT_ARCH)",
+					"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)",
 				);
 				OTHER_LDFLAGS = (
 					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
