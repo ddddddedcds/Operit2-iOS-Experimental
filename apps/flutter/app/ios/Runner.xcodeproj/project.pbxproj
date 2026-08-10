@@ -10,9 +10,6 @@
 		08EA59E9B90B6266BFEF61DC /* libPods-RunnerTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E263042404A1AC251036BB08 /* libPods-RunnerTests.a */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		A1B2C3D4E5F60718293A4B5D /* OperitTrace.m in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* OperitTrace.m */; };
-		5A7F20012D000001005A7F20 /* IosRuntimeBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F20022D000001005A7F20 /* IosRuntimeBridge.mm */; };
-		5A7F20032D000001005A7F20 /* OperitToybox.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A7F20042D000001005A7F20 /* OperitToybox.xcframework */; };
-		5A7F20052D000001005A7F20 /* OperitPythonScientific.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A7F20062D000001005A7F20 /* OperitPythonScientific.xcframework */; };
 		5A7F30012D000001005A7F30 /* IshTerminalBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F30022D000001005A7F30 /* IshTerminalBridge.mm */; };
 		5A7F30032D000001005A7F30 /* ish-root.tar.gz in Resources */ = {isa = PBXBuildFile; fileRef = 5A7F30042D000001005A7F30 /* ish-root.tar.gz */; };
 		5A7F10012D000001005A7F10 /* ScreenTimeServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F10022D000001005A7F10 /* ScreenTimeServer.swift */; };
@@ -77,9 +74,6 @@
 		3D2A10062D000001003D2A10 /* AppleLocalInferenceBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = AppleLocalInferenceBridge.mm; sourceTree = "<group>"; };
 		3D2A10082D000001003D2A10 /* sherpa-onnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "sherpa-onnx.xcframework"; path = "../apple/Frameworks/sherpa-onnx.xcframework"; sourceTree = SOURCE_ROOT; };
 		3D2A100A2D000001003D2A10 /* onnxruntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = onnxruntime.xcframework; path = ../apple/Frameworks/onnxruntime.xcframework; sourceTree = SOURCE_ROOT; };
-		5A7F20022D000001005A7F20 /* IosRuntimeBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IosRuntimeBridge.mm; sourceTree = "<group>"; };
-		5A7F20042D000001005A7F20 /* OperitToybox.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "OperitToybox.xcframework"; path = "../apple/Frameworks/OperitToybox.xcframework"; sourceTree = SOURCE_ROOT; };
-		5A7F20062D000001005A7F20 /* OperitPythonScientific.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "OperitPythonScientific.xcframework"; path = "../apple/Frameworks/OperitPythonScientific.xcframework"; sourceTree = SOURCE_ROOT; };
 		5A7F30022D000001005A7F30 /* IshTerminalBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IshTerminalBridge.mm; sourceTree = "<group>"; };
 		5A7F30042D000001005A7F30 /* ish-root.tar.gz */ = {isa = PBXFileReference; lastKnownFileType = archive.gzip; path = "ish-root.tar.gz"; sourceTree = "<group>"; };
 		3D2A100C2D000001003D2A10 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
@@ -119,8 +113,6 @@
 				3D2A10092D000001003D2A10 /* onnxruntime.xcframework in Frameworks */,
 				3D2A100B2D000001003D2A10 /* Accelerate.framework in Frameworks */,
 				3D2A100D2D000001003D2A10 /* CoreML.framework in Frameworks */,
-				5A7F20032D000001005A7F20 /* OperitToybox.xcframework in Frameworks */,
-				5A7F20052D000001005A7F20 /* OperitPythonScientific.xcframework in Frameworks */,
 				8EA324A8E995E39058712734 /* libPods-Runner.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -191,11 +183,8 @@
 				1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */,
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				A1B2C3D4E5F60718293A4B5C /* OperitTrace.m */,
-				5A7F20022D000001005A7F20 /* IosRuntimeBridge.mm */,
 				5A7F30022D000001005A7F30 /* IshTerminalBridge.mm */,
 				5A7F30042D000001005A7F30 /* ish-root.tar.gz */,
-				5A7F20042D000001005A7F20 /* OperitToybox.xcframework */,
-				5A7F20062D000001005A7F20 /* OperitPythonScientific.xcframework */,
 				5A7F10022D000001005A7F10 /* ScreenTimeServer.swift */,
 				5A7F10042D000001005A7F10 /* ShortcutsServer.swift */,
 				5A7F10062D000001005A7F10 /* NotifyServer.swift */,
@@ -495,7 +484,6 @@
 				3D2A10052D000001003D2A10 /* AppleLocalInferenceBridge.mm in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				A1B2C3D4E5F60718293A4B5D /* OperitTrace.m in Sources */,
-				5A7F20012D000001005A7F20 /* IosRuntimeBridge.mm in Sources */,
 				5A7F30012D000001005A7F30 /* IshTerminalBridge.mm in Sources */,
 				5A7F10012D000001005A7F10 /* ScreenTimeServer.swift in Sources */,
 				5A7F10032D000001005A7F10 /* ShortcutsServer.swift in Sources */,

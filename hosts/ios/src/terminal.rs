@@ -10,20 +10,15 @@ use operit_host_native_common::NativePtyTerminalHost;
 use serde_json::{json, Value};
 
 use crate::bridge::callIshTerminal;
-use crate::runtime::callRuntime;
 
 const SHELL_TERMINAL_TYPE: &str = "shell";
 const PLATFORM: &str = "ios";
 const ISH_TERMINAL: &str = "ish";
 const SYSTEM_SHELL_TERMINAL: &str = "shell";
 const NATIVE_TERMINAL: &str = "native";
-const TOYBOX_TERMINAL_TYPE: &str = "toybox";
-const PYTHON_TERMINAL_TYPE: &str = "python";
-const NODE_TERMINAL_TYPE: &str = "node";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IosTerminalBackend {
-    Native { terminalType: &'static str },
     Ish,
     SystemShell,
 }
@@ -76,9 +71,14 @@ impl IosTerminalHost {
         Ok(())
     }
 
-    /// Selects iSH as the parameter-free terminal implementation shared across iOS devices.
+    /// Selects the jailbroken system /bin/sh when a privileged PTY is available
+    /// (jailbroken host), and falls back to iSH otherwise (non-jailbroken host).
     fn primaryBackend(&self) -> IosTerminalBackend {
-        IosTerminalBackend::Ish
+        if self.systemShellAvailable {
+            IosTerminalBackend::SystemShell
+        } else {
+            IosTerminalBackend::Ish
+        }
     }
 
     /// Resolves one manually selected terminal implementation and type to its backend.
@@ -88,17 +88,6 @@ impl IosTerminalHost {
         terminalType: &str,
     ) -> HostResult<IosTerminalBackend> {
         match (terminal.trim(), terminalType.trim()) {
-            (t @ (TOYBOX_TERMINAL_TYPE | PYTHON_TERMINAL_TYPE | NODE_TERMINAL_TYPE), kind)
-                if t == kind =>
-            {
-                Ok(IosTerminalBackend::Native {
-                    terminalType: match t {
-                        TOYBOX_TERMINAL_TYPE => TOYBOX_TERMINAL_TYPE,
-                        PYTHON_TERMINAL_TYPE => PYTHON_TERMINAL_TYPE,
-                        _ => NODE_TERMINAL_TYPE,
-                    },
-                })
-            }
             (ISH_TERMINAL, SHELL_TERMINAL_TYPE) => Ok(IosTerminalBackend::Ish),
             (SYSTEM_SHELL_TERMINAL, SHELL_TERMINAL_TYPE) if self.systemShellAvailable => {
                 Ok(IosTerminalBackend::SystemShell)
@@ -115,7 +104,6 @@ impl IosTerminalHost {
     /// Returns the public terminal implementation name for one iOS backend.
     fn terminalName(backend: IosTerminalBackend) -> &'static str {
         match backend {
-            IosTerminalBackend::Native { terminalType } => terminalType,
             IosTerminalBackend::Ish => ISH_TERMINAL,
             IosTerminalBackend::SystemShell => SYSTEM_SHELL_TERMINAL,
         }
@@ -170,19 +158,6 @@ impl IosTerminalHost {
         let rows = positiveDimension(rows, "rows")?;
         let cols = positiveDimension(cols, "cols")?;
         let sessionId = match backend {
-            IosTerminalBackend::Native { terminalType } => {
-                let response = callRuntime(
-                    "terminalStart",
-                    json!({
-                        "sessionName": sessionName,
-                        "terminalType": terminalType,
-                        "workingDir": workingDir,
-                        "rows": rows,
-                        "cols": cols,
-                    }),
-                )?;
-                requiredString(&response, "sessionId")?
-            }
             IosTerminalBackend::Ish => {
                 let response = callIshTerminal(
                     "terminalStart",
@@ -217,23 +192,6 @@ impl IosTerminalHost {
     ) -> HostResult<TerminalSessionInfo> {
         let sessionName = requiredText(sessionName, "session_name")?;
         let data = match backend {
-            IosTerminalBackend::Native { terminalType } => {
-                let response = callRuntime(
-                    "terminalCreateOrGet",
-                    json!({
-                        "sessionName": sessionName,
-                        "terminalType": terminalType,
-                    }),
-                )?;
-                TerminalSessionInfo {
-                    sessionId: requiredString(&response, "sessionId")?,
-                    sessionName: requiredString(&response, "sessionName")?,
-                    platform: PLATFORM.to_string(),
-                    terminal: terminalType.to_string(),
-                    terminalType: shellTerminalType(&requiredString(&response, "terminalType")?)?,
-                    isNewSession: requiredBool(&response, "isNewSession")?,
-                }
-            }
             IosTerminalBackend::Ish => {
                 let response = callIshTerminal(
                     "terminalCreateOrGet",
@@ -269,26 +227,6 @@ impl IosTerminalHost {
     ) -> HostResult<TerminalCommandOutput> {
         let command = requiredText(command, "command")?;
         match backend {
-            IosTerminalBackend::Native { terminalType } => {
-                let response = callRuntime(
-                    "terminalExecute",
-                    json!({
-                        "sessionId": requiredText(sessionId, "session_id")?,
-                        "command": command,
-                        "timeoutMs": timeoutMs,
-                    }),
-                )?;
-                Ok(TerminalCommandOutput {
-                    command,
-                    output: requiredString(&response, "output")?,
-                    exitCode: requiredI32(&response, "exitCode")?,
-                    sessionId: requiredString(&response, "sessionId")?,
-                    platform: PLATFORM.to_string(),
-                    terminal: terminalType.to_string(),
-                    terminalType: shellTerminalType(&requiredString(&response, "terminalType")?)?,
-                    timedOut: requiredBool(&response, "timedOut")?,
-                })
-            }
             IosTerminalBackend::Ish => {
                 let response = callIshTerminal(
                     "terminalExecute",
@@ -329,34 +267,13 @@ impl TerminalHost for IosTerminalHost {
             description: "iOS system /bin/sh; requires a jailbroken or otherwise privileged host"
                 .to_string(),
         };
-        let toybox = TerminalTypeInfo {
-            terminal: TOYBOX_TERMINAL_TYPE.to_string(),
-            terminalType: TOYBOX_TERMINAL_TYPE.to_string(),
-            available: true,
-            description: "Embedded Toybox terminal with common Unix command applets"
-                .to_string(),
-        };
-        let python = TerminalTypeInfo {
-            terminal: PYTHON_TERMINAL_TYPE.to_string(),
-            terminalType: PYTHON_TERMINAL_TYPE.to_string(),
-            available: true,
-            description: "Embedded CPython terminal with bundled scientific packages"
-                .to_string(),
-        };
-        let node = TerminalTypeInfo {
-            terminal: NODE_TERMINAL_TYPE.to_string(),
-            terminalType: NODE_TERMINAL_TYPE.to_string(),
-            available: true,
-            description: "Embedded Node.js terminal with bundled JavaScript packages"
-                .to_string(),
-        };
         let ish = TerminalTypeInfo {
             terminal: ISH_TERMINAL.to_string(),
             terminalType: SHELL_TERMINAL_TYPE.to_string(),
             available: true,
             description: "iSH Alpine Linux shell".to_string(),
         };
-        let types = vec![ish, toybox, python, node, systemShell];
+        let types = vec![ish, systemShell];
         Ok(TerminalInfo {
             platform: PLATFORM.to_string(),
             terminal: primaryTerminal,
@@ -382,13 +299,6 @@ impl TerminalHost for IosTerminalHost {
     /// Drains raw output bytes from one iOS terminal.
     fn readPtySession(&self, sessionId: &str) -> HostResult<Vec<u8>> {
         match self.sessionBackend(sessionId)? {
-            IosTerminalBackend::Native { .. } => {
-                let response = callRuntime(
-                    "terminalRead",
-                    json!({"sessionId": requiredText(sessionId, "session_id")?}),
-                )?;
-                Ok(requiredString(&response, "output")?.into_bytes())
-            }
             IosTerminalBackend::Ish => {
                 let response = callIshTerminal(
                     "terminalRead",
@@ -403,18 +313,6 @@ impl TerminalHost for IosTerminalHost {
     /// Writes raw terminal input to one iOS terminal.
     fn writePtySession(&self, sessionId: &str, data: &[u8]) -> HostResult<usize> {
         match self.sessionBackend(sessionId)? {
-            IosTerminalBackend::Native { .. } => {
-                let input = std::str::from_utf8(data)
-                    .map_err(|_| HostError::new("iOS embedded terminal input must be UTF-8"))?;
-                let response = callRuntime(
-                    "terminalWrite",
-                    json!({
-                        "sessionId": requiredText(sessionId, "session_id")?,
-                        "input": input,
-                    }),
-                )?;
-                requiredUsize(&response, "acceptedChars")
-            }
             IosTerminalBackend::Ish => {
                 let input = std::str::from_utf8(data)
                     .map_err(|_| HostError::new("iSH terminal input must be UTF-8"))?;
@@ -434,17 +332,6 @@ impl TerminalHost for IosTerminalHost {
     /// Resizes one iOS terminal PTY.
     fn resizePtySession(&self, sessionId: &str, rows: u16, cols: u16) -> HostResult<()> {
         match self.sessionBackend(sessionId)? {
-            IosTerminalBackend::Native { .. } => {
-                callRuntime(
-                    "terminalResize",
-                    json!({
-                        "sessionId": requiredText(sessionId, "session_id")?,
-                        "rows": positiveDimension(rows, "rows")?,
-                        "cols": positiveDimension(cols, "cols")?,
-                    }),
-                )?;
-                Ok(())
-            }
             IosTerminalBackend::Ish => {
                 callIshTerminal(
                     "terminalResize",
@@ -465,21 +352,6 @@ impl TerminalHost for IosTerminalHost {
     /// Returns the exit status for one iOS terminal PTY after it has closed.
     fn pollPtyExitCode(&self, sessionId: &str) -> HostResult<Option<i32>> {
         match self.sessionBackend(sessionId)? {
-            IosTerminalBackend::Native { .. } => {
-                let response = callRuntime(
-                    "terminalPoll",
-                    json!({"sessionId": requiredText(sessionId, "session_id")?}),
-                )?;
-                match response.get("exitCode") {
-                    Some(Value::Null) | None => Ok(None),
-                    Some(Value::Number(value)) => value
-                        .as_i64()
-                        .and_then(|value| i32::try_from(value).ok())
-                        .map(Some)
-                        .ok_or_else(|| HostError::new("iOS terminal exit code is invalid")),
-                    Some(_) => Err(HostError::new("iOS terminal exit code is invalid")),
-                }
-            }
             IosTerminalBackend::Ish => {
                 let response = callIshTerminal(
                     "terminalPoll",
@@ -502,12 +374,6 @@ impl TerminalHost for IosTerminalHost {
     /// Closes one iOS terminal PTY and removes its backend registration.
     fn closePtySession(&self, sessionId: &str) -> HostResult<()> {
         match self.sessionBackend(sessionId)? {
-            IosTerminalBackend::Native { .. } => {
-                callRuntime(
-                    "terminalClose",
-                    json!({"sessionId": requiredText(sessionId, "session_id")?}),
-                )?;
-            }
             IosTerminalBackend::Ish => {
                 callIshTerminal(
                     "terminalClose",
@@ -522,27 +388,6 @@ impl TerminalHost for IosTerminalHost {
     /// Lists active iSH and system-shell sessions with their exact terminal identities.
     fn listSessions(&self) -> HostResult<Vec<TerminalSessionListEntry>> {
         let mut sessions = Vec::new();
-        let nativeResponse = callRuntime("terminalList", Value::Null)?;
-        let nativeSessions = nativeResponse
-            .get("sessions")
-            .and_then(Value::as_array)
-            .ok_or_else(|| HostError::new("iOS embedded terminal session list is invalid"))?;
-        for value in nativeSessions {
-            let session = nativeSessionEntry(value)?;
-            let nativeBackend = match session.terminalType.as_str() {
-                PYTHON_TERMINAL_TYPE => IosTerminalBackend::Native {
-                    terminalType: PYTHON_TERMINAL_TYPE,
-                },
-                NODE_TERMINAL_TYPE => IosTerminalBackend::Native {
-                    terminalType: NODE_TERMINAL_TYPE,
-                },
-                _ => IosTerminalBackend::Native {
-                    terminalType: TOYBOX_TERMINAL_TYPE,
-                },
-            };
-            self.recordSession(&session.sessionId, nativeBackend)?;
-            sessions.push(session);
-        }
         let ishResponse = callIshTerminal("terminalList", Value::Null)?;
         let ishSessions = ishResponse
             .get("sessions")
@@ -652,22 +497,6 @@ impl TerminalHost for IosTerminalHost {
     /// Returns the retained screen model for one registered iOS terminal session.
     fn getSessionScreen(&self, sessionId: &str) -> HostResult<TerminalScreenOutput> {
         match self.sessionBackend(sessionId)? {
-            IosTerminalBackend::Native { terminalType } => {
-                let response = callRuntime(
-                    "terminalScreen",
-                    json!({"sessionId": requiredText(sessionId, "session_id")?}),
-                )?;
-                Ok(TerminalScreenOutput {
-                    sessionId: requiredString(&response, "sessionId")?,
-                    platform: PLATFORM.to_string(),
-                    terminal: terminalType.to_string(),
-                    terminalType: shellTerminalType(&requiredString(&response, "terminalType")?)?,
-                    rows: requiredUsize(&response, "rows")?,
-                    cols: requiredUsize(&response, "cols")?,
-                    content: requiredString(&response, "content")?,
-                    commandRunning: requiredBool(&response, "commandRunning")?,
-                })
-            }
             IosTerminalBackend::Ish => {
                 let response = callIshTerminal(
                     "terminalScreen",
@@ -729,21 +558,6 @@ fn systemScreenOutput(mut data: TerminalScreenOutput) -> HostResult<TerminalScre
     data.platform = PLATFORM.to_string();
     data.terminal = SYSTEM_SHELL_TERMINAL.to_string();
     Ok(data)
-}
-
-/// Converts one native embedded-runtime session object into the shared terminal model.
-fn nativeSessionEntry(value: &Value) -> HostResult<TerminalSessionListEntry> {
-    let terminalType = shellTerminalType(&requiredString(value, "terminalType")?)?;
-    Ok(TerminalSessionListEntry {
-        sessionId: requiredString(value, "sessionId")?,
-        sessionName: requiredString(value, "sessionName")?,
-        platform: PLATFORM.to_string(),
-        terminal: terminalType.clone(),
-        terminalType,
-        sessionKind: requiredString(value, "sessionKind")?,
-        workingDir: requiredString(value, "workingDir")?,
-        commandRunning: requiredBool(value, "commandRunning")?,
-    })
 }
 
 /// Converts one iSH bridge session object into the shared terminal session model.

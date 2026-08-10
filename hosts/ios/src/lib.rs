@@ -15,7 +15,7 @@ use operit_host_api::RuntimeStorageHost;
 // runtime（managed runtime host 的 iOS 实现）。
 #[cfg(target_os = "ios")]
 pub mod bridge;
-pub mod runtime;
+pub mod managed_runtime;
 pub mod terminal;
 
 pub use operit_host_apple_native::{
@@ -30,7 +30,7 @@ pub use operit_host_apple_native::{
     AppleTtsSynthesisHost as IosTtsSynthesisHost,
 };
 #[cfg(target_os = "ios")]
-pub use runtime::IosManagedRuntimeHost;
+pub use managed_runtime::IosManagedRuntimeHost;
 pub use terminal::IosTerminalHost;
 
 // `AppleSystemOperationHost` is wrapped as a newtype on iOS (see the `system_operation`
@@ -85,7 +85,8 @@ pub fn createRuntimeHostManager(
         Arc::new(IosSystemOperationHost::new()),
     );
     hostManager.httpHost = Some(Arc::new(IosHttpHost::new()));
-    hostManager.managedRuntimeHost = Some(Arc::new(IosManagedRuntimeHost::new()));
+    hostManager.managedRuntimeHost =
+        Some(Arc::new(IosManagedRuntimeHost::new(Arc::new(IosTerminalHost::new()))));
     hostManager.runtimeStorageHost = Some(runtimeStorageHost);
     hostManager.runtimeSqliteHost = Some(runtimeSqliteHost);
     hostManager = hostManager.withHostSecretStore(hostSecretStore);
