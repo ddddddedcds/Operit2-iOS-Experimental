@@ -19,6 +19,7 @@ use operit_host_apple_native::AppleSystemOperationHost;
 
 use crate::ios_mcp::IosMcpClient;
 
+#[derive(Clone)]
 pub struct IosSystemOperationHost {
     inner: AppleSystemOperationHost,
     mcp: IosMcpClient,

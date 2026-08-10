@@ -65,6 +65,7 @@ pub fn createRuntimeHostManager(
     runtimeRoot: PathBuf,
     workspaceRoot: PathBuf,
     webVisitHost: Arc<dyn operit_host_api::WebVisitHost>,
+    managedRuntimeHost: Arc<dyn operit_host_api::ManagedRuntimeHost>,
 ) -> HostManager {
     let runtimeStorageWriteHost =
         Arc::new(operit_host_native_common::NativeRuntimeStorageHost::new(
@@ -85,8 +86,7 @@ pub fn createRuntimeHostManager(
         Arc::new(IosSystemOperationHost::new()),
     );
     hostManager.httpHost = Some(Arc::new(IosHttpHost::new()));
-    hostManager.managedRuntimeHost =
-        Some(Arc::new(IosManagedRuntimeHost::new(Arc::new(IosTerminalHost::new()))));
+    hostManager.managedRuntimeHost = Some(managedRuntimeHost);
     hostManager.runtimeStorageHost = Some(runtimeStorageHost);
     hostManager.runtimeSqliteHost = Some(runtimeSqliteHost);
     hostManager = hostManager.withHostSecretStore(hostSecretStore);

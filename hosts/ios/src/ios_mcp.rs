@@ -16,7 +16,7 @@
 //!   convert from Operit2's `NormalizedPoint` using `get_screen_info` width/height.
 //! - `screenshot` returns a base64 **JPEG**; Operit2 needs PNG, so we re-encode.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
@@ -26,11 +26,12 @@ use serde_json::{json, Value};
 const DEFAULT_URL: &str = "http://127.0.0.1:8090/mcp";
 const PROTOCOL_VERSION: &str = "2025-11-25";
 
+#[derive(Clone)]
 pub struct IosMcpClient {
     url: String,
     client: reqwest::blocking::Client,
-    initialized: Mutex<bool>,
-    screen_size: Mutex<Option<(f64, f64)>>,
+    initialized: Arc<Mutex<bool>>,
+    screen_size: Arc<Mutex<Option<(f64, f64)>>>,
 }
 
 impl IosMcpClient {
@@ -43,8 +44,8 @@ impl IosMcpClient {
         Self {
             url,
             client,
-            initialized: Mutex::new(false),
-            screen_size: Mutex::new(None),
+            initialized: Arc::new(Mutex::new(false)),
+            screen_size: Arc::new(Mutex::new(None)),
         }
     }
 
