@@ -6,7 +6,7 @@ use operit_host_api::{
     TerminalHost, TerminalInfo, TerminalInputOutput, TerminalScreenOutput, TerminalSessionInfo,
     TerminalSessionListEntry, TerminalTypeInfo,
 };
-use operit_host_native_common::NativePtyTerminalHost;
+use operit_host_native_common::{NativePtyShellCommand, NativePtyTerminalHost};
 
 const SHELL_TERMINAL_TYPE: &str = "shell";
 const PLATFORM: &str = "ios";
@@ -39,15 +39,40 @@ impl Default for IosTerminalHost {
 }
 
 impl IosTerminalHost {
-    /// Creates the iOS terminal host and checks whether /bin/sh can actually start in a PTY.
+    /// Creates the iOS terminal host and checks whether a real system shell can
+    /// actually start in a PTY. Tries `/bin/sh` first (stock-ish hosts), then
+    /// falls back to the jailbroken rootless/roothide layout `/var/jb/bin/sh`.
     pub fn new() -> Self {
-        let systemShell = NativePtyTerminalHost::systemShell();
-        let systemShellAvailable = systemShell.probe("/").is_ok();
+        let (systemShell, systemShellAvailable) = Self::probeSystemShell();
         Self {
             state: Arc::new(Mutex::new(IosTerminalState::default())),
             systemShell,
             systemShellAvailable,
         }
+    }
+
+    /// Probes candidate system-shell paths and returns the first working host.
+    fn probeSystemShell() -> (NativePtyTerminalHost, bool) {
+        for program in ["/bin/sh", "/var/jb/bin/sh"] {
+            let shell = NativePtyTerminalHost::customShell(NativePtyShellCommand {
+                program: program.to_string(),
+                arguments: vec!["-i".to_string()],
+                description: format!("Privileged system {program} terminal"),
+                processWorkingDirectory: "session".to_string(),
+                defaultSessionWorkingDirectory: "process-current".to_string(),
+                environment: Vec::new(),
+                sessionWorkingDirectoryEnvironment: "none".to_string(),
+            });
+            if let Ok(shell) = shell {
+                if shell.probe("/").is_ok() {
+                    return (shell, true);
+                }
+            }
+        }
+        // 最后兜底：无可用系统 shell，用默认构造（probe 也会失败，标记不可用）。
+        let fallback = NativePtyTerminalHost::systemShell();
+        let fallbackAvailable = fallback.probe("/").is_ok();
+        (fallback, fallbackAvailable)
     }
 
     /// Selects the jailbroken system /bin/sh when a privileged PTY is available.
