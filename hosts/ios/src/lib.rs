@@ -13,8 +13,6 @@ use operit_host_api::RuntimeStorageHost;
 // 越狱 iOS 专属模块（我们维护）：终端（portable_pty）、设备自动化（ios-mcp）、
 // system_operation（屏幕截图/OCR 走 ios-mcp）、device_agent（AutoGLM 循环）、
 // runtime（managed runtime host 的 iOS 实现）。
-#[cfg(target_os = "ios")]
-pub mod bridge;
 pub mod managed_runtime;
 pub mod terminal;
 

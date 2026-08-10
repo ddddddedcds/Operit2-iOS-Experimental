@@ -653,7 +653,7 @@ pub(crate) fn create_local_core(
     composeDslWebViewHost: Option<Arc<dyn operit_host_api::ComposeDslWebViewHost>>,
     terminalHost: Arc<NativeTerminalHost>,
 ) -> Result<LocalCoreProxy, String> {
-    let managedRuntimeHost = Arc::new(NativeManagedRuntimeHost::new(terminalHost.clone()));
+    let managedRuntimeHost = Arc::new(NativeManagedRuntimeHost::new());
     let mut context = create_platform_runtime_host_manager(
         runtime_root,
         workspace_root,

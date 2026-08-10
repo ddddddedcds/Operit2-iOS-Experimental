@@ -1,219 +1,275 @@
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::sync::Arc;
+use std::process::{Child, ChildStdin, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use operit_host_api::{
     HostError, HostResult, ManagedRuntimeHost, ManagedRuntimeProcess, ManagedRuntimeProgram,
     RuntimeCommandOutput, RuntimeProcessRequest,
 };
-use operit_host_native_common::{TerminalManagedRuntimeLaunch, TerminalManagedRuntimeProcess};
-use sha2::{Digest, Sha256};
 
-use crate::terminal::IosTerminalHost;
+const MANAGED_RUNTIME_STDIO_BUFFER_BYTES: usize = 64 * 1024;
+const MANAGED_RUNTIME_SINGLE_FRAME_MIN_BYTES: usize = 4 * 1024;
 
-const ISH_TERMINAL: &str = "ish";
-const SHELL_TERMINAL_TYPE: &str = "shell";
-const ISH_RUNTIME_WORKSPACE: &str = "/root/.operit/managed_runtime";
-
-/// Starts iOS MCP runtimes inside the embedded iSH Alpine environment.
-#[derive(Clone)]
-pub struct IosManagedRuntimeHost {
-    terminalHost: Arc<IosTerminalHost>,
-}
+/// Starts iOS MCP runtimes as direct system processes (jailbroken system shell).
+#[derive(Clone, Default)]
+pub struct IosManagedRuntimeHost;
 
 impl IosManagedRuntimeHost {
-    /// Creates an iOS managed runtime host sharing the embedded iSH terminal owner.
-    pub fn new(terminalHost: Arc<IosTerminalHost>) -> Self {
-        Self { terminalHost }
+    /// Creates an iOS managed runtime host running programs on the system shell.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+struct IosManagedRuntimeProcess {
+    child: Mutex<Child>,
+    stdin: Mutex<ChildStdin>,
+    stdoutRx: Mutex<Receiver<String>>,
+    stderrLines: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl ManagedRuntimeProcess for IosManagedRuntimeProcess {
+    /// Writes one protocol line to the managed runtime stdin.
+    fn writeLine(&self, line: &str) -> HostResult<()> {
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| HostError::new("stdin mutex poisoned"))?;
+        writeManagedRuntimeLine(&mut stdin, line)
     }
 
-    /// Builds the iSH Alpine launch description for one managed runtime request.
-    fn buildLaunch(
-        &self,
-        request: RuntimeProcessRequest,
-    ) -> HostResult<TerminalManagedRuntimeLaunch> {
-        let RuntimeProcessRequest {
-            program,
-            executablePath,
-            args,
-            cwd,
-            env,
-        } = request;
-        let program = self.resolveRuntimeExecutable(program, executablePath.as_deref())?;
-        let (
-            sessionWorkingDirectory,
-            processWorkingDirectory,
-            ensureProcessWorkingDirectory,
-            program,
-            args,
-            env,
-        ) = match cwd {
-            Some(hostWorkingDirectory) => {
-                let runtimeWorkingDirectory =
-                    self.mountRuntimeWorkingDirectory(&hostWorkingDirectory)?;
-                let program =
-                    mapRuntimePath(&program, &hostWorkingDirectory, &runtimeWorkingDirectory);
-                let args = args
-                    .iter()
-                    .map(|arg| mapRuntimePath(arg, &hostWorkingDirectory, &runtimeWorkingDirectory))
-                    .collect();
-                let env =
-                    mapRuntimeEnvironment(env, &hostWorkingDirectory, &runtimeWorkingDirectory);
-                (
-                    runtimeWorkingDirectory.clone(),
-                    runtimeWorkingDirectory,
-                    false,
-                    program,
-                    args,
-                    env,
-                )
-            }
-            None => (
-                "/root".to_string(),
-                ISH_RUNTIME_WORKSPACE.to_string(),
-                true,
-                program,
-                args,
-                env,
-            ),
-        };
-        Ok(TerminalManagedRuntimeLaunch {
-            terminal: ISH_TERMINAL.to_string(),
-            terminalType: SHELL_TERMINAL_TYPE.to_string(),
-            sessionWorkingDirectory,
-            processWorkingDirectory,
-            ensureProcessWorkingDirectory,
-            program,
-            args,
-            env,
-        })
+    /// Writes multiple protocol lines to the managed runtime stdin.
+    fn writeLines(&self, lines: &[String]) -> HostResult<()> {
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| HostError::new("stdin mutex poisoned"))?;
+        writeManagedRuntimeLines(&mut stdin, lines)
     }
 
-    /// Mounts the App-owned MCP runtime parent and returns its iSH working-directory path.
-    fn mountRuntimeWorkingDirectory(&self, hostWorkingDirectory: &str) -> HostResult<String> {
-        let hostWorkingDirectory = Path::new(hostWorkingDirectory);
-        if !hostWorkingDirectory.is_absolute() {
-            return Err(HostError::new(format!(
-                "iSH managed runtime working directory must be absolute: {}",
-                hostWorkingDirectory.to_string_lossy()
-            )));
+    /// Reads one protocol line from the managed runtime stdout queue.
+    fn readStdoutLine(&self, timeoutMs: u64) -> HostResult<Option<String>> {
+        let receiver = self
+            .stdoutRx
+            .lock()
+            .map_err(|_| HostError::new("stdout mutex poisoned"))?;
+        match receiver.recv_timeout(Duration::from_millis(timeoutMs)) {
+            Ok(line) => Ok(Some(line)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Ok(None),
         }
-        let hostParent = hostWorkingDirectory.parent().ok_or_else(|| {
-            HostError::new(format!(
-                "iSH managed runtime working directory has no parent: {}",
-                hostWorkingDirectory.to_string_lossy()
-            ))
-        })?;
-        let directoryName = hostWorkingDirectory.file_name().ok_or_else(|| {
-            HostError::new(format!(
-                "iSH managed runtime working directory has no final component: {}",
-                hostWorkingDirectory.to_string_lossy()
-            ))
-        })?;
-        let hostParent = hostParent.to_str().ok_or_else(|| {
-            HostError::new("iSH managed runtime parent directory is not valid UTF-8")
-        })?;
-        let directoryName = directoryName.to_str().ok_or_else(|| {
-            HostError::new("iSH managed runtime directory name is not valid UTF-8")
-        })?;
-        let mountPoint = runtimeMountPoint(hostParent);
-        self.terminalHost
-            .mountManagedRuntimeDirectory(hostParent, &mountPoint)?;
-        Ok(format!("{mountPoint}/{directoryName}"))
     }
 
-    /// Starts one iSH managed runtime process for a request.
-    fn startProcess(
-        &self,
-        request: RuntimeProcessRequest,
-    ) -> HostResult<TerminalManagedRuntimeProcess> {
-        TerminalManagedRuntimeProcess::start(self.terminalHost.clone(), self.buildLaunch(request)?)
+    /// Drains buffered stderr lines collected from the managed runtime.
+    fn drainStderr(&self) -> HostResult<String> {
+        let mut lines = self
+            .stderrLines
+            .lock()
+            .map_err(|_| HostError::new("stderr mutex poisoned"))?;
+        let mut output = String::new();
+        while let Some(line) = lines.pop_front() {
+            output.push_str(&line);
+            if !line.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+        Ok(output)
+    }
+
+    /// Returns whether the managed runtime process is still alive.
+    fn isRunning(&self) -> HostResult<bool> {
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| HostError::new("child mutex poisoned"))?;
+        Ok(child.try_wait()?.is_none())
+    }
+
+    /// Terminates the managed runtime process.
+    fn kill(&self) -> HostResult<()> {
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| HostError::new("child mutex poisoned"))?;
+        match child.try_wait()? {
+            Some(_) => Ok(()),
+            None => {
+                child.kill()?;
+                Ok(())
+            }
+        }
     }
 }
 
 impl ManagedRuntimeHost for IosManagedRuntimeHost {
-    /// Returns the persistent runtime workspace located inside the iSH Alpine filesystem.
+    /// Returns the persistent iOS managed runtime workspace directory on the system filesystem.
     fn runtimeWorkspaceDir(&self) -> HostResult<String> {
-        Ok(ISH_RUNTIME_WORKSPACE.to_string())
+        let dir = iosRuntimeWorkspaceDir();
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
     }
 
-    /// Resolves a runtime executable inside the embedded iSH Alpine filesystem.
+    /// Resolves a managed runtime executable on the jailbroken system shell.
     fn resolveRuntimeExecutable(
         &self,
         program: ManagedRuntimeProgram,
         executablePath: Option<&str>,
     ) -> HostResult<String> {
-        if let Some(path) = executablePath {
-            let trimmed = path.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
-        }
-        Ok(match program {
-            ManagedRuntimeProgram::Node => "/usr/bin/node".to_string(),
-            ManagedRuntimeProgram::Python => "/usr/bin/python3".to_string(),
-            ManagedRuntimeProgram::Uv => "/usr/bin/uv".to_string(),
-            ManagedRuntimeProgram::Pnpm => "/usr/bin/pnpm".to_string(),
+        Ok(match executablePath.map(str::trim) {
+            Some(value) if !value.is_empty() => value.to_string(),
+            _ => match program {
+                ManagedRuntimeProgram::Node => "/usr/bin/node".to_string(),
+                ManagedRuntimeProgram::Python => "/usr/bin/python3".to_string(),
+                ManagedRuntimeProgram::Uv => "/usr/bin/uv".to_string(),
+                ManagedRuntimeProgram::Pnpm => "/usr/bin/pnpm".to_string(),
+            },
         })
     }
 
-    /// Starts a persistent iSH Alpine MCP process.
+    /// Starts a persistent iOS managed runtime process with piped stdio.
     fn startRuntimeProcess(
         &self,
         request: RuntimeProcessRequest,
     ) -> HostResult<Box<dyn ManagedRuntimeProcess>> {
-        Ok(Box::new(self.startProcess(request)?))
+        let executable = self
+            .resolveRuntimeExecutable(request.program.clone(), request.executablePath.as_deref())?;
+        let mut command = std::process::Command::new(&executable);
+        if let Some(cwd) = request.cwd.as_deref() {
+            command.current_dir(cwd);
+        }
+        command.args(request.args);
+        command.envs(request.env);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+
+        let mut child = command
+            .spawn()
+            .map_err(|error| HostError::new(format!("failed to start {executable}: {error}")))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| HostError::new("managed runtime process has no stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| HostError::new("managed runtime process has no stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| HostError::new("managed runtime process has no stderr"))?;
+
+        let (stdoutTx, stdoutRx) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::with_capacity(MANAGED_RUNTIME_STDIO_BUFFER_BYTES, stdout)
+                .lines()
+                .flatten()
+            {
+                let _ = stdoutTx.send(line);
+            }
+        });
+
+        let stderrLines = Arc::new(Mutex::new(VecDeque::new()));
+        let stderrLinesForThread = stderrLines.clone();
+        thread::spawn(move || {
+            for line in BufReader::with_capacity(MANAGED_RUNTIME_STDIO_BUFFER_BYTES, stderr)
+                .lines()
+                .flatten()
+            {
+                if let Ok(mut lines) = stderrLinesForThread.lock() {
+                    lines.push_back(line);
+                    while lines.len() > 400 {
+                        lines.pop_front();
+                    }
+                }
+            }
+        });
+
+        Ok(Box::new(IosManagedRuntimeProcess {
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
+            stdoutRx: Mutex::new(stdoutRx),
+            stderrLines,
+        }))
     }
 
-    /// Runs a one-shot command inside iSH Alpine and captures its terminal output.
+    /// Runs a one-shot iOS managed runtime command and captures output.
     fn runRuntimeCommand(
         &self,
         request: RuntimeProcessRequest,
     ) -> HostResult<RuntimeCommandOutput> {
-        let process = self.startProcess(request)?;
-        let exitCode = process.waitForExit()?;
-        let stdout = process.takeOutputText()?;
+        let executable = self
+            .resolveRuntimeExecutable(request.program.clone(), request.executablePath.as_deref())?;
+        let mut command = std::process::Command::new(&executable);
+        if let Some(cwd) = request.cwd.as_deref() {
+            command.current_dir(cwd);
+        }
+        command.args(request.args);
+        command.envs(request.env);
+        let output = command
+            .output()
+            .map_err(|error| HostError::new(format!("failed to run {executable}: {error}")))?;
         Ok(RuntimeCommandOutput {
-            exitCode: Some(exitCode),
-            stdout,
-            stderr: String::new(),
+            exitCode: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         })
     }
 }
 
-/// Derives the stable iSH mount point for one App-owned runtime directory parent.
-fn runtimeMountPoint(hostParent: &str) -> String {
-    let digest = Sha256::digest(hostParent.as_bytes());
-    let suffix = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("/mnt/operit-mcp/{suffix}")
+/// Returns the persistent managed-runtime workspace inside the iOS data root.
+fn iosRuntimeWorkspaceDir() -> String {
+    Path::new("/var/mobile/.operit")
+        .join("managed_runtime")
+        .to_string_lossy()
+        .to_string()
 }
 
-/// Maps one exact host-runtime path into the corresponding iSH-mounted path.
-fn mapRuntimePath(
-    value: &str,
-    hostWorkingDirectory: &str,
-    runtimeWorkingDirectory: &str,
-) -> String {
-    let normalizedHostDirectory = hostWorkingDirectory.trim_end_matches('/');
-    match value.strip_prefix(normalizedHostDirectory) {
-        Some(suffix) if suffix.is_empty() || suffix.starts_with('/') => {
-            format!("{runtimeWorkingDirectory}{suffix}")
-        }
-        _ => value.to_string(),
+/// Writes one newline-terminated managed runtime frame.
+#[allow(non_snake_case)]
+fn writeManagedRuntimeLine(stdin: &mut ChildStdin, line: &str) -> HostResult<()> {
+    let lineBytes = line.as_bytes();
+    match lineBytes.len() >= MANAGED_RUNTIME_SINGLE_FRAME_MIN_BYTES {
+        true => writeManagedRuntimeLargeLine(stdin, lineBytes),
+        false => writeManagedRuntimeSmallLine(stdin, lineBytes),
     }
 }
 
-/// Maps MCP environment values rooted at the host plugin directory into the iSH mounted path.
-fn mapRuntimeEnvironment(
-    mut environment: BTreeMap<String, String>,
-    hostWorkingDirectory: &str,
-    runtimeWorkingDirectory: &str,
-) -> BTreeMap<String, String> {
-    for value in environment.values_mut() {
-        *value = mapRuntimePath(value, hostWorkingDirectory, runtimeWorkingDirectory);
+/// Writes a small managed runtime line without per-message heap allocation.
+#[allow(non_snake_case)]
+fn writeManagedRuntimeSmallLine(stdin: &mut ChildStdin, lineBytes: &[u8]) -> HostResult<()> {
+    stdin.write_all(lineBytes)?;
+    stdin.write_all(b"\n")?;
+    stdin.flush()?;
+    Ok(())
+}
+
+/// Writes a large managed runtime line as one contiguous pipe frame.
+#[allow(non_snake_case)]
+fn writeManagedRuntimeLargeLine(stdin: &mut ChildStdin, lineBytes: &[u8]) -> HostResult<()> {
+    let mut frame = Vec::with_capacity(lineBytes.len() + 1);
+    frame.extend_from_slice(lineBytes);
+    frame.push(b'\n');
+    stdin.write_all(&frame)?;
+    stdin.flush()?;
+    Ok(())
+}
+
+/// Writes many managed runtime lines through one contiguous pipe frame.
+#[allow(non_snake_case)]
+fn writeManagedRuntimeLines(stdin: &mut ChildStdin, lines: &[String]) -> HostResult<()> {
+    let frameBytes = lines.iter().map(|line| line.len() + 1).sum();
+    let mut frame = Vec::with_capacity(frameBytes);
+    for line in lines {
+        frame.extend_from_slice(line.as_bytes());
+        frame.push(b'\n');
     }
-    environment
+    stdin.write_all(&frame)?;
+    stdin.flush()?;
+    Ok(())
 }
