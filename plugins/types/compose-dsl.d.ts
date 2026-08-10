@@ -3168,6 +3168,46 @@ export interface SnackbarHostProps extends ComposeCommonProps {
 }
 
 /**
+ * Properties for embedding the host AI chat content without its workspace panel.
+ */
+export interface AiChatProps extends ComposeCommonProps {
+}
+
+/**
+ * Properties for a responsive trailing panel controlled by the Compose screen.
+ */
+export interface AdaptiveSidePanelProps extends ComposeCommonProps {
+  /**
+   * Controls whether the trailing panel is visible.
+   */
+  open: boolean;
+  /**
+   * Content rendered inside the trailing panel.
+   */
+  side: ComposeChildren;
+  /**
+   * Receives visibility changes initiated by the host surface.
+   */
+  onOpenChanged: (arg0: boolean) => void;
+  /**
+   * Width used by default on wide layouts.
+   */
+  defaultWidth?: number;
+  /**
+   * Smallest permitted width on wide layouts.
+   */
+  minWidth?: number;
+  /**
+   * Minimum width reserved for the primary content on wide layouts.
+   */
+  minContentWidth?: number;
+  /**
+   * Viewport width at which the panel switches to overlay mode.
+   */
+  breakpoint?: number;
+}
+
+/**
  * Drawing commands, viewport transform, and gesture callbacks for a canvas node.
  */
 export interface CanvasProps extends ComposeCommonProps {
@@ -3468,6 +3508,14 @@ export interface ComposeUiFactoryRegistry {
    */
   SnackbarHost: ComposeNodeFactory<SnackbarHostProps>;
   /**
+   * Embeds the host AI chat content without the workspace panel.
+   */
+  AiChat: ComposeNodeFactory<AiChatProps>;
+  /**
+   * Creates a responsive trailing panel around the supplied screen content.
+   */
+  AdaptiveSidePanel: ComposeNodeFactory<AdaptiveSidePanelProps>;
+  /**
    * Creates a command-driven drawing surface.
    */
   Canvas: ComposeNodeFactory<CanvasProps>;
@@ -3540,21 +3588,22 @@ export interface ComposeResolveToolNameRequest {
 }
 
 /**
- * Selection filters and permission behavior for the host file picker.
+ * Selects one source for the host file picker.
+ */
+export type ComposeFilePickerMode = "document" | "photo" | "video" | "media";
+
+/**
+ * Selection behavior for the host file picker.
  */
 export interface ComposeFilePickerOptions {
   /**
-   * Accepted media types shown by the picker.
+   * Selection source; document selection is used when this field is absent.
    */
-  mimeTypes?: string[];
+  picker?: ComposeFilePickerMode;
   /**
-   * Whether the user may select more than one file.
+   * Whether the user may select more than one document or visual-media item.
    */
   allowMultiple?: boolean;
-  /**
-   * Whether the host should retain URI access beyond the current session.
-   */
-  persistPermission?: boolean;
 }
 
 /**
@@ -3562,13 +3611,13 @@ export interface ComposeFilePickerOptions {
  */
 export interface ComposePickedFile {
   /**
-   * Platform URI granting access to the selected content.
+   * URI representing the selected document or media item.
    */
   uri: string;
   /**
-   * Resolved filesystem path when the provider exposes one.
+   * Platform file path or browser object URL for the selected item.
    */
-  path?: string;
+  path: string;
   /**
    * Display name reported by the content provider.
    */
@@ -3578,9 +3627,9 @@ export interface ComposePickedFile {
    */
   mimeType?: string;
   /**
-   * File size in bytes when reported by the provider.
+   * File size in bytes.
    */
-  size?: number | null;
+  size: number;
 }
 
 /**

@@ -2,7 +2,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
@@ -10,8 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_all/webview_all.dart';
 
-import '../../../../core/concurrency/AppWorkers.dart';
-import '../../../../core/path/OperitClientPaths.dart';
+import '../../../../core/bridge/ProxyCoreRuntimeBridge.dart';
+import '../../../../core/proxy/generated/CoreProxyClients.g.dart';
 import 'ToolPkgComposeDslWebViewResourceServer.dart';
 
 const String composeDslWebViewInternalBridgeName =
@@ -21,6 +20,9 @@ const String _composeDslWebViewBridgeChannelName =
     '__ComposeDslWebViewHostBridgeChannel__';
 const String _composeDslWebViewBridgeHtmlMarker =
     'data-operit-webview-bridge-runtime="1"';
+const GeneratedCoreProxyClients _runtimeClients = GeneratedCoreProxyClients(
+  ProxyCoreRuntimeBridge(),
+);
 
 typedef ComposeDslWebViewActionDispatcher =
     Future<Object?> Function(String actionId, [Object? payload]);
@@ -309,10 +311,7 @@ class ComposeDslWebViewHostRegistry {
   }
 
   static Future<String> handleControllerCommand(String payloadJson) async {
-    final payload = await AppWorkers.run(
-      () => _decodeJsonObject(payloadJson),
-      debugName: 'compose-webview-controller-command-decode',
-    );
+    final payload = _decodeJsonObject(payloadJson);
     if (payload == null) {
       return _bridgeError('invalid webview controller command payload');
     }
@@ -385,10 +384,7 @@ class ComposeDslWebViewHostRegistry {
         case 'evaluateJavascript':
           final script = _string(commandPayload['script']);
           final result = await controller.runJavaScriptReturningResult(script);
-          final decoded = await AppWorkers.run(
-            () => _decodePlainJsonValue(result),
-            debugName: 'compose-webview-evaluate-result-decode',
-          );
+          final decoded = _decodePlainJsonValue(result);
           return _bridgeSuccess(decoded);
         case 'getState':
           return _bridgeSuccess(binding.state.toPayload());
@@ -1073,10 +1069,7 @@ class _ComposeDslWebViewState extends State<ComposeDslWebView> {
 
   Future<void> _handleBridgeMessage(JavaScriptMessage message) async {
     final messageText = message.message;
-    final payload = await AppWorkers.run(
-      () => _decodeJsonObject(messageText),
-      debugName: 'compose-webview-bridge-message-decode',
-    );
+    final payload = _decodeJsonObject(messageText);
     if (payload == null) {
       return;
     }
@@ -1107,18 +1100,12 @@ class _ComposeDslWebViewState extends State<ComposeDslWebView> {
     final descriptor = _boundControllerDescriptor;
     switch (type) {
       case 'controllerCommand':
-        final commandPayload = await AppWorkers.run(
-          () => jsonEncode(payload),
-          debugName: 'compose-webview-controller-command-encode',
-        );
+        final commandPayload = jsonEncode(payload);
         final result =
             await ComposeDslWebViewHostRegistry.handleControllerCommand(
               commandPayload,
             );
-        return AppWorkers.run(
-          () => _decodePlainJsonValue(result),
-          debugName: 'compose-webview-controller-command-result-decode',
-        );
+        return _decodePlainJsonValue(result);
       case 'listInterfaces':
         if (hostContext == null || descriptor == null) {
           return const <String, List<String>>{};
@@ -1146,10 +1133,7 @@ class _ComposeDslWebViewState extends State<ComposeDslWebView> {
         }
         final result = await hostContext.executeAction(
           actionId: actionId,
-          payload: await AppWorkers.run(
-            () => _decodePlainJsonValue(map['args']),
-            debugName: 'compose-webview-invoke-args-decode',
-          ),
+          payload: _decodePlainJsonValue(map['args']),
         );
         return result.actionResult;
       case 'dispatchAction':
@@ -1180,10 +1164,7 @@ class _ComposeDslWebViewState extends State<ComposeDslWebView> {
     if (requestId.isEmpty) {
       return;
     }
-    final payload = await AppWorkers.run(
-      () => jsonEncode(<String, Object?>{'id': requestId, ...response}),
-      debugName: 'compose-webview-bridge-response-encode',
-    );
+    final payload = jsonEncode(<String, Object?>{'id': requestId, ...response});
     await _controller.runJavaScript('''
       if (typeof window.__operitComposeDslWebViewHostReceive === 'function') {
         window.__operitComposeDslWebViewHostReceive($payload);
@@ -1218,23 +1199,25 @@ class _ComposeDslWebViewState extends State<ComposeDslWebView> {
     final files = multiple
         ? await openFiles(acceptedTypeGroups: acceptedTypeGroups)
         : <XFile>[?await openFile(acceptedTypeGroups: acceptedTypeGroups)];
-    final stagedDirectory = await OperitClientPaths.composeDslWebviewFilesDir();
-    if (!await stagedDirectory.exists()) {
-      await stagedDirectory.create(recursive: true);
-    }
+    final stagedDirectory = await _runtimeClients
+        .repositoryRuntimeStorageRepository
+        .composeDslWebViewFilesDirPath();
     final stagedFiles = <Map<String, Object?>>[];
     for (final file in files) {
-      final source = File(file.path);
       final sourceName = file.name.trim().isEmpty
-          ? source.uri.pathSegments.last
+          ? Uri.file(file.path).pathSegments.last
           : file.name.trim();
       final stagedPath =
-          '${stagedDirectory.path}${Platform.pathSeparator}${DateTime.now().microsecondsSinceEpoch}_$sourceName';
-      final staged = await source.copy(stagedPath);
+          '$stagedDirectory/${DateTime.now().microsecondsSinceEpoch}_$sourceName';
+      final bytes = await file.readAsBytes();
+      await _runtimeClients.repositoryRuntimeStorageRepository.writeBase64(
+        path: stagedPath,
+        base64Content: base64Encode(bytes),
+      );
       stagedFiles.add(<String, Object?>{
-        'path': staged.path,
+        'path': stagedPath,
         'name': sourceName,
-        'size': await staged.length(),
+        'size': bytes.length,
         'mimeType': file.mimeType,
       });
     }

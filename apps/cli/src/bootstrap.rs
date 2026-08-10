@@ -5,17 +5,6 @@ use std::sync::Arc;
 
 use operit_core_proxy::LocalCoreProxy;
 use operit_host_api::HostManager::HostManager;
-#[cfg(target_os = "macos")]
-use operit_host_apple_native::{
-    AppleBrowserAutomationHost as NativeBrowserAutomationHost,
-    AppleFileSystemHost as NativeFileSystemHost,
-    AppleHostRuntimeEventHost as NativeHostRuntimeEventHost,
-    AppleHostRuntimeEventSchedulerHost as NativeHostRuntimeEventSchedulerHost,
-    AppleHttpHost as NativeHttpHost, AppleManagedRuntimeHost as NativeManagedRuntimeHost,
-    AppleRuntimeStorageHost as NativeRuntimeStorageHost,
-    AppleSystemOperationHost as NativeSystemOperationHost, AppleTerminalHost as NativeTerminalHost,
-    AppleWebVisitHost as NativeWebVisitHost,
-};
 #[cfg(target_os = "linux")]
 use operit_host_linux_native::{
     LinuxAudioPlaybackHost as NativeAudioPlaybackHost, LinuxBluetoothHost as NativeBluetoothHost,
@@ -23,10 +12,23 @@ use operit_host_linux_native::{
     LinuxFileSystemHost as NativeFileSystemHost,
     LinuxHostRuntimeEventHost as NativeHostRuntimeEventHost,
     LinuxHostRuntimeEventSchedulerHost as NativeHostRuntimeEventSchedulerHost,
+    LinuxHostRuntimeTaskSchedulerHost as NativeHostRuntimeTaskSchedulerHost,
     LinuxHttpHost as NativeHttpHost, LinuxManagedRuntimeHost as NativeManagedRuntimeHost,
     LinuxRuntimeStorageHost as NativeRuntimeStorageHost,
     LinuxSystemOperationHost as NativeSystemOperationHost, LinuxTerminalHost as NativeTerminalHost,
     LinuxWebVisitHost as NativeWebVisitHost,
+};
+#[cfg(target_os = "macos")]
+use operit_host_macos_native::{
+    MacosBrowserAutomationHost as NativeBrowserAutomationHost,
+    MacosFileSystemHost as NativeFileSystemHost,
+    MacosHostRuntimeEventHost as NativeHostRuntimeEventHost,
+    MacosHostRuntimeEventSchedulerHost as NativeHostRuntimeEventSchedulerHost,
+    MacosHostRuntimeTaskSchedulerHost as NativeHostRuntimeTaskSchedulerHost,
+    MacosHttpHost as NativeHttpHost, MacosManagedRuntimeHost as NativeManagedRuntimeHost,
+    MacosRuntimeStorageHost as NativeRuntimeStorageHost,
+    MacosSystemOperationHost as NativeSystemOperationHost, MacosTerminalHost as NativeTerminalHost,
+    MacosWebVisitHost as NativeWebVisitHost,
 };
 #[cfg(windows)]
 use operit_host_windows_native::{
@@ -36,11 +38,13 @@ use operit_host_windows_native::{
     WindowsFileSystemHost as NativeFileSystemHost,
     WindowsHostRuntimeEventHost as NativeHostRuntimeEventHost,
     WindowsHostRuntimeEventSchedulerHost as NativeHostRuntimeEventSchedulerHost,
+    WindowsHostRuntimeTaskSchedulerHost as NativeHostRuntimeTaskSchedulerHost,
     WindowsHttpHost as NativeHttpHost, WindowsManagedRuntimeHost as NativeManagedRuntimeHost,
     WindowsRuntimeStorageHost as NativeRuntimeStorageHost,
     WindowsSystemOperationHost as NativeSystemOperationHost,
     WindowsTerminalHost as NativeTerminalHost, WindowsWebVisitHost as NativeWebVisitHost,
 };
+use operit_link_access::LinkAccessStore;
 use operit_runtime::core::application::OperitApplication::OperitApplication;
 use serde::{Deserialize, Serialize};
 
@@ -50,7 +54,14 @@ compile_error!("operit2 CLI host is implemented for Windows, Linux, and macOS.")
 /// Creates the CLI application with the configured runtime and workspace roots.
 pub(crate) fn create_cli_application() -> OperitApplication {
     let storageConfig = CliStorageConfig::read();
+    let archiveStagingHost = Arc::new(operit_host_native_common::NativeArchiveStagingHost::new(
+        storageConfig.runtimeRoot.clone(),
+    ));
     let runtimeStorageHost = Arc::new(NativeRuntimeStorageHost::new(
+        storageConfig.runtimeRoot.clone(),
+        storageConfig.workspaceRoot.clone(),
+    ));
+    let runtimeStorageWriteHost = Arc::new(operit_host_native_common::NativeRuntimeStorageHost::new(
         storageConfig.runtimeRoot,
         storageConfig.workspaceRoot,
     ));
@@ -65,7 +76,9 @@ pub(crate) fn create_cli_application() -> OperitApplication {
         runtimeStorageHost,
         runtimeSqliteHost,
     )
-    .withHostSecretStore(hostSecretStore);
+    .withHostSecretStore(hostSecretStore)
+    .withArchiveStagingHost(archiveStagingHost)
+    .withRuntimeStorageWriteHost(runtimeStorageWriteHost);
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         context = context.withTerminalHost(Arc::new(NativeTerminalHost::new()));
@@ -78,6 +91,8 @@ pub(crate) fn create_cli_application() -> OperitApplication {
     context = context.withHostRuntimeEventHost(Arc::new(NativeHostRuntimeEventHost::new()));
     context = context
         .withHostRuntimeEventSchedulerHost(Arc::new(NativeHostRuntimeEventSchedulerHost::new()));
+    context = context
+        .withHostRuntimeTaskSchedulerHost(Arc::new(NativeHostRuntimeTaskSchedulerHost::new()));
     context = context.withBrowserAutomationHost(Arc::new(NativeBrowserAutomationHost::new()));
     let commandContext = context.clone();
     OperitApplication::newWithContext(context.withCoreCommandExecutor(Arc::new(
@@ -93,6 +108,15 @@ pub(crate) fn create_cli_application() -> OperitApplication {
 /// Creates the local core proxy used by CLI commands and services.
 pub(crate) fn create_local_core() -> LocalCoreProxy {
     LocalCoreProxy::new(create_cli_application())
+}
+
+/// Creates the runtime-owned Link Access repository for CLI commands.
+pub(crate) fn create_cli_link_access_store() -> LinkAccessStore {
+    let storageConfig = CliStorageConfig::read();
+    LinkAccessStore::new(Arc::new(NativeRuntimeStorageHost::new(
+        storageConfig.runtimeRoot,
+        storageConfig.workspaceRoot,
+    )))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

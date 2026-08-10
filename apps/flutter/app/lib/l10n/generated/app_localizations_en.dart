@@ -18,6 +18,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get fullscreenInput => 'Fullscreen input';
 
   @override
+  String get expandInput => 'Expand input';
+
+  @override
+  String get collapseInput => 'Collapse input';
+
+  @override
   String get settings => 'Settings';
 
   @override
@@ -572,6 +578,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get browserPermissionRequestTitle => 'Website permission request';
 
   @override
+  String get chatSpeechInputFailed => 'Speech input failed. Please try again.';
+
+  @override
+  String get chatSpeechNoTextRecognized => 'No speech recognized.';
+
+  @override
   String get history => 'History';
 
   @override
@@ -851,6 +863,17 @@ class AppLocalizationsEn extends AppLocalizations {
       'Manage default workspaces, terminal sessions, browser mode, scripts, and web automation.';
 
   @override
+  String get settingsCategoryGlobalBehaviorTitle => 'Global Behavior Settings';
+
+  @override
+  String get settingsCategoryGlobalBehaviorSubtitle =>
+      'Input processing and interaction';
+
+  @override
+  String get settingsCategoryGlobalBehaviorDescription =>
+      'Configure input and interaction behavior that does not vary by character card.';
+
+  @override
   String get settingsCategoryAppearanceTitle => 'Appearance & Interaction';
 
   @override
@@ -879,6 +902,34 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get settingsCategoryAccessLinksDescription =>
       'Connect another device, sync data, or allow browsers to access this device.';
+
+  @override
+  String get settingsCategoryGroupAssistant => 'AI & Creation';
+
+  @override
+  String get settingsCategoryGroupWorkspace => 'Workspace & Automation';
+
+  @override
+  String get settingsCategoryGroupExperience => 'Display & Interaction';
+
+  @override
+  String get settingsCategoryGroupSystem => 'Data & System';
+
+  @override
+  String get settingsGlobalBehaviorChatInputSection => 'Chat input';
+
+  @override
+  String get settingsGlobalBehaviorLongPastedTextAsAttachment =>
+      'Convert long pasted text to a file';
+
+  @override
+  String get settingsGlobalBehaviorLongPastedTextThreshold =>
+      'Conversion threshold';
+
+  @override
+  String settingsGlobalBehaviorLongPastedTextThresholdValue(int count) {
+    return '$count characters';
+  }
 
   @override
   String get settingsComingSoon =>
@@ -974,6 +1025,27 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelDeleteProviderConfirmAction => 'Delete provider';
+
+  @override
+  String get settingsTtsDeleteProvider => 'Delete TTS provider';
+
+  @override
+  String settingsTtsDeleteProviderConfirm(String name, int count) {
+    return 'Delete TTS provider “$name” and its $count voice configurations?';
+  }
+
+  @override
+  String settingsTtsDeleteProviderFailed(String error) {
+    return 'Failed to delete TTS provider: $error';
+  }
+
+  @override
+  String get settingsTtsCurrentConfigCannotDelete =>
+      'The TTS configuration currently in use cannot be deleted.';
+
+  @override
+  String get settingsTtsConfigUsedByCharacter =>
+      'This TTS configuration is used by a character card and cannot be deleted.';
 
   @override
   String get settingsModelChatAutoGlmWarning =>
@@ -1209,6 +1281,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelProviderTypeOpenaiLocal => 'OpenAI Local';
+
+  @override
+  String get settingsModelProviderTypeLocalModel => 'Local model';
 
   @override
   String get settingsModelProviderTypeMnn => 'MNN';
@@ -1799,6 +1874,17 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsToolsMcpStartupTimeoutSeconds => 'Wait seconds';
+
+  @override
+  String get settingsToolsToolPkgPreHookTimeout => 'ToolPkg pre-hook timeout';
+
+  @override
+  String settingsToolsToolPkgPreHookDescription(int seconds) {
+    return 'One ToolPkg pre-hook chain has $seconds seconds in total.';
+  }
+
+  @override
+  String get settingsToolsToolPkgPreHookTimeoutSeconds => 'Total seconds';
 
   @override
   String get settingsWorkspaceCurrentDesign => 'Current workspace structure';
@@ -2540,6 +2626,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsAppearanceShowAvatars => 'Show message avatars';
 
   @override
+  String get settingsAppearanceMessageDisplaySection => 'Message display';
+
+  @override
   String get settingsAppearanceShowThinkingProcess => 'Show thinking process';
 
   @override
@@ -2890,6 +2979,34 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsDataSnapshotRestoreConfirmAction => 'Restore';
+
+  @override
+  String get settingsDataImportOperit1Snapshot => 'Import from Operit1';
+
+  @override
+  String get settingsDataOperit1SnapshotImported =>
+      'Operit1 snapshot imported.';
+
+  @override
+  String settingsDataOperit1SnapshotImportError(String error) {
+    return 'Operit1 snapshot import failed: $error';
+  }
+
+  @override
+  String settingsDataOperit1SnapshotImportConfirmMessage(
+    String fileName,
+    int formatVersion,
+    String chatModelId,
+    int chatCount,
+    int messageCount,
+    int fileCount,
+    int byteCount,
+  ) {
+    return 'Import this Operit1 snapshot into the current Runtime.\nFile: $fileName\nFormat version: $formatVersion\nChat model: $chatModelId\nChats: $chatCount; messages: $messageCount\nResource files: $fileCount\nSnapshot size: $byteCount bytes';
+  }
+
+  @override
+  String get settingsDataOperit1SnapshotImportAction => 'Import';
 
   @override
   String get settingsDataAdvancedBackupOptions => 'Advanced options';

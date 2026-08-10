@@ -816,7 +816,7 @@ impl StandardFileSystemTools {
             ],
         });
         let mut result = results.remove(results.len() - 1);
-        result.toolName = "create_file".to_string();
+        result.toolName = tool.name.clone();
         result
     }
 
@@ -848,7 +848,7 @@ impl StandardFileSystemTools {
             ],
         });
         let mut result = results.remove(results.len() - 1);
-        result.toolName = "edit_file".to_string();
+        result.toolName = tool.name.clone();
         result
     }
 

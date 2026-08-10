@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
@@ -53,6 +54,10 @@ import UIKit
       bootLog("AFTER_PLUGIN_REG")
       if let controller = window?.rootViewController as? FlutterViewController {
         AppleRuntimeChannel.register(binaryMessenger: controller.binaryMessenger)
+        AppleSnapshotImportInputChannel.register(
+          binaryMessenger: controller.binaryMessenger,
+          presenter: controller
+        )
         bootLog("AFTER_CHANNEL_REG")
         if #available(iOS 16.0, *) {
           ScreenTimeServer.shared.start()
@@ -65,6 +70,7 @@ import UIKit
       } else {
         bootLog("NO_FLUTTER_VIEWCONTROLLER")
       }
+      UNUserNotificationCenter.current().delegate = self
       bootLog("BEFORE_SUPER")
       ret = super.application(application, didFinishLaunchingWithOptions: launchOptions)
       bootLog("AFTER_SUPER ret=\(ret)")
@@ -73,8 +79,6 @@ import UIKit
     }
     return ret
   }
-
-  // ---- 全套生命周期诊断 ----
   override func applicationDidBecomeActive(_ application: UIApplication) {
     bootLog("APP_BECAME_ACTIVE")
   }
@@ -94,7 +98,7 @@ import UIKit
     }
     let text = queryItems.first { $0.name == "text" }?.value ?? ""
     let xSuccess = queryItems.first { $0.name == "x-success" }?.value
-    if !text.isEmpty, let messenger = window?.rootViewController?.binaryMessenger {
+    if !text.isEmpty, let messenger = (window?.rootViewController as? FlutterViewController)?.binaryMessenger {
       let channel = FlutterMethodChannel(
         name: "operit/ai",
         binaryMessenger: messenger
@@ -124,5 +128,20 @@ import UIKit
   }
   override func applicationWillTerminate(_ application: UIApplication) {
     bootLog("APP_WILL_TERMINATE")
+  }
+
+  /// Forwards a local-notification click to the Flutter notification activation receiver.
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    let userInfo = response.notification.request.content.userInfo
+    guard let activation = userInfo["operitNotificationActivation"] as? [String: Any] else {
+      completionHandler()
+      return
+    }
+    AppleRuntimeChannel.receiveNotificationActivation(activation)
+    completionHandler()
   }
 }

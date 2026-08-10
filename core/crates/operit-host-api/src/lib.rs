@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::io::Write;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -172,6 +174,7 @@ impl HostEnvironmentDescriptor {
                 "tts.playback".to_string(),
                 "system.location".to_string(),
                 "system.notifications.read".to_string(),
+                "system.notifications.send".to_string(),
                 "system.app_usage".to_string(),
                 "system.app.install".to_string(),
                 "system.app.uninstall".to_string(),
@@ -219,6 +222,7 @@ impl HostEnvironmentDescriptor {
                 "bluetooth.ble".to_string(),
                 "system.location".to_string(),
                 "system.notifications.read".to_string(),
+                "system.notifications.send".to_string(),
                 "system.app_usage".to_string(),
                 "system.app.install".to_string(),
                 "system.app.uninstall".to_string(),
@@ -245,6 +249,7 @@ impl HostEnvironmentDescriptor {
                 "bluetooth.ble",
                 "system.location",
                 "system.notifications.read",
+                "system.notifications.send",
                 "system.app_usage",
                 "system.app.install",
                 "system.app.uninstall",
@@ -294,6 +299,7 @@ impl HostEnvironmentDescriptor {
                 "tts.playback".to_string(),
                 "system.location".to_string(),
                 "system.notifications.read".to_string(),
+                "system.notifications.send".to_string(),
                 "system.app_usage".to_string(),
                 "system.app.install".to_string(),
                 "system.app.uninstall".to_string(),
@@ -344,6 +350,7 @@ impl HostEnvironmentDescriptor {
                 "tts.playback".to_string(),
                 "system.location".to_string(),
                 "system.notifications.read".to_string(),
+                "system.notifications.send".to_string(),
                 "system.app_usage".to_string(),
                 "system.app.install".to_string(),
                 "system.app.uninstall".to_string(),
@@ -399,6 +406,7 @@ impl HostEnvironmentDescriptor {
                 "os.share".to_string(),
                 "system.location".to_string(),
                 "system.notifications.read".to_string(),
+                "system.notifications.send".to_string(),
                 "system.app_usage".to_string(),
                 "system.app.install".to_string(),
                 "system.app.uninstall".to_string(),
@@ -702,6 +710,12 @@ fn defaultHostCapabilities() -> Vec<HostCapability> {
             operations: vec![CapabilityOperation::Read],
         },
         HostCapability {
+            id: "system.notifications.send".to_string(),
+            displayName: "发送系统通知".to_string(),
+            scope: CapabilityScope::System,
+            operations: vec![CapabilityOperation::Execute],
+        },
+        HostCapability {
             id: "system.app_usage".to_string(),
             displayName: "应用使用统计".to_string(),
             scope: CapabilityScope::System,
@@ -808,7 +822,8 @@ fn androidOnboardingRequirements() -> Vec<HostOnboardingRequirement> {
         HostOnboardingRequirement {
             id: "android.fileManagement".to_string(),
             title: "文件管理".to_string(),
-            description: "Host 需要文件管理授权来读取和写入用户选择的 Android 共享存储目录。".to_string(),
+            description: "Host 需要文件管理授权来读取和写入用户选择的 Android 共享存储目录。"
+                .to_string(),
             capabilityIds: vec![
                 "fs.read".to_string(),
                 "fs.write".to_string(),
@@ -1129,8 +1144,78 @@ pub trait BrowserSessionHost: Send + Sync {
     fn closeBrowserSession(&self, sessionId: &str) -> HostResult<BrowserSessionCommandResult>;
 }
 
+/// Selects the single source used by a Compose DSL file-picker request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComposeDslFilePickerMode {
+    Document,
+    Photo,
+    Video,
+    Media,
+}
+
+/// Compose DSL options that describe one file-picker request.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComposeDslFilePickerOptions {
+    pub picker: Option<ComposeDslFilePickerMode>,
+    pub allowMultiple: Option<bool>,
+}
+
+/// A fully validated file-picker request issued by a Compose DSL screen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComposeDslFilePickerRequest {
+    pub routeInstanceId: String,
+    pub executionContextKey: String,
+    pub picker: ComposeDslFilePickerMode,
+    pub allowMultiple: bool,
+}
+
+impl ComposeDslFilePickerRequest {
+    /// Decodes and validates the JSON payload supplied by the Compose DSL JavaScript bridge.
+    pub fn parse(payloadJson: &str) -> HostResult<Self> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RawRequest {
+            #[serde(default)]
+            routeInstanceId: String,
+            executionContextKey: String,
+            #[serde(default)]
+            options: ComposeDslFilePickerOptions,
+        }
+
+        let raw: RawRequest = serde_json::from_str(payloadJson).map_err(|error| {
+            HostError::new(format!("Compose DSL file picker request decode failed: {error}"))
+        })?;
+        let executionContextKey = raw.executionContextKey.trim();
+        if executionContextKey.is_empty() {
+            return Err(HostError::new(
+                "Compose DSL file picker executionContextKey is required",
+            ));
+        }
+
+        let options = raw.options;
+        let picker = options.picker.unwrap_or(ComposeDslFilePickerMode::Document);
+
+        Ok(Self {
+            routeInstanceId: raw.routeInstanceId.trim().to_string(),
+            executionContextKey: executionContextKey.to_string(),
+            allowMultiple: options.allowMultiple.unwrap_or(false),
+            picker,
+        })
+    }
+}
+
 pub trait ComposeDslWebViewHost: Send + Sync {
+    /// Executes one imperative WebView controller command for a Compose DSL screen.
     fn handleControllerCommand(&self, payloadJson: &str) -> HostResult<String>;
+
+    /// Opens one validated Compose DSL file picker through the platform owner.
+    fn openFilePicker(
+        &self,
+        request: ComposeDslFilePickerRequest,
+    ) -> HostResult<String>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1173,6 +1258,11 @@ pub struct HttpDownloadFileRequest {
     pub targetPath: String,
     pub headers: Vec<(String, String)>,
     pub expectedBytes: u64,
+}
+
+/// Returns the durable partial-file path reserved for one HTTP download target.
+pub fn httpDownloadPartialTargetPath(targetPath: &str) -> String {
+    format!("{targetPath}.operit-download.partial")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1247,7 +1337,13 @@ impl HttpDownloadControl {
 
 pub type HttpDownloadProgressCallback = Arc<dyn Fn(HttpDownloadProgress) + Send + Sync + 'static>;
 
-pub trait HttpHost: Send + Sync {
+pub type HttpStreamOpenedCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+pub type HttpStreamChunkCallback = Arc<dyn Fn(Vec<u8>) + Send + Sync + 'static>;
+
+pub type HttpStreamClosedCallback = Arc<dyn Fn(Result<(), String>) + Send + Sync + 'static>;
+
+pub trait HttpHost: HttpStreamHost + Send + Sync {
     /// Executes one buffered HTTP request.
     fn executeHttpRequest(&self, request: HttpRequestData) -> HostResult<HttpResponseData>;
 
@@ -1258,6 +1354,24 @@ pub trait HttpHost: Send + Sync {
         control: HttpDownloadControl,
         onProgress: HttpDownloadProgressCallback,
     ) -> HostResult<HttpDownloadResult>;
+}
+
+/// Opens a host-owned HTTP byte stream and forwards its lifecycle through callbacks.
+pub trait HttpStreamHost: Send + Sync {
+    /// Opens one HTTP response body as an ordered byte stream.
+    #[allow(non_snake_case)]
+    fn openHttpByteStream(
+        &self,
+        streamId: String,
+        request: HttpRequestData,
+        onOpened: HttpStreamOpenedCallback,
+        onChunk: HttpStreamChunkCallback,
+        onClosed: HttpStreamClosedCallback,
+    ) -> HostResult<()>;
+
+    /// Closes one previously opened HTTP byte stream.
+    #[allow(non_snake_case)]
+    fn closeHttpByteStream(&self, streamId: &str) -> HostResult<()>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1318,6 +1432,8 @@ pub trait ManagedRuntimeHost: Send + Sync {
 pub struct TerminalSessionInfo {
     pub sessionId: String,
     pub sessionName: String,
+    pub platform: String,
+    pub terminal: String,
     pub terminalType: String,
     pub isNewSession: bool,
 }
@@ -1328,6 +1444,8 @@ pub struct TerminalCommandOutput {
     pub output: String,
     pub exitCode: i32,
     pub sessionId: String,
+    pub platform: String,
+    pub terminal: String,
     pub terminalType: String,
     pub timedOut: bool,
 }
@@ -1338,6 +1456,8 @@ pub struct HiddenTerminalCommandOutput {
     pub output: String,
     pub exitCode: i32,
     pub executorKey: String,
+    pub platform: String,
+    pub terminal: String,
     pub terminalType: String,
     pub timedOut: bool,
 }
@@ -1358,6 +1478,8 @@ pub struct TerminalCloseOutput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalScreenOutput {
     pub sessionId: String,
+    pub platform: String,
+    pub terminal: String,
     pub terminalType: String,
     pub rows: usize,
     pub cols: usize,
@@ -1369,6 +1491,8 @@ pub struct TerminalScreenOutput {
 pub struct TerminalSessionListEntry {
     pub sessionId: String,
     pub sessionName: String,
+    pub platform: String,
+    pub terminal: String,
     pub terminalType: String,
     pub sessionKind: String,
     pub workingDir: String,
@@ -1377,6 +1501,7 @@ pub struct TerminalSessionListEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalTypeInfo {
+    pub terminal: String,
     pub terminalType: String,
     pub available: bool,
     pub description: String,
@@ -1385,7 +1510,8 @@ pub struct TerminalTypeInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalInfo {
     pub platform: String,
-    pub defaultType: String,
+    pub terminal: String,
+    pub terminalType: String,
     pub types: Vec<TerminalTypeInfo>,
 }
 
@@ -1394,6 +1520,7 @@ pub trait TerminalHost: Send + Sync {
     fn startPtySession(
         &self,
         sessionName: &str,
+        terminal: &str,
         terminalType: &str,
         workingDir: &str,
         rows: u16,
@@ -1405,11 +1532,7 @@ pub trait TerminalHost: Send + Sync {
     fn pollPtyExitCode(&self, sessionId: &str) -> HostResult<Option<i32>>;
     fn closePtySession(&self, sessionId: &str) -> HostResult<()>;
     fn listSessions(&self) -> HostResult<Vec<TerminalSessionListEntry>>;
-    fn createOrGetSession(
-        &self,
-        sessionName: &str,
-        terminalType: &str,
-    ) -> HostResult<TerminalSessionInfo>;
+    fn createOrGetSession(&self, sessionName: &str) -> HostResult<TerminalSessionInfo>;
     fn executeInSession(
         &self,
         sessionId: &str,
@@ -1419,7 +1542,6 @@ pub trait TerminalHost: Send + Sync {
     fn executeHiddenCommand(
         &self,
         command: &str,
-        terminalType: &str,
         executorKey: &str,
         timeoutMs: u64,
     ) -> HostResult<HiddenTerminalCommandOutput>;
@@ -1447,6 +1569,13 @@ pub trait RuntimeStorageHost: Send + Sync {
     fn workspaceRootDir(&self) -> Option<PathBuf>;
     /// Reads bytes from a virtual runtime storage path.
     fn readBytes(&self, path: &str) -> HostResult<Vec<u8>>;
+    /// Reads one bounded byte range without materializing the complete storage object.
+    fn readBytesRange(&self, path: &str, offset: u64, length: usize) -> HostResult<Vec<u8>> {
+        let _ = (path, offset, length);
+        Err(HostError::new(
+            "Runtime storage host does not expose bounded range reads",
+        ))
+    }
     /// Writes bytes to a virtual runtime storage path.
     fn writeBytes(&self, path: &str, content: &[u8]) -> HostResult<()>;
     /// Deletes a virtual runtime storage entry.
@@ -1455,6 +1584,47 @@ pub trait RuntimeStorageHost: Send + Sync {
     fn exists(&self, path: &str) -> HostResult<bool>;
     /// Lists entries under a virtual runtime storage prefix.
     fn list(&self, prefix: &str) -> HostResult<Vec<RuntimeStorageEntry>>;
+}
+
+/// Owns one sequential write into a runtime storage file.
+pub trait RuntimeStorageWriteSession: Send {
+    /// Appends one bounded byte chunk to the pending storage file.
+    fn writeChunk(&mut self, chunk: &[u8]) -> HostResult<()>;
+
+    /// Publishes the fully written storage file.
+    fn commit(self: Box<Self>) -> HostResult<()>;
+
+    /// Publishes a fully written file without forcing a device flush for each entry.
+    fn commitFast(self: Box<Self>) -> HostResult<()> {
+        self.commit()
+    }
+
+    /// Discards the pending storage file without publishing it.
+    fn discard(self: Box<Self>) -> HostResult<()>;
+}
+
+/// Creates host-owned sequential writers for runtime storage files.
+pub trait RuntimeStorageWriteHost: Send + Sync {
+    /// Opens a new writer for one virtual runtime storage path.
+    fn createWriteSession(&self, path: &str) -> HostResult<Box<dyn RuntimeStorageWriteSession>>;
+}
+
+/// Stores one staged archive as an append-only, randomly readable byte source.
+pub trait ArchiveStagingHost: Send + Sync {
+    /// Creates an empty staged archive with its final byte length reserved by the owner host.
+    fn createArchive(&self, archiveId: &str, expectedByteLength: u64) -> HostResult<()>;
+
+    /// Appends one ordered byte chunk to an existing staged archive.
+    fn appendArchive(&self, archiveId: &str, chunk: &[u8]) -> HostResult<()>;
+
+    /// Finalizes a staged archive and returns its persisted byte length.
+    fn sealArchive(&self, archiveId: &str) -> HostResult<u64>;
+
+    /// Reads a bounded byte range from a finalized staged archive.
+    fn readArchive(&self, archiveId: &str, offset: u64, length: usize) -> HostResult<Vec<u8>>;
+
+    /// Removes one staged archive and all platform-owned resources for it.
+    fn removeArchive(&self, archiveId: &str) -> HostResult<()>;
 }
 
 pub trait HostSecretStore: Send + Sync {
@@ -1588,6 +1758,36 @@ pub trait HostRuntimeEventSchedulerHost: Send + Sync {
         &self,
         schedules: Vec<HostRuntimeEventSchedule>,
         sink: HostRuntimeEventScheduleSink,
+    ) -> HostResult<()>;
+}
+
+/// Owns a one-shot runtime task that must execute outside Core's synchronous startup path.
+pub type HostRuntimeTask = Box<dyn FnOnce() + Send + 'static>;
+
+/// Creates an asynchronous task on the executor that owns its future.
+///
+/// The factory may cross a native thread boundary, but the returned future is
+/// created by that executor and remains local to it.
+pub type HostRuntimeAsyncTask =
+    Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + 'static>> + Send + 'static>;
+
+pub trait HostRuntimeTaskSchedulerHost: Send + Sync {
+    /// Schedules a named one-shot runtime task through the platform execution mechanism.
+    fn scheduleHostRuntimeTask(&self, taskName: &str, task: HostRuntimeTask) -> HostResult<()>;
+
+    /// Schedules a named asynchronous runtime task through the platform executor.
+    fn scheduleHostRuntimeAsyncTask(
+        &self,
+        taskName: &str,
+        task: HostRuntimeAsyncTask,
+    ) -> HostResult<()>;
+
+    /// Schedules a named runtime task after a platform-owned delay.
+    fn scheduleDelayedHostRuntimeTask(
+        &self,
+        taskName: &str,
+        delayMs: u64,
+        task: HostRuntimeTask,
     ) -> HostResult<()>;
 }
 
@@ -2168,10 +2368,26 @@ pub trait DeviceAutomationHost: Send + Sync {
     /// (e.g. distinguish the Operit host app from the target app).
     fn frontmost_app(&self) -> HostResult<String>;
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Selects the application destination activated by a system notification.
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SystemNotificationActivation {
+    OpenApplication,
+    OpenChat { chatId: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes one system notification together with its activation destination.
+pub struct SystemNotificationRequest {
+    pub title: String,
+    pub message: String,
+    pub activation: SystemNotificationActivation,
+}
+
 pub trait SystemOperationHost: Send + Sync {
     fn getSystemLanguageCode(&self) -> HostResult<String>;
     fn toast(&self, message: &str) -> HostResult<()>;
-    fn sendNotification(&self, title: &str, message: &str) -> HostResult<()>;
+    fn sendNotification(&self, request: &SystemNotificationRequest) -> HostResult<()>;
     fn modifySystemSetting(
         &self,
         namespace: &str,
@@ -2335,5 +2551,40 @@ mod tests {
             missing.is_empty(),
             "OpenHarmony onboarding requirements are missing ids: {missing:?}"
         );
+    }
+
+    /// Verifies that omitted options produce the documented document selection request.
+    #[test]
+    fn composeDslFilePickerDefaultsToDocumentSelection() {
+        let request = ComposeDslFilePickerRequest::parse(
+            r#"{"executionContextKey":"compose-route","options":{}}"#,
+        )
+        .expect("default Compose DSL file-picker request must parse");
+
+        assert_eq!(request.picker, ComposeDslFilePickerMode::Document);
+        assert!(!request.allowMultiple);
+    }
+
+    /// Verifies that the unpublished MIME-only option is rejected by the cross-platform contract.
+    #[test]
+    fn composeDslFilePickerRejectsMimeTypes() {
+        let error = ComposeDslFilePickerRequest::parse(
+            r#"{"executionContextKey":"compose-route","options":{"mimeTypes":["image/png"]}}"#,
+        )
+        .expect_err("MIME-only filter must be rejected");
+
+        assert!(error.to_string().contains("mimeTypes"));
+    }
+
+    /// Verifies that visual-media requests retain their multi-selection flag.
+    #[test]
+    fn composeDslFilePickerAllowsMultipleVisualMedia() {
+        let request = ComposeDslFilePickerRequest::parse(
+            r#"{"executionContextKey":"compose-route","options":{"picker":"media","allowMultiple":true}}"#,
+        )
+        .expect("visual-media multi-selection must parse");
+
+        assert_eq!(request.picker, ComposeDslFilePickerMode::Media);
+        assert!(request.allowMultiple);
     }
 }

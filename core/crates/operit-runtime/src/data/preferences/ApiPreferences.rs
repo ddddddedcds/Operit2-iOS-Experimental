@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use operit_host_api::RuntimeStorageHost;
 use operit_model::ModelConfigData::ApiProviderType;
 use operit_store::PreferencesDataStore::{
     stringPreferencesKey, Flow, Preferences, PreferencesDataStore, PreferencesDataStoreError,
 };
+use operit_store::RuntimeStorageHost::defaultRuntimeStorageHost;
 use operit_util::OperitPaths;
 
 /// Stores API, token accounting, tool visibility, and runtime preference values.
@@ -26,17 +28,25 @@ impl ApiPreferences {
     pub const DEFAULT_DISABLE_STREAM_OUTPUT: bool = false;
     pub const DEFAULT_DISABLE_USER_PREFERENCE_DESCRIPTION: bool = false;
     pub const DEFAULT_MCP_STARTUP_TIMEOUT_SECONDS: i32 = 10;
+    pub const DEFAULT_TOOLPKG_PRE_HOOK_TIMEOUT_SECONDS: i32 = 10;
     pub const DEFAULT_TOOL_PROMPT_VISIBILITY_JSON: &'static str = "{}";
     pub const DEFAULT_FEATURE_TOGGLES_JSON: &'static str = "{}";
 
     /// Returns the root directory used for API preference storage.
     pub fn data_dir() -> PathBuf {
-        OperitPaths::operitRootDir().expect("Operit root dir must be available")
+        defaultRuntimeStorageHost()
+            .runtimeRootDir()
+            .expect("runtime storage host must provide an API preference root")
     }
 
     /// Creates preferences using the default runtime data directory.
     pub fn getInstance() -> Self {
-        Self::new(Self::data_dir())
+        Self {
+            apiDataStore: PreferencesDataStore::newWithStorage(
+                defaultRuntimeStorageHost(),
+                OperitPaths::API_PREFERENCES_PATH,
+            ),
+        }
     }
 
     /// Creates preferences rooted at the supplied directory.
@@ -204,9 +214,9 @@ impl ApiPreferences {
     pub fn updateTokensForProviderModel(
         &self,
         providerModel: &str,
-        inputTokens: i32,
-        outputTokens: i32,
-        cachedInputTokens: i32,
+        inputTokens: i64,
+        outputTokens: i64,
+        cachedInputTokens: i64,
     ) -> Result<(), PreferencesDataStoreError> {
         let result = self.apiDataStore.edit_result(|preferences| {
             let inputKey = Self::tokenInputKey(providerModel);
@@ -225,15 +235,15 @@ impl ApiPreferences {
 
             preferences.set(
                 &stringPreferencesKey(&inputKey),
-                (currentInputTokens + inputTokens as i64).to_string(),
+                (currentInputTokens + inputTokens).to_string(),
             );
             preferences.set(
                 &stringPreferencesKey(&cachedInputKey),
-                (currentCachedInputTokens + cachedInputTokens as i64).to_string(),
+                (currentCachedInputTokens + cachedInputTokens).to_string(),
             );
             preferences.set(
                 &stringPreferencesKey(&outputKey),
-                (currentOutputTokens + outputTokens as i64).to_string(),
+                (currentOutputTokens + outputTokens).to_string(),
             );
             Ok(())
         })?;
@@ -477,6 +487,18 @@ impl ApiPreferences {
         })
     }
 
+    /// Observes the total timeout for one ToolPkg pre-hook dispatch chain in seconds.
+    #[allow(non_snake_case)]
+    pub fn toolPkgPreHookTimeoutSecondsFlow(&self) -> Flow<i32> {
+        self.apiDataStore.dataFlow().map(|preferences| {
+            preferences
+                .get(&stringPreferencesKey("toolpkg_pre_hook_timeout_seconds"))
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or(Self::DEFAULT_TOOLPKG_PRE_HOOK_TIMEOUT_SECONDS)
+                .clamp(1, 60)
+        })
+    }
+
     /// Saves the thinking-mode toggle.
     pub fn saveEnableThinkingMode(&self, isEnabled: bool) -> Result<(), PreferencesDataStoreError> {
         self.apiDataStore.edit(|preferences| {
@@ -667,6 +689,20 @@ impl ApiPreferences {
         })
     }
 
+    /// Saves the total timeout for one ToolPkg pre-hook dispatch chain in seconds.
+    #[allow(non_snake_case)]
+    pub fn saveToolPkgPreHookTimeoutSeconds(
+        &self,
+        seconds: i32,
+    ) -> Result<(), PreferencesDataStoreError> {
+        self.apiDataStore.edit(|preferences| {
+            preferences.set(
+                &stringPreferencesKey("toolpkg_pre_hook_timeout_seconds"),
+                seconds.clamp(1, 60).to_string(),
+            );
+        })
+    }
+
     /// Reads the MCP startup timeout in seconds.
     pub fn getMcpStartupTimeoutSeconds(&self) -> Result<i32, PreferencesDataStoreError> {
         let preferences = self.apiDataStore.data()?;
@@ -675,6 +711,17 @@ impl ApiPreferences {
             .and_then(|value| value.parse::<i32>().ok())
             .unwrap_or(Self::DEFAULT_MCP_STARTUP_TIMEOUT_SECONDS)
             .clamp(1, 10))
+    }
+
+    /// Reads the total timeout for one ToolPkg pre-hook dispatch chain in seconds.
+    #[allow(non_snake_case)]
+    pub fn getToolPkgPreHookTimeoutSeconds(&self) -> Result<i32, PreferencesDataStoreError> {
+        let preferences = self.apiDataStore.data()?;
+        Ok(preferences
+            .get(&stringPreferencesKey("toolpkg_pre_hook_timeout_seconds"))
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(Self::DEFAULT_TOOLPKG_PRE_HOOK_TIMEOUT_SECONDS)
+            .clamp(1, 60))
     }
 
     /// Updates thinking settings in one edit transaction.

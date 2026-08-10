@@ -1,16 +1,15 @@
 use std::cell::Cell;
-use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use crate::commands::util::read_content_arg;
 use crate::output::CoreCommandOutput;
 use operit_host_api::HostManager::HostManager;
 use operit_providers::market::MarketStatsApiService::{
-    MarketComment, MarketEntrySummary, MarketListPage, MarketNotification, MarketStatsApiService,
+    MarketComment, MarketEntryAsset, MarketEntrySummary, MarketEntryVersion, MarketListPage,
+    MarketNotification, MarketStatsApiService,
 };
 use operit_runtime::core::application::OperitApplication::OperitApplication;
 use operit_runtime::data::preferences::GitHubAuthPreferences::GitHubAuthPreferences;
@@ -19,12 +18,7 @@ use operit_tools::tools::mcp_runtime::MCPRepository::MCPRepository;
 use operit_tools::tools::packTool::RuntimePackageManager::RuntimePackageManager;
 use operit_tools::tools::skill_runtime::SkillRepository::SkillRepository;
 use operit_tools::tools::AIToolHandler::AIToolHandler;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
-
-const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
-const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
-const GITHUB_CLI_SCOPE: &str = "notifications,public_repo,user:email,read:user";
 
 macro_rules! println {
     () => { market_stdout_line("") };
@@ -117,7 +111,6 @@ pub fn run_market_command(
     }
 
     match args[0].as_str() {
-        "auth" => run_auth(core, &args[1..]),
         "rank" => {
             let sort = normalize_sort(args.get(1).map(String::as_str).unwrap_or("updated"))?;
             let page = parse_i32_opt(args.get(2), 1)?;
@@ -172,9 +165,16 @@ pub fn run_market_command(
         "install" => {
             let entry_id = args
                 .get(1)
-                .ok_or_else(|| "usage: operit2 market install <entryId> [versionId]".to_string())?;
-            let version_id = args.get(2).map(String::as_str);
-            install_entry(core, entry_id, version_id)
+                .ok_or_else(|| {
+                    "usage: operit2 market install <entryId> <clientAppVersion> [versionId]"
+                        .to_string()
+                })?;
+            let client_app_version = args.get(2).ok_or_else(|| {
+                "usage: operit2 market install <entryId> <clientAppVersion> [versionId]"
+                    .to_string()
+            })?;
+            let version_id = args.get(3).map(String::as_str);
+            install_entry(core, entry_id, client_app_version, version_id)
         }
         "download" => {
             let asset_id = args
@@ -192,7 +192,7 @@ pub fn run_market_command(
 }
 
 fn print_usage() {
-    println!("usage: operit2 market <auth|rank|list|search|show|comments|comment|like|notifications|my|publish|install|download>");
+    println!("usage: operit2 market <rank|list|search|show|comments|comment|like|notifications|my|publish|install|download>");
     println!("sort: updated|likes|downloads");
     println!("list: operit2 market list [sort] [type|-] [category|-] [page]");
     println!("search: operit2 market search <query> [sort] [type|-] [category|-]");
@@ -204,165 +204,8 @@ fn print_usage() {
     println!("publish version artifact: operit2 market publish version artifact <entryId> <version> <formatVer> <minAppVer> <maxAppVer-or-> <changelog-or-> <projectId> <runtimePackageId> <assetKind> <assetUrl> <ghOwner> <ghRepo> <ghReleaseTag> <assetName> <sha256> [entryTitle|-] [entryDescription-or-] [entryDetail-or-] [entryCategoryId|-] [entryAllowPublicUpdates|-]");
     println!("publish version repo: operit2 market publish version repo <entryId> <version> <formatVer> <minAppVer> <maxAppVer-or-> <changelog-or-> <refType> <refName> <installConfig-or-@file> [entryTitle|-] [entryDescription-or-] [entryDetail-or-] [entryCategoryId|-] [entryAllowPublicUpdates|-]");
     println!("publish update-entry: operit2 market publish update-entry <entryId> <title-or-> <description-or-@file-or-> <detail-or-@file-or-> <categoryId-or-> <allowPublicUpdates-or->");
+    println!("install: operit2 market install <entryId> <clientAppVersion> [versionId]");
     println!("download: operit2 market download <assetId>");
-}
-
-// ── Auth ────────────────────────────────────────────────────
-
-fn run_auth(core: &mut MarketCommand, args: &[String]) -> Result<(), String> {
-    match args.first().map(String::as_str) {
-        Some("token") => {
-            let token = args.get(1).ok_or_else(|| "usage: operit2 market auth token <token>".to_string())?;
-            core.github_auth().updateAccessToken(token, "bearer", None).map_err(|e| e.to_string())?;
-            println!("token saved");
-            Ok(())
-        }
-        Some("login") => {
-            run_github_device_login(core)
-        }
-        _ => Err("usage: operit2 market auth <token|login>  # login uses browser/device flow and requires OPERIT_GITHUB_CLIENT_ID or GITHUB_CLIENT_ID".to_string()),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubDeviceCodeResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    #[serde(default)]
-    expires_in: i64,
-    #[serde(default)]
-    interval: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubDeviceTokenResponse {
-    access_token: Option<String>,
-    token_type: Option<String>,
-    scope: Option<String>,
-    error: Option<String>,
-    error_description: Option<String>,
-}
-
-fn run_github_device_login(core: &mut MarketCommand) -> Result<(), String> {
-    let client_id = github_oauth_client_id()?;
-    let client = reqwest::blocking::Client::new();
-    let device = client
-        .post(GITHUB_DEVICE_CODE_URL)
-        .header("Accept", "application/json")
-        .form(&[
-            ("client_id", client_id.as_str()),
-            ("scope", GITHUB_CLI_SCOPE),
-        ])
-        .send()
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json::<GitHubDeviceCodeResponse>()
-        .map_err(|e| e.to_string())?;
-
-    println!("Open this URL in your browser: {}", device.verification_uri);
-    println!("Enter code: {}", device.user_code);
-    let _ = open_browser(&device.verification_uri);
-
-    let timeout_seconds = if device.expires_in <= 0 {
-        900
-    } else {
-        device.expires_in
-    };
-    let mut interval_seconds = if device.interval <= 0 {
-        5
-    } else {
-        device.interval
-    };
-    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_seconds as u64);
-    loop {
-        if std::time::Instant::now() >= deadline {
-            return Err("GitHub device login expired".to_string());
-        }
-        std::thread::sleep(Duration::from_secs(interval_seconds as u64));
-        let resp = client
-            .post(GITHUB_ACCESS_TOKEN_URL)
-            .header("Accept", "application/json")
-            .form(&[
-                ("client_id", client_id.as_str()),
-                ("device_code", device.device_code.as_str()),
-                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ])
-            .send()
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?
-            .json::<GitHubDeviceTokenResponse>()
-            .map_err(|e| e.to_string())?;
-
-        if let Some(token) = resp.access_token.filter(|t| !t.trim().is_empty()) {
-            let token_type = resp.token_type.as_deref().unwrap_or("bearer");
-            let scope = resp.scope.as_deref().unwrap_or(GITHUB_CLI_SCOPE);
-            core.github_auth()
-                .updateAccessToken(&token, token_type, Some(scope))
-                .map_err(|e| e.to_string())?;
-            let user = MarketStatsApiService::new_with_github_token(Some(token))
-                .get_current_github_user()?;
-            println!("logged in as {} (github_id={})", user.login, user.id);
-            return Ok(());
-        }
-
-        match resp.error.as_deref() {
-            Some("authorization_pending") => continue,
-            Some("slow_down") => {
-                interval_seconds += 5;
-                continue;
-            }
-            Some("expired_token") => return Err("GitHub device login expired".to_string()),
-            Some(error) => {
-                let description = resp.error_description.unwrap_or_default();
-                return Err(format!("GitHub device login failed: {error} {description}"));
-            }
-            None => return Err("GitHub device login returned no access token".to_string()),
-        }
-    }
-}
-
-fn github_oauth_client_id() -> Result<String, String> {
-    env::var("OPERIT_GITHUB_CLIENT_ID")
-        .or_else(|_| env::var("GITHUB_CLIENT_ID"))
-        .map(|id| id.trim().to_string())
-        .ok()
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| {
-            "GitHub OAuth client id required. Set OPERIT_GITHUB_CLIENT_ID or GITHUB_CLIENT_ID."
-                .to_string()
-        })
-}
-
-fn open_browser(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    #[allow(unreachable_code)]
-    Err("opening browser is not supported on this platform".to_string())
 }
 
 // ── List ────────────────────────────────────────────────────
@@ -659,34 +502,14 @@ fn run_comment(core: &mut MarketCommand, args: &[String]) -> Result<(), String> 
 
 fn run_publish(core: &mut MarketCommand, args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("proof") => publish_proof_cli(core, &args[1..]),
         Some("artifact") => publish_artifact_cli(core, &args[1..]),
         Some("repo") => publish_repo_cli(core, &args[1..]),
         Some("version") => publish_version_cli(core, &args[1..]),
         Some("update-entry") => update_entry_cli(core, &args[1..]),
         _ => Err(
-            "usage: operit2 market publish <proof|artifact|repo|version|update-entry> ..."
-                .to_string(),
+            "usage: operit2 market publish <artifact|repo|version|update-entry> ...".to_string(),
         ),
     }
-}
-
-fn publish_proof_cli(core: &mut MarketCommand, args: &[String]) -> Result<(), String> {
-    if args.len() < 5 {
-        return Err(
-            "usage: operit2 market publish proof <owner> <repo> <releaseTag> <assetName> <sha256>"
-                .to_string(),
-        );
-    }
-    require_login(core)?;
-    let resp = core
-        .api()
-        .publish_proof(&args[0], &args[1], &args[2], &args[3], &args[4])?;
-    println!("proof ok={}", resp.ok);
-    if !resp.proof.trim().is_empty() {
-        println!("proof={}", resp.proof);
-    }
-    Ok(())
 }
 
 fn publish_artifact_cli(core: &mut MarketCommand, args: &[String]) -> Result<(), String> {
@@ -856,15 +679,128 @@ fn println_update_entry_response(
 fn install_entry(
     core: &mut MarketCommand,
     entry_id: &str,
+    client_app_version: &str,
     version_id: Option<&str>,
 ) -> Result<(), String> {
     let entry = core.api().get_entry_by_id(entry_id)?;
+    ensure_entry_app_version_supported(&entry, client_app_version, version_id)?;
     match entry.r#type.as_str() {
         "skill" => install_skill_from_entry(core, entry),
         "mcp" => install_mcp_from_entry(core, entry),
         "package" | "script" => install_artifact_from_entry(core, entry, version_id),
         other => Err(format!("unknown market type: {other}")),
     }
+}
+
+/// Describes the numeric app version used by marketplace compatibility metadata.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct MarketAppVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    build: u64,
+}
+
+/// Rejects an installation when the selected marketplace version excludes the client version.
+fn ensure_entry_app_version_supported(
+    entry: &MarketEntrySummary,
+    client_app_version: &str,
+    version_id: Option<&str>,
+) -> Result<(), String> {
+    let client_version = parse_market_app_version(client_app_version, "客户端版本")?;
+    let target_version = resolve_market_install_version(entry, version_id)?;
+
+    let minimum_value = target_version.min_app_ver.trim();
+    if !minimum_value.is_empty() {
+        let minimum_version = parse_market_app_version(minimum_value, "最低支持版本")?;
+        if client_version < minimum_version {
+            return Err(format!(
+                "无法下载：客户端版本 {client_app_version} 低于该资源要求的最低版本 {minimum_value}。请更新客户端后再下载。"
+            ));
+        }
+    }
+
+    if let Some(maximum_value) = target_version
+        .max_app_ver
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let maximum_version = parse_market_app_version(maximum_value, "最高支持版本")?;
+        if client_version > maximum_version {
+            return Err(format!(
+                "无法下载：客户端版本 {client_app_version} 高于该资源最高支持的版本 {maximum_value}。请使用受支持的客户端版本。"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolves the precise marketplace version requested for one installation.
+fn resolve_market_install_version<'a>(
+    entry: &'a MarketEntrySummary,
+    version_id: Option<&str>,
+) -> Result<&'a MarketEntryVersion, String> {
+    match version_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(requested_version_id) => entry
+            .versions
+            .iter()
+            .find(|version| version.id == requested_version_id)
+            .ok_or_else(|| {
+                format!(
+                    "market entry has no version metadata for requested version: {requested_version_id}"
+                )
+            }),
+        None => entry
+            .latest_version
+            .as_ref()
+            .ok_or_else(|| "market entry has no latest version metadata".to_string()),
+    }
+}
+
+/// Parses one marketplace app-version value using x.y.z or x.y.z+n notation.
+fn parse_market_app_version(value: &str, label: &str) -> Result<MarketAppVersion, String> {
+    let normalized = value.trim();
+    let mut version_parts = normalized.split('+');
+    let core = version_parts
+        .next()
+        .ok_or_else(|| format!("{label} must use x.y.z or x.y.z+n format"))?;
+    let build = match (version_parts.next(), version_parts.next()) {
+        (None, None) => 0,
+        (Some(value), None) => parse_market_app_version_component(Some(value), label, "build")?,
+        (_, Some(_)) => return Err(format!("{label} must use x.y.z or x.y.z+n format: {value}")),
+    };
+    let mut parts = core.split('.');
+    let major = parse_market_app_version_component(parts.next(), label, "major")?;
+    let minor = parse_market_app_version_component(parts.next(), label, "minor")?;
+    let patch = parse_market_app_version_component(parts.next(), label, "patch")?;
+    if parts.next().is_some() {
+        return Err(format!("{label} must use x.y.z or x.y.z+n format: {value}"));
+    }
+    Ok(MarketAppVersion {
+        major,
+        minor,
+        patch,
+        build,
+    })
+}
+
+/// Parses one numeric component from marketplace compatibility metadata.
+fn parse_market_app_version_component(
+    value: Option<&str>,
+    label: &str,
+    component: &str,
+) -> Result<u64, String> {
+    let value = value.ok_or_else(|| format!("{label} must use x.y.z or x.y.z+n format"))?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "{label} {component} component must be numeric: {value}"
+        ));
+    }
+    value
+        .parse::<u64>()
+        .map_err(|error| format!("{label} {component} component is invalid: {error}"))
 }
 
 fn install_skill_from_entry(
@@ -931,6 +867,7 @@ fn install_mcp_from_entry(
     }
 }
 
+/// Installs one artifact through the market asset endpoint and verifies its immutable digest.
 fn install_artifact_from_entry(
     core: &mut MarketCommand,
     entry: MarketEntrySummary,
@@ -964,10 +901,9 @@ fn install_artifact_from_entry(
             .find(|asset| !asset.id.trim().is_empty())
             .ok_or_else(|| "entry has no downloadable asset".to_string())?
     };
-    let temp_file = download_asset_to_temp_file(core, &asset.id)?;
-    let result = core
-        .package_manager()
-        .add_from_external(&temp_file.to_string_lossy());
+    let temp_file = download_asset_to_temp_file(core, asset)?;
+    let package_manager = core.package_manager();
+    let result = package_manager.add_from_external(&temp_file.to_string_lossy());
     let _ = fs::remove_file(&temp_file);
     if !result
         .to_ascii_lowercase()
@@ -979,15 +915,49 @@ fn install_artifact_from_entry(
     Ok(())
 }
 
+/// Downloads one market asset to a temporary file whose extension matches the published asset.
 fn download_asset_to_temp_file(
     core: &mut MarketCommand,
-    asset_id: &str,
+    asset: &MarketEntryAsset,
 ) -> Result<PathBuf, String> {
-    let bytes = core.api().download_asset(asset_id)?;
-    let mut tmp = env::temp_dir();
-    tmp.push(format!("operit_dl_{}", current_millis()));
+    let bytes = core.api().download_asset(&asset.id)?;
+    verify_market_asset_sha256(&bytes, &asset.sha256)?;
+    let tmp = market_asset_temp_path(asset)?;
     fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
     Ok(tmp)
+}
+
+/// Verifies the downloaded bytes against the SHA-256 recorded in the market entry.
+fn verify_market_asset_sha256(bytes: &[u8], expected_sha256: &str) -> Result<(), String> {
+    let normalized_expected = expected_sha256.trim().to_ascii_lowercase();
+    if normalized_expected.len() != 64
+        || !normalized_expected
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("market asset SHA-256 is invalid".to_string());
+    }
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != normalized_expected {
+        return Err("market asset SHA-256 mismatch".to_string());
+    }
+    Ok(())
+}
+
+/// Creates an extension-preserving temporary path for one verified market asset.
+fn market_asset_temp_path(asset: &MarketEntryAsset) -> Result<PathBuf, String> {
+    let asset_name = asset
+        .asset_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "market asset name is missing".to_string())?;
+    if asset_name.contains('/') || asset_name.contains('\\') {
+        return Err("market asset name must not contain a path".to_string());
+    }
+    let mut path = env::temp_dir();
+    path.push(format!("operit_market_{}_{}", current_millis(), asset_name));
+    Ok(path)
 }
 
 fn sanitize_id(title: &str) -> String {
@@ -1007,31 +977,13 @@ fn sanitize_id(title: &str) -> String {
 
 // ── Util ────────────────────────────────────────────────────
 
+/// Requires the GitHub OAuth broker session needed by market write operations.
 fn require_login(core: &mut MarketCommand) -> Result<(), String> {
-    ensure_env_token(core)?;
     if core.github_auth().getCurrentAccessToken().is_some() {
         Ok(())
     } else {
-        Err(
-            "GitHub token required. Use `operit2 market auth token <token>` or set GITHUB_TOKEN."
-                .to_string(),
-        )
+        Err("GitHub login required.".to_string())
     }
-}
-
-fn ensure_env_token(core: &mut MarketCommand) -> Result<(), String> {
-    let token = env::var("OPERIT_GITHUB_TOKEN")
-        .ok()
-        .or_else(|| env::var("GITHUB_TOKEN").ok())
-        .filter(|t| !t.trim().is_empty());
-    if let Some(token) = token {
-        if core.github_auth().getCurrentAccessToken() != Some(token.clone()) {
-            core.github_auth()
-                .updateAccessToken(&token, "bearer", None)
-                .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
 }
 
 fn parse_i32_opt(raw: Option<&String>, default: i32) -> Result<i32, String> {
@@ -1118,22 +1070,43 @@ fn current_millis() -> i64 {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     use operit_host_api::HostManager::{setDefaultHttpHost, HostManager};
     use operit_host_api::{
         HostError, HostResult, HttpHost, HttpRequestData, HttpResponseData, RuntimeStorageEntry,
         RuntimeStorageHost,
     };
-    use operit_store::RuntimeStorageHost::setDefaultRuntimeStorageHost;
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct MemoryStorageHost {
         files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+        runtime_root: PathBuf,
+        workspace_root: PathBuf,
+    }
+
+    impl MemoryStorageHost {
+        /// Creates isolated runtime and workspace roots for one market command test.
+        fn new(root: PathBuf) -> Self {
+            let runtime_root = root.join("runtime");
+            let workspace_root = root.join("workspace");
+            std::fs::create_dir_all(&runtime_root).expect("create test runtime root");
+            std::fs::create_dir_all(&workspace_root).expect("create test workspace root");
+            Self {
+                files: Arc::new(Mutex::new(BTreeMap::new())),
+                runtime_root,
+                workspace_root,
+            }
+        }
     }
 
     impl RuntimeStorageHost for MemoryStorageHost {
-        fn rootDir(&self) -> Option<std::path::PathBuf> {
-            None
+        fn runtimeRootDir(&self) -> Option<PathBuf> {
+            Some(self.runtime_root.clone())
+        }
+
+        fn workspaceRootDir(&self) -> Option<PathBuf> {
+            Some(self.workspace_root.clone())
         }
 
         fn readBytes(&self, path: &str) -> HostResult<Vec<u8>> {
@@ -1190,8 +1163,36 @@ mod tests {
         }
     }
 
-    fn register_test_storage() {
-        setDefaultRuntimeStorageHost(Arc::new(MemoryStorageHost::default()));
+    /// Creates an application configured with isolated runtime storage for market commands.
+    fn market_test_application(root: PathBuf) -> OperitApplication {
+        let storage_host = Arc::new(MemoryStorageHost::new(root));
+        let mut host_manager = HostManager::new();
+        host_manager.runtimeStorageHost = Some(storage_host);
+        OperitApplication::newWithContext(host_manager)
+    }
+
+    /// Accepts bytes only when their digest matches the immutable market record.
+    #[test]
+    fn verifies_market_asset_sha256() {
+        let bytes = b"operit-market-asset";
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        assert!(verify_market_asset_sha256(bytes, &sha256).is_ok());
+        assert!(verify_market_asset_sha256(bytes, "0".repeat(64).as_str()).is_err());
+    }
+
+    /// Preserves the market asset extension for the runtime package importer.
+    #[test]
+    fn market_asset_temp_path_preserves_asset_name() {
+        let asset = MarketEntryAsset {
+            id: "asset-1".to_string(),
+            version_id: "version-1".to_string(),
+            kind: "github_release_asset".to_string(),
+            url: "https://github.com/example/release/download/plugin.toolpkg".to_string(),
+            sha256: "0".repeat(64),
+            asset_name: Some("plugin.toolpkg".to_string()),
+        };
+        let path = market_asset_temp_path(&asset).expect("asset path should be created");
+        assert!(path.to_string_lossy().ends_with("plugin.toolpkg"));
     }
 
     struct ReqwestTestHttpHost;
@@ -1267,13 +1268,11 @@ mod tests {
         let mut root = std::env::temp_dir();
         root.push(format!("operit_market_test_{}", current_millis()));
         std::fs::create_dir_all(&root).expect("create test runtime root");
-        operit_util::RuntimeStoreRoot::setDefaultRuntimeStoreRoot(root);
-        register_test_storage();
-        let ctx = HostManager::new();
+        let application = market_test_application(root);
         let mut out = CoreCommandOutput::new();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         // Tests that parsing does not panic; network/IO errors are OK at this level.
-        let _ = run_market_command(ctx, &args, &mut out);
+        let _ = run_market_command(&application, &args, &mut out);
     }
 
     #[test]
@@ -1289,18 +1288,6 @@ mod tests {
     #[test]
     fn comments_missing_id_prints_usage() {
         run_market_cli(&["comments"]);
-    }
-
-    #[test]
-    fn auth_token_missing_value_prints_usage() {
-        run_market_cli(&["auth", "token"]);
-    }
-
-    #[test]
-    fn auth_login_without_client_id_returns_error() {
-        std::env::remove_var("OPERIT_GITHUB_CLIENT_ID");
-        std::env::remove_var("GITHUB_CLIENT_ID");
-        run_market_cli(&["auth", "login"]);
     }
 
     #[test]
@@ -1334,11 +1321,6 @@ mod tests {
     }
 
     #[test]
-    fn publish_proof_missing_args_prints_usage() {
-        run_market_cli(&["publish", "proof", "owner", "repo"]);
-    }
-
-    #[test]
     fn publish_artifact_missing_args_prints_usage() {
         run_market_cli(&["publish", "artifact", "script", "title"]);
     }
@@ -1363,13 +1345,10 @@ mod tests {
         let mut root = std::env::temp_dir();
         root.push(format!("operit_market_online_test_{}", current_millis()));
         std::fs::create_dir_all(&root).expect("create test runtime root");
-        operit_util::RuntimeStoreRoot::setDefaultRuntimeStoreRoot(root);
-        register_test_storage();
-
-        let ctx = HostManager::new();
+        let application = market_test_application(root);
         let mut out = CoreCommandOutput::new();
         let args = vec!["rank".to_string(), sort.to_string(), "1".to_string()];
-        run_market_command(ctx, &args, &mut out)
+        run_market_command(&application, &args, &mut out)
             .expect("online rank command should read cloud market");
         out.stdout
     }

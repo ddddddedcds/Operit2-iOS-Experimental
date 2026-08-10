@@ -1,6 +1,7 @@
 import common from '@ohos.app.ability.common';
 import commonEventManager from '@ohos.commonEventManager';
 import Want from '@ohos.app.ability.Want';
+import wantAgent from '@ohos.app.ability.wantAgent';
 import abilityAccessCtrl, { Permissions } from '@ohos.abilityAccessCtrl';
 import wantConstant from '@ohos.ability.wantConstant';
 import bundle from '@ohos.bundle';
@@ -30,6 +31,9 @@ import MethodChannel, {
 import runtimeNative from 'liboperit_runtime_ohos.so';
 
 const CHANNEL = 'operit/runtime';
+const OHOS_VROOT_RAWFILE_DIRECTORY = 'ohos-vroot';
+const OHOS_VROOT_ROOTFS_ARCHIVE = 'alpine-minirootfs-3.22.1-aarch64.tar.gz';
+const OHOS_VROOT_ROOTFS_SHA256 = 'alpine-minirootfs-3.22.1-aarch64.tar.gz.sha256';
 
 interface FileOperationResponse {
   success: boolean;
@@ -148,6 +152,8 @@ interface JsonPayload {
   state?: string;
   devices?: Array<JsonPayload>;
   type?: string;
+  chatId?: string;
+  activation?: JsonPayload;
   bondState?: string;
   source?: string | null;
   rssi?: number | null;
@@ -231,7 +237,7 @@ interface BleCharacteristicPayload {
 }
 
 interface RuntimeNativeModule {
-  create(runtimeRoot: string, workspaceRoot: string): bigint;
+  create(runtimeRoot: string, workspaceRoot: string, systemLanguageCode: string): bigint;
   destroy(handle: bigint): void;
   call(handle: bigint, request: ArrayBuffer): ArrayBuffer;
   pushOpen(handle: bigint, request: ArrayBuffer): ArrayBuffer;
@@ -243,17 +249,15 @@ interface RuntimeNativeModule {
   closeWatchStream(handle: bigint, subscriptionId: string): ArrayBuffer;
   startWebAccessServer(
     handle: bigint,
-    bindHost: string,
-    requestedPort: string,
-    authToken: string,
-    serverName: string,
-    advertise: string,
-    pairingCodePath: string
+    bindAddress: string,
+    token: string,
+    shutdownToken: string,
+    webRoot: string,
+    deviceInfo: string,
+    enableWebAccess: string,
+    enableDiscovery: string
   ): string;
-  discoverDevices(handle: bigint, timeoutMs: string): string;
   stopWebAccessServer(handle: bigint): string;
-  remotePairStart(handle: bigint, baseUrl: string, tokenHash: string, clientDeviceInfo: string): string;
-  remotePairFinish(handle: bigint, pairingId: string, pairingCode: string): string;
   emitRuntimeEvent(handle: bigint, eventJson: string): string;
 }
 
@@ -279,6 +283,9 @@ function dispatchRuntimeCoreCall(handle: bigint, request: ArrayBuffer): ArrayBuf
 }
 
 export class OperitRuntimeChannel {
+  private static activeRuntimeChannel: OperitRuntimeChannel | null = null;
+  private static pendingNotificationActivations: Array<JsonPayload> = [];
+  private static notificationActivationReceiverReady: boolean = false;
   private channel: MethodChannel;
   private context: common.UIAbilityContext;
   private runtimeHandle: bigint = BigInt(0);
@@ -358,12 +365,19 @@ export class OperitRuntimeChannel {
     windowStage: window.WindowStage | null
   ): OperitRuntimeChannel {
     const runtimeChannel = new OperitRuntimeChannel(channel, context, windowStage);
+    OperitRuntimeChannel.activeRuntimeChannel = runtimeChannel;
     channel.setMethodCallHandler({
       onMethodCall: (call: MethodCall, result: MethodResult): void => {
         runtimeChannel.onMethodCall(call, result);
       }
     });
     return runtimeChannel;
+  }
+
+  /// Records one notification activation received by EntryAbility.
+  static receiveNotificationActivation(activation: JsonPayload): void {
+    OperitRuntimeChannel.pendingNotificationActivations.push(activation);
+    OperitRuntimeChannel.activeRuntimeChannel?.dispatchPendingNotificationActivations();
   }
 
   /// Updates the active WindowStage used by window-bound owner operations.
@@ -375,6 +389,14 @@ export class OperitRuntimeChannel {
   onMethodCall(call: MethodCall, result: MethodResult): void {
     try {
       switch (call.method) {
+        case 'notificationActivationInitial':
+          result.success(OperitRuntimeChannel.takePendingNotificationActivation());
+          return;
+        case 'notificationActivationReady':
+          OperitRuntimeChannel.notificationActivationReceiverReady = true;
+          this.dispatchPendingNotificationActivations();
+          result.success(null);
+          return;
         case 'localRuntimeStorageDefaults':
           result.success(this.defaultStoragePaths());
           return;
@@ -423,17 +445,8 @@ export class OperitRuntimeChannel {
         case 'startWebAccessServer':
           result.success(this.startWebAccessServer(call));
           return;
-        case 'discoverDevices':
-          result.success(nativeBridge.discoverDevices(this.ensureRuntimeHandle(), `${this.requiredNumberArg(call, 'discoverDevices')}`));
-          return;
         case 'stopWebAccessServer':
           result.success(nativeBridge.stopWebAccessServer(this.ensureRuntimeHandle()));
-          return;
-        case 'remotePairStart':
-          result.success(this.remotePairStart(call));
-          return;
-        case 'remotePairFinish':
-          result.success(this.remotePairFinish(call));
           return;
         case 'ownerSystemLanguageCode':
           result.success(this.ownerSystemLanguageCode());
@@ -534,6 +547,26 @@ export class OperitRuntimeChannel {
     }
   }
 
+  /// Returns and consumes the oldest activation received before Dart startup.
+  private static takePendingNotificationActivation(): JsonPayload | null {
+    if (OperitRuntimeChannel.pendingNotificationActivations.length === 0) {
+      return null;
+    }
+    return OperitRuntimeChannel.pendingNotificationActivations.shift() ?? null;
+  }
+
+  /// Emits queued activations after the Dart Runtime-channel receiver is installed.
+  private dispatchPendingNotificationActivations(): void {
+    if (!OperitRuntimeChannel.notificationActivationReceiverReady) {
+      return;
+    }
+    let activation = OperitRuntimeChannel.takePendingNotificationActivation();
+    while (activation !== null) {
+      this.channel.invokeMethod('notificationActivation', activation);
+      activation = OperitRuntimeChannel.takePendingNotificationActivation();
+    }
+  }
+
   /// Releases the native runtime bridge handle.
   destroy(): void {
     this.watchPumpRunning = false;
@@ -581,9 +614,51 @@ export class OperitRuntimeChannel {
       this.runtimeRoot = roots.runtimeRoot;
       this.workspaceRoot = roots.workspaceRoot;
     }
-    this.runtimeHandle = nativeBridge.create(this.runtimeRoot, this.workspaceRoot);
+    this.stageOhosVrootAssets();
+    this.runtimeHandle = nativeBridge.create(
+      this.runtimeRoot,
+      this.workspaceRoot,
+      i18n.System.getSystemLocale()
+    );
     this.installHostEventMonitoring();
     return this.runtimeHandle;
+  }
+
+  /// Copies the packaged Alpine rootfs and checksum into app runtime storage before Rust starts.
+  private stageOhosVrootAssets(): void {
+    const assetDirectory = `${this.runtimeRoot}/${OHOS_VROOT_RAWFILE_DIRECTORY}`;
+    fs.mkdirSync(assetDirectory, true);
+    this.copyOhosVrootRawFile(
+      `${OHOS_VROOT_RAWFILE_DIRECTORY}/${OHOS_VROOT_ROOTFS_ARCHIVE}`,
+      `${assetDirectory}/${OHOS_VROOT_ROOTFS_ARCHIVE}`
+    );
+    this.copyOhosVrootRawFile(
+      `${OHOS_VROOT_RAWFILE_DIRECTORY}/${OHOS_VROOT_ROOTFS_SHA256}`,
+      `${assetDirectory}/${OHOS_VROOT_ROOTFS_SHA256}`
+    );
+  }
+
+  /// Copies one packaged OpenHarmony rawfile into an exact app-private destination path.
+  private copyOhosVrootRawFile(rawFilePath: string, destinationPath: string): void {
+    const content = this.context.resourceManager.getRawFileContentSync(rawFilePath);
+    const data = content.buffer.slice(
+      content.byteOffset,
+      content.byteOffset + content.byteLength
+    );
+    const file = fs.openSync(
+      destinationPath,
+      fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY
+    );
+    try {
+      const written = fs.writeSync(file.fd, data);
+      if (written !== content.byteLength) {
+        throw new Error(
+          `OpenHarmony vroot asset write is incomplete: ${rawFilePath} expected=${content.byteLength} actual=${written}`
+        );
+      }
+    } finally {
+      fs.closeSync(file);
+    }
   }
 
   /// Installs OpenHarmony common-event, network, battery, and Bluetooth producers once.
@@ -939,34 +1014,15 @@ export class OperitRuntimeChannel {
 
   /// Starts the Web Access server through the Rust bridge.
   private startWebAccessServer(call: MethodCall): string {
-    const pairingCodePath = `${this.context.filesDir}/runtime/link/pairing_codes.json`;
     return nativeBridge.startWebAccessServer(
       this.ensureRuntimeHandle(),
-      this.mapString(call, 'bindHost'),
-      `${this.mapNumber(call, 'requestedPort')}`,
-      this.mapString(call, 'authToken'),
-      this.mapString(call, 'serverName'),
-      `${this.mapBool(call, 'advertise')}`,
-      pairingCodePath
-    );
-  }
-
-  /// Starts one remote pairing request through the Rust bridge.
-  private remotePairStart(call: MethodCall): string {
-    return nativeBridge.remotePairStart(
-      this.ensureRuntimeHandle(),
-      this.mapString(call, 'baseUrl'),
-      this.mapString(call, 'tokenHash'),
-      this.mapString(call, 'clientDeviceInfo')
-    );
-  }
-
-  /// Finishes one remote pairing request through the Rust bridge.
-  private remotePairFinish(call: MethodCall): string {
-    return nativeBridge.remotePairFinish(
-      this.ensureRuntimeHandle(),
-      this.mapString(call, 'pairingId'),
-      this.mapString(call, 'pairingCode')
+      this.mapString(call, 'bindAddress'),
+      this.mapString(call, 'token'),
+      this.mapString(call, 'shutdownToken'),
+      this.mapString(call, 'webRoot'),
+      this.mapString(call, 'deviceInfo'),
+      this.mapString(call, 'enableWebAccess'),
+      this.mapString(call, 'enableDiscovery')
     );
   }
 
@@ -1068,6 +1124,19 @@ export class OperitRuntimeChannel {
   private async systemSendNotification(params: JsonPayload): Promise<JsonPayload> {
     const title = this.objectString(params, 'title');
     const message = this.objectString(params, 'message');
+    const activation = this.notificationActivation(params);
+    const notificationWantAgent = await wantAgent.getWantAgent({
+      wants: [{
+        bundleName: this.context.abilityInfo.bundleName,
+        abilityName: this.context.abilityInfo.name,
+        parameters: {
+          operitNotificationActivation: JSON.stringify(activation)
+        }
+      }],
+      operationType: wantAgent.OperationType.START_ABILITY,
+      requestCode: Date.now() % 2147483647,
+      wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+    });
     await notificationManager.requestEnableNotification();
     await notificationManager.publish({
       id: Date.now() % 2147483647,
@@ -1078,11 +1147,33 @@ export class OperitRuntimeChannel {
           title: title,
           text: message
         }
-      }
+      },
+      wantAgent: notificationWantAgent
     } as notificationManager.NotificationRequest);
     return {
       success: true
     };
+  }
+
+  /// Validates the application destination embedded in one system notification request.
+  private notificationActivation(params: JsonPayload): JsonPayload {
+    const activation = params.activation;
+    if (activation === undefined || activation.type === undefined) {
+      throw new Error('OpenHarmony notification activation is required');
+    }
+    if (activation.type === 'open_application') {
+      return {
+        type: activation.type
+      };
+    }
+    if (activation.type === 'open_chat' &&
+      typeof activation.chatId === 'string' && activation.chatId.length > 0) {
+      return {
+        type: activation.type,
+        chatId: activation.chatId
+      };
+    }
+    throw new Error(`Unsupported OpenHarmony notification activation: ${activation.type}`);
   }
 
   /// Writes one OpenHarmony settings value.

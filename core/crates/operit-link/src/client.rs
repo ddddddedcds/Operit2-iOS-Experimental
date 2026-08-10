@@ -1,11 +1,20 @@
 use async_trait::async_trait;
 
 use crate::protocol::{
-    CoreCallRequest, CoreCallResponse, CoreEvent, CoreEventStream, CoreLinkError, CoreWatchRequest,
+    CoreCallRequest, CoreCallResponse, CoreEvent, CoreEventStream, CoreLinkError, CorePushRequest,
+    CoreValue, CoreWatchRequest,
 };
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[async_trait]
+pub trait CoreLinkPushSession: Send {
+    /// Sends one typed input value through the opened Link stream.
+    async fn send(&mut self, value: CoreValue) -> Result<(), CoreLinkError>;
+
+    /// Closes the input stream and waits for its target method to finish.
+    async fn close(self: Box<Self>) -> Result<(), CoreLinkError>;
+}
+
+#[async_trait(?Send)]
 pub trait CoreLinkClient {
     /// Executes a one-shot core method call and returns its serialized response.
     async fn call(&mut self, request: CoreCallRequest) -> CoreCallResponse;
@@ -19,10 +28,16 @@ pub trait CoreLinkClient {
 
     /// Opens a stream of events for a watched core path.
     async fn watch(&mut self, request: CoreWatchRequest) -> Result<CoreEventStream, CoreLinkError>;
+
+    /// Opens a caller-owned input stream for one schema-declared method.
+    #[allow(non_snake_case)]
+    async fn openPush(
+        &mut self,
+        request: CorePushRequest,
+    ) -> Result<Box<dyn CoreLinkPushSession>, CoreLinkError>;
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[async_trait(?Send)]
 pub trait CoreLinkSharedClient {
     /// Executes a one-shot core method call through a shared client.
     async fn call(&self, request: CoreCallRequest) -> CoreCallResponse;
@@ -35,30 +50,30 @@ pub trait CoreLinkSharedClient {
     async fn watch(&self, request: CoreWatchRequest) -> Result<CoreEventStream, CoreLinkError>;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Provides Send-safe call and watch operations to a Link transport carrier.
 #[async_trait]
-impl<T> CoreLinkClient for Box<T>
-where
-    T: CoreLinkClient + Send + ?Sized,
-{
-    async fn call(&mut self, request: CoreCallRequest) -> CoreCallResponse {
-        self.as_mut().call(request).await
-    }
+pub trait CoreLinkTransportClient: Send {
+    /// Executes one call through the transport boundary.
+    async fn call(&mut self, request: CoreCallRequest) -> CoreCallResponse;
 
+    /// Reads one watch snapshot through the transport boundary.
     #[allow(non_snake_case)]
     async fn watchSnapshot(
         &mut self,
         request: CoreWatchRequest,
-    ) -> Result<CoreEvent, CoreLinkError> {
-        self.as_mut().watchSnapshot(request).await
-    }
+    ) -> Result<CoreEvent, CoreLinkError>;
 
-    async fn watch(&mut self, request: CoreWatchRequest) -> Result<CoreEventStream, CoreLinkError> {
-        self.as_mut().watch(request).await
-    }
+    /// Opens one watch stream through the transport boundary.
+    async fn watch(&mut self, request: CoreWatchRequest) -> Result<CoreEventStream, CoreLinkError>;
+
+    /// Opens one caller-owned input stream through the transport boundary.
+    #[allow(non_snake_case)]
+    async fn openPush(
+        &mut self,
+        request: CorePushRequest,
+    ) -> Result<Box<dyn CoreLinkPushSession>, CoreLinkError>;
 }
 
-#[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
 impl<T> CoreLinkClient for Box<T>
 where
@@ -78,5 +93,13 @@ where
 
     async fn watch(&mut self, request: CoreWatchRequest) -> Result<CoreEventStream, CoreLinkError> {
         self.as_mut().watch(request).await
+    }
+
+    #[allow(non_snake_case)]
+    async fn openPush(
+        &mut self,
+        request: CorePushRequest,
+    ) -> Result<Box<dyn CoreLinkPushSession>, CoreLinkError> {
+        self.as_mut().openPush(request).await
     }
 }

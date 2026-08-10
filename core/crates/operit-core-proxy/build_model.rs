@@ -30,6 +30,14 @@ pub(crate) struct ObjectSpec {
     pub(crate) full_type: String,
     pub(crate) source_path: PathBuf,
     pub(crate) access: ObjectAccess,
+    pub(crate) route_scope: ObjectRouteScope,
+}
+
+/// Defines whether requests for one generated object remain on the local runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ObjectRouteScope {
+    LocalControl,
+    RuntimeSelected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +55,7 @@ pub(crate) enum ObjectAccess {
     ResultContextRefGetInstanceConstruct,
     ContextGetInstanceArcMutexConstruct,
     ContextRefGetInstanceArcMutexConstruct,
+    CoreProxyConstruct,
     StorePathsConstruct,
     ResultStorePathsConstruct,
     FactoryMethodConstruct {
@@ -75,6 +84,7 @@ impl ObjectAccess {
                 | ObjectAccess::ResultContextRefGetInstanceConstruct
                 | ObjectAccess::ContextGetInstanceArcMutexConstruct
                 | ObjectAccess::ContextRefGetInstanceArcMutexConstruct
+                | ObjectAccess::CoreProxyConstruct
                 | ObjectAccess::StorePathsConstruct
                 | ObjectAccess::ResultStorePathsConstruct
                 | ObjectAccess::FactoryMethodConstruct { .. }
@@ -134,7 +144,60 @@ pub(crate) struct SourceObject {
     pub(crate) dispatch_name: String,
     pub(crate) full_type: String,
     pub(crate) access: ObjectAccess,
+    pub(crate) route_scope: ObjectRouteScope,
     pub(crate) methods: Vec<SourceMethod>,
+}
+
+impl SourceObject {
+    /// Returns whether generated call dispatch has at least one routable arm.
+    pub(crate) fn has_call_dispatch(&self) -> bool {
+        self.schema_key == "application"
+            || self
+                .methods
+                .iter()
+                .any(|method| method.call_protocol().is_some())
+    }
+
+    /// Returns whether generated sync call dispatch has direct non-async calls.
+    pub(crate) fn has_sync_call_dispatch(&self) -> bool {
+        self.methods
+            .iter()
+            .any(|method| !method.is_async && method.call_protocol().is_some())
+    }
+
+    /// Returns whether generated proxy calls need the typed value helper.
+    pub(crate) fn has_proxy_value_call_methods(&self) -> bool {
+        self.methods.iter().any(|method| {
+            matches!(
+                method.call_protocol(),
+                Some(CallProtocol::Value(_) | CallProtocol::ResultValue { .. })
+            )
+        })
+    }
+
+    /// Returns whether generated proxy calls need the unit helper.
+    pub(crate) fn has_proxy_unit_call_methods(&self) -> bool {
+        self.methods.iter().any(|method| {
+            matches!(
+                method.call_protocol(),
+                Some(CallProtocol::Unit | CallProtocol::ResultUnit { .. })
+            )
+        })
+    }
+
+    /// Returns whether generated proxy watches need the snapshot helper.
+    pub(crate) fn has_proxy_snapshot_watch_methods(&self) -> bool {
+        self.methods.iter().any(|method| {
+            matches!(
+                method.watch_protocol(),
+                Some(WatchProtocol {
+                    snapshot_type: Some(_),
+                    stream: WatchStreamProtocol::JsonFlow { .. }
+                        | WatchStreamProtocol::JsonState { .. },
+                })
+            )
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -168,8 +231,6 @@ pub(crate) enum SerializableTypeKind {
         fields: Vec<SerializableField>,
     },
     TaggedEnum {
-        tag_name: String,
-        content_name: Option<String>,
         externally_tagged: bool,
         variants: Vec<SerializableEnumVariant>,
     },
@@ -190,7 +251,6 @@ pub(crate) struct SerializableField {
 pub(crate) struct SerializableEnumVariant {
     pub(crate) name: String,
     pub(crate) json_name: String,
-    pub(crate) fields_are_unnamed: bool,
     pub(crate) fields_are_unit: bool,
     pub(crate) fields: Vec<SerializableField>,
 }
@@ -225,6 +285,7 @@ pub(crate) struct ErrorField {
 pub(crate) enum MethodProtocol {
     Call(CallProtocol),
     Watch(WatchProtocol),
+    ReverseStream(ReverseStreamProtocol),
     Factory(FactoryProtocol),
     Unsupported(String),
 }
@@ -246,6 +307,12 @@ pub(crate) enum CallProtocol {
 pub(crate) struct WatchProtocol {
     pub(crate) snapshot_type: Option<String>,
     pub(crate) stream: WatchStreamProtocol,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ReverseStreamProtocol {
+    pub(crate) argument_name: String,
+    pub(crate) item_type: String,
 }
 
 #[derive(Clone, Debug)]
@@ -280,6 +347,13 @@ impl SourceMethod {
     pub(crate) fn factory_protocol(&self) -> Option<&FactoryProtocol> {
         match &self.protocol {
             MethodProtocol::Factory(protocol) => Some(protocol),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn reverse_stream_protocol(&self) -> Option<&ReverseStreamProtocol> {
+        match &self.protocol {
+            MethodProtocol::ReverseStream(protocol) => Some(protocol),
             _ => None,
         }
     }

@@ -5,10 +5,13 @@ import CoreMedia
 import Foundation
 import FlutterMacOS
 import Network
+import UserNotifications
 import Vision
 
 final class AppleRuntimeChannel: NSObject {
   private static var shared: AppleRuntimeChannel?
+  private static var pendingNotificationActivations: [[String: Any]] = []
+  private static var notificationActivationReceiverReady = false
   private var channel: FlutterMethodChannel
   private let workQueue = DispatchQueue(label: "operit.runtime.apple", qos: .userInitiated)
   private let watchQueue = DispatchQueue(label: "operit.runtime.apple.watch", qos: .utility)
@@ -42,11 +45,20 @@ final class AppleRuntimeChannel: NSObject {
 
   /// Attaches the process-level Runtime channel to the current Flutter engine.
   static func register(binaryMessenger: FlutterBinaryMessenger) {
+    AppleCrashChannel.register(binaryMessenger: binaryMessenger)
     if let shared {
       shared.attach(binaryMessenger: binaryMessenger)
       return
     }
     shared = AppleRuntimeChannel(binaryMessenger: binaryMessenger)
+  }
+
+  /// Records one local-notification activation received by the application delegate.
+  static func receiveNotificationActivation(_ activation: [String: Any]) {
+    DispatchQueue.main.async {
+      pendingNotificationActivations.append(activation)
+      shared?.dispatchPendingNotificationActivations()
+    }
   }
 
   /// Creates the process-level Runtime channel.
@@ -107,20 +119,22 @@ final class AppleRuntimeChannel: NSObject {
       localRuntimeStoragePaths(call: call, result: result)
     case "setLocalRuntimeStorage":
       setLocalRuntimeStorage(call: call, result: result)
+    case "notificationActivationInitial":
+      result(Self.takePendingNotificationActivation())
+    case "notificationActivationReady":
+      Self.notificationActivationReceiverReady = true
+      dispatchPendingNotificationActivations()
+      result(nil)
     case "stopWebAccessServer":
       runRuntime(result: result) { handle in
         self.takeString(operit_flutter_bridge_stop_web_access_server(handle))
       }
-    case "discoverDevices":
-      discoverDevices(call: call, result: result)
-    case "remotePairStart":
-      remotePairStart(call: call, result: result)
-    case "remotePairFinish":
-      remotePairFinish(call: call, result: result)
     case "ownerSystemCaptureScreenshot":
       ownerSystemCaptureScreenshot(result: result)
     case "ownerSystemRecognizeText":
       ownerSystemRecognizeText(call: call, result: result)
+    case "ownerSystemOperation":
+      ownerSystemOperation(call: call, result: result)
     case "ownerAudioPlay":
       ownerAudioPlay(call: call, result: result)
     case "ownerMusicPlayback":
@@ -133,6 +147,24 @@ final class AppleRuntimeChannel: NSObject {
       ownerTtsPlayback(call: call, result: result)
     default:
       result(FlutterMethodNotImplemented)
+    }
+  }
+
+  /// Returns and consumes the oldest notification activation received before Dart startup.
+  private static func takePendingNotificationActivation() -> [String: Any]? {
+    guard !pendingNotificationActivations.isEmpty else {
+      return nil
+    }
+    return pendingNotificationActivations.removeFirst()
+  }
+
+  /// Emits every activation held until the Dart Runtime-channel receiver is ready.
+  private func dispatchPendingNotificationActivations() {
+    guard Self.notificationActivationReceiverReady else {
+      return
+    }
+    while let activation = Self.takePendingNotificationActivation() {
+      channel.invokeMethod("notificationActivation", arguments: activation)
     }
   }
 
@@ -481,10 +513,6 @@ final class AppleRuntimeChannel: NSObject {
       let token = args["token"] as? String,
       let shutdownToken = args["shutdownToken"] as? String,
       let webRoot = args["webRoot"] as? String,
-      let deviceId = args["deviceId"] as? String,
-      let acceptedSessions = args["acceptedSessions"] as? String,
-      let acceptedSessionStorePath = args["acceptedSessionStorePath"] as? String,
-      let pairingCodePath = args["pairingCodePath"] as? String,
       let deviceInfo = args["deviceInfo"] as? String,
       let enableWebAccess = args["enableWebAccess"] as? String,
       let enableDiscovery = args["enableDiscovery"] as? String
@@ -499,53 +527,10 @@ final class AppleRuntimeChannel: NSObject {
         token,
         shutdownToken,
         webRoot,
-        deviceId,
-        acceptedSessions,
-        acceptedSessionStorePath,
-        pairingCodePath,
         deviceInfo,
         enableWebAccess,
         enableDiscovery
       ))
-    }
-  }
-
-  private func discoverDevices(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard let args = call.arguments as? [String: Any],
-      let timeoutMs = args["timeoutMs"] as? NSNumber
-    else {
-      result(FlutterError(code: "INVALID_ARGS", message: "discoverDevices expects timeoutMs", details: nil))
-      return
-    }
-    runRuntime(result: result) { handle in
-      self.takeString(operit_flutter_bridge_discover_devices(handle, timeoutMs.stringValue))
-    }
-  }
-
-  private func remotePairStart(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard let args = call.arguments as? [String: Any],
-      let baseUrl = args["baseUrl"] as? String,
-      let tokenHash = args["tokenHash"] as? String,
-      let clientDeviceInfo = args["clientDeviceInfo"] as? String
-    else {
-      result(FlutterError(code: "INVALID_ARGS", message: "remotePairStart expects baseUrl, tokenHash and clientDeviceInfo", details: nil))
-      return
-    }
-    runRuntime(result: result) { handle in
-      self.takeString(operit_flutter_bridge_remote_pair_start(handle, baseUrl, tokenHash, clientDeviceInfo))
-    }
-  }
-
-  private func remotePairFinish(call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard let args = call.arguments as? [String: Any],
-      let pairingId = args["pairingId"] as? String,
-      let pairingCode = args["pairingCode"] as? String
-    else {
-      result(FlutterError(code: "INVALID_ARGS", message: "remotePairFinish expects pairingId and pairingCode", details: nil))
-      return
-    }
-    runRuntime(result: result) { handle in
-      self.takeString(operit_flutter_bridge_remote_pair_finish(handle, pairingId, pairingCode))
     }
   }
 
@@ -567,6 +552,75 @@ final class AppleRuntimeChannel: NSObject {
       } catch {
         DispatchQueue.main.async {
           result(FlutterError(code: "OWNER_SYSTEM_RECOGNIZE_TEXT_ERROR", message: error.localizedDescription, details: nil))
+        }
+      }
+    }
+  }
+
+  /// Executes one Core-owned system operation through the macOS application host.
+  private func ownerSystemOperation(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let payload = call.arguments as? [String: Any],
+          let operation = payload["operation"] as? String,
+          let paramsJson = payload["paramsJson"] as? String else {
+      result(FlutterError(code: "INVALID_ARGS", message: "ownerSystemOperation expects operation and paramsJson", details: nil))
+      return
+    }
+    guard operation == "send_notification" else {
+      result(FlutterError(code: "OWNER_SYSTEM_OPERATION_ERROR", message: "unsupported system operation: \(operation)", details: nil))
+      return
+    }
+    let title: String
+    let message: String
+    let activation: [String: Any]
+    do {
+      guard let paramsData = paramsJson.data(using: .utf8) else {
+        throw RuntimeChannelError.invalidArgs("system notification paramsJson is not UTF-8")
+      }
+      guard let params = try JSONSerialization.jsonObject(with: paramsData) as? [String: Any],
+            let parsedTitle = params["title"] as? String,
+            let parsedMessage = params["message"] as? String,
+            let parsedActivation = params["activation"] as? [String: Any],
+            let activationType = parsedActivation["type"] as? String else {
+        throw RuntimeChannelError.invalidArgs("system notification paramsJson requires title, message, and activation")
+      }
+      guard activationType == "open_application" ||
+              (activationType == "open_chat" && parsedActivation["chatId"] is String) else {
+        throw RuntimeChannelError.invalidArgs("system notification activation is invalid")
+      }
+      title = parsedTitle
+      message = parsedMessage
+      activation = parsedActivation
+    } catch {
+      result(FlutterError(code: "INVALID_ARGS", message: error.localizedDescription, details: nil))
+      return
+    }
+    let center = UNUserNotificationCenter.current()
+    center.requestAuthorization(options: [.alert, .badge, .sound]) { granted, authorizationError in
+      if let authorizationError {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "OWNER_SYSTEM_OPERATION_ERROR", message: authorizationError.localizedDescription, details: nil))
+        }
+        return
+      }
+      guard granted else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "OWNER_SYSTEM_OPERATION_ERROR", message: "macOS notification permission is not granted", details: nil))
+        }
+        return
+      }
+      let content = UNMutableNotificationContent()
+      content.title = title
+      content.body = message
+      content.sound = .default
+      content.userInfo = ["operitNotificationActivation": activation]
+      let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+      center.add(request) { deliveryError in
+        DispatchQueue.main.async {
+          if let deliveryError {
+            result(FlutterError(code: "OWNER_SYSTEM_OPERATION_ERROR", message: deliveryError.localizedDescription, details: nil))
+            return
+          }
+          result(["resultJson": "{\"success\":true}"])
         }
       }
     }
@@ -972,6 +1026,36 @@ final class AppleRuntimeChannel: NSObject {
     let data = Data(bytes: pointer, count: Int(buffer.len))
     operit_flutter_bridge_free_bytes(buffer)
     return data
+  }
+}
+
+private enum AppleCrashChannel {
+  private static var channel: FlutterMethodChannel?
+
+  static func register(binaryMessenger: FlutterBinaryMessenger) {
+    channel?.setMethodCallHandler(nil)
+    let crashChannel = FlutterMethodChannel(name: "operit/crash", binaryMessenger: binaryMessenger)
+    crashChannel.setMethodCallHandler { call, result in
+      guard call.method == "present" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      guard let arguments = call.arguments as? [String: Any],
+            let details = arguments["details"] as? String else {
+        result(FlutterError(code: "INVALID_ARGS", message: "present requires crash details", details: nil))
+        return
+      }
+      DispatchQueue.main.async {
+        let alert = NSAlert()
+        alert.messageText = "Operit2 has stopped"
+        alert.informativeText = details
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Close")
+        alert.runModal()
+        result(nil)
+      }
+    }
+    channel = crashChannel
   }
 }
 

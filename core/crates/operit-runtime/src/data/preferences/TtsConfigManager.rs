@@ -278,11 +278,11 @@ impl TtsConfigManager {
         providerConfig: &TtsConfig,
     ) -> Result<Vec<AvailableTtsVoice>, String> {
         let platform = LocalPlatformTarget::current()?.platform;
-        let registry =
-            LocalModelRegistryStore::forRuntimeRoot(self.paths.runtime_dir().to_path_buf())
-                .map_err(|error| error.to_string())?
-                .read()
-                .map_err(|error| error.to_string())?;
+        let registry = LocalModelRegistryStore::forRuntimeStorage(
+            operit_store::RuntimeStorageHost::defaultRuntimeStorageHost(),
+        )
+        .read()
+        .map_err(|error| error.to_string())?;
         let mut voices = Vec::new();
         for installed in registry.installedModels.into_iter().filter(|model| {
             model.manifest.kind == LocalModelKind::TextToSpeech
@@ -881,10 +881,8 @@ fn templateHasTextPlaceholder(template: &str) -> bool {
     templateHasPlaceholder(template, "text") || templateHasPlaceholder(template, "textXml")
 }
 
+/// Returns the current Unix time through the platform-compatible host clock.
 #[allow(non_snake_case)]
 fn currentTimeMillis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time before unix epoch")
-        .as_millis() as i64
+    operit_host_api::TimeUtils::currentTimeMillis()
 }

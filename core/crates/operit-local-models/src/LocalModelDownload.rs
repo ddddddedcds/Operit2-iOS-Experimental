@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::Component;
@@ -6,8 +7,9 @@ use std::sync::Arc;
 
 use bzip2_rs::DecoderReader;
 use operit_host_api::{
-    HttpDownloadControl, HttpDownloadFileRequest, HttpDownloadProgress, HttpDownloadProgressState,
-    HttpDownloadRequest, HttpHost, RuntimeStorageHost,
+    httpDownloadPartialTargetPath, HttpDownloadControl, HttpDownloadFileRequest,
+    HttpDownloadProgress, HttpDownloadProgressState, HttpDownloadRequest, HttpHost,
+    RuntimeStorageHost,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -18,6 +20,8 @@ use crate::LocalModelManifest::{
     LocalModelManifest,
 };
 use crate::LocalModelRegistry::{InstalledLocalModel, LocalModelRegistrySnapshot};
+#[cfg(test)]
+use crate::LocalModelRegistryStore::testRuntimeStorageHost;
 use crate::LocalModelRegistryStore::LocalModelRegistryStore;
 use crate::LocalModelStorage::{
     buildLocalModelStoragePath, validatedStorageSegment, LocalModelStorageError,
@@ -126,32 +130,35 @@ pub struct LocalModelInstaller {
 }
 
 impl LocalModelInstaller {
-    /// Creates an installer from the supplied runtime root directory.
+    /// Creates a filesystem-backed installer for native test coverage.
+    #[cfg(test)]
     pub fn forRuntimeRoot(
         runtimeRoot: PathBuf,
         httpHost: Arc<dyn HttpHost>,
     ) -> Result<Self, LocalModelDownloadError> {
-        let registryStore = LocalModelRegistryStore::forRuntimeRoot(runtimeRoot.clone())
-            .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
+        let storageHost = testRuntimeStorageHost(runtimeRoot.clone());
+        let registryStore = LocalModelRegistryStore::forRuntimeStorage(storageHost.clone());
         Ok(Self {
             runtimeRoot,
             registryStore,
             httpHost,
-            storageHost: None,
+            storageHost: Some(storageHost),
         })
     }
 
-    /// Creates an installer rooted at the supplied runtime data directory.
+    /// Creates a filesystem-backed installer for native test coverage.
+    #[cfg(test)]
     pub fn new(
         runtimeRoot: PathBuf,
         registryPath: PathBuf,
         httpHost: Arc<dyn HttpHost>,
     ) -> Result<Self, LocalModelDownloadError> {
+        let storageHost = testRuntimeStorageHost(runtimeRoot.clone());
         Ok(Self {
             runtimeRoot,
             registryStore: LocalModelRegistryStore::new(registryPath),
             httpHost,
-            storageHost: None,
+            storageHost: Some(storageHost),
         })
     }
 
@@ -282,10 +289,7 @@ impl LocalModelInstaller {
             .map_err(|error| LocalModelDownloadError::Http(error.to_string()));
         let downloadResult = match downloadResult {
             Ok(result) => result,
-            Err(error) => {
-                self.removeDownloadedTargets(&downloadedTargets)?;
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
         for (file, tempTarget, _) in &downloadedTargets {
             if let Err(error) = self.verifyInstalledFile(file, tempTarget) {
@@ -325,7 +329,6 @@ impl LocalModelInstaller {
                 }
             })?;
             let archivePath = archiveDownloadPath(parent, archive)?;
-            self.removePath(&archivePath)?;
             downloadFiles.push(HttpDownloadFileRequest {
                 fileId: archive.archiveId.clone(),
                 url: source.fileUrl(&archive.relativePath),
@@ -354,11 +357,7 @@ impl LocalModelInstaller {
         );
         let downloadResult = match downloadResult {
             Ok(result) => result,
-            Err(error) => {
-                self.removeArchiveTargets(&archiveTargets)?;
-                self.removePath(&stagingDir)?;
-                return Err(LocalModelDownloadError::Http(error.to_string()));
-            }
+            Err(error) => return Err(LocalModelDownloadError::Http(error.to_string())),
         };
 
         for (archive, archivePath) in &archiveTargets {
@@ -448,6 +447,37 @@ impl LocalModelInstaller {
         })
     }
 
+    /// Deletes retained download and staging artifacts for one uninstalled model release.
+    pub fn removePendingInstallArtifacts(
+        &self,
+        manifest: &LocalModelManifest,
+    ) -> Result<(), LocalModelDownloadError> {
+        validateManifestStorageSegments(manifest)?;
+        let storagePath = buildLocalModelStoragePath(
+            &manifest.kind,
+            &manifest.engine,
+            &manifest.id,
+            &manifest.version,
+        )?;
+        let installDir = self.runtimeStoragePath(&storagePath)?;
+        match &manifest.installSource {
+            LocalModelInstallSource::Files => self.removePath(&installDir)?,
+            LocalModelInstallSource::Archives { archives } => {
+                let parent = installDir.parent().ok_or_else(|| {
+                    LocalModelDownloadError::Storage(installDir.display().to_string())
+                })?;
+                let stagingDir =
+                    parent.join(format!(".{}-{}.installing", manifest.id, manifest.version));
+                self.removePath(&stagingDir)?;
+                for archive in archives {
+                    let archivePath = archiveDownloadPath(parent, archive)?;
+                    self.removeDownloadTarget(&archivePath)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Reads the local model registry snapshot from disk.
     pub fn readRegistry(&self) -> Result<LocalModelRegistrySnapshot, LocalModelDownloadError> {
         self.registryStore
@@ -465,13 +495,13 @@ impl LocalModelInstaller {
             .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))
     }
 
-    /// Creates a directory for native storage targets.
+    /// Verifies that the installer has a runtime storage host.
     fn createDirectory(&self, path: &Path) -> Result<(), LocalModelDownloadError> {
-        match &self.storageHost {
-            Some(_) => Ok(()),
-            None => fs::create_dir_all(path)
-                .map_err(|error| LocalModelDownloadError::Storage(error.to_string())),
-        }
+        let pathString = nativePathString(path)?;
+        self.storageHost
+            .as_ref()
+            .ok_or_else(|| LocalModelDownloadError::Storage(pathString))?;
+        Ok(())
     }
 
     /// Removes temporary model targets after a stopped host download.
@@ -480,7 +510,7 @@ impl LocalModelInstaller {
         targets: &[(LocalModelFile, PathBuf, PathBuf)],
     ) -> Result<(), LocalModelDownloadError> {
         for (_, tempTarget, _) in targets {
-            self.removePath(tempTarget)?;
+            self.removeDownloadTarget(tempTarget)?;
         }
         Ok(())
     }
@@ -491,19 +521,26 @@ impl LocalModelInstaller {
         targets: &[(LocalModelArchive, PathBuf)],
     ) -> Result<(), LocalModelDownloadError> {
         for (_, archivePath) in targets {
-            self.removePath(archivePath)?;
+            self.removeDownloadTarget(archivePath)?;
         }
         Ok(())
     }
 
+    /// Removes one completed or retained partial HTTP download target.
+    fn removeDownloadTarget(&self, target: &Path) -> Result<(), LocalModelDownloadError> {
+        self.removePath(target)?;
+        let partial = PathBuf::from(httpDownloadPartialTargetPath(&nativePathString(target)?));
+        self.removePath(&partial)
+    }
+
     /// Removes one file or directory path from local model staging.
     fn removePath(&self, path: &Path) -> Result<(), LocalModelDownloadError> {
-        match &self.storageHost {
-            Some(storageHost) => storageHost
-                .delete(&storagePathString(path), true)
-                .map_err(|error| LocalModelDownloadError::Storage(error.to_string())),
-            None => removeNativePath(path),
-        }
+        let storagePath = self.runtimeStoragePathString(path)?;
+        self.storageHost
+            .as_ref()
+            .ok_or_else(|| LocalModelDownloadError::Storage(storagePath.clone()))?
+            .delete(&storagePath, true)
+            .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))
     }
 
     /// Verifies all files declared by one installed manifest.
@@ -526,15 +563,17 @@ impl LocalModelInstaller {
         file: &LocalModelFile,
         target: &Path,
     ) -> Result<u64, LocalModelDownloadError> {
-        match &self.storageHost {
-            Some(storageHost) => verifyFileBytes(
-                file,
-                &storageHost
-                    .readBytes(&storagePathString(target))
-                    .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?,
-            ),
-            None => verifyNativeFile(file, target),
-        }
+        let storagePath = self.runtimeStoragePathString(target)?;
+        let storageHost = self
+            .storageHost
+            .as_ref()
+            .ok_or_else(|| LocalModelDownloadError::Storage(storagePath.clone()))?;
+        verifyFileBytes(
+            file,
+            &storageHost
+                .readBytes(&storagePath)
+                .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?,
+        )
     }
 
     /// Verifies one downloaded archive by size and SHA-256 checksum.
@@ -543,15 +582,17 @@ impl LocalModelInstaller {
         archive: &LocalModelArchive,
         archivePath: &Path,
     ) -> Result<(), LocalModelDownloadError> {
-        match &self.storageHost {
-            Some(storageHost) => verifyArchiveBytes(
-                archive,
-                &storageHost
-                    .readBytes(&storagePathString(archivePath))
-                    .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?,
-            ),
-            None => verifyNativeArchive(archive, archivePath),
-        }
+        let storagePath = self.runtimeStoragePathString(archivePath)?;
+        let storageHost = self
+            .storageHost
+            .as_ref()
+            .ok_or_else(|| LocalModelDownloadError::Storage(storagePath.clone()))?;
+        verifyArchiveBytes(
+            archive,
+            &storageHost
+                .readBytes(&storagePath)
+                .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?,
+        )
     }
 
     /// Extracts one verified model archive into a staging directory.
@@ -561,13 +602,18 @@ impl LocalModelInstaller {
         stagingDir: &Path,
         archiveFormat: &LocalModelArchiveFormat,
     ) -> Result<(), LocalModelDownloadError> {
-        match (&self.storageHost, archiveFormat) {
-            (Some(storageHost), LocalModelArchiveFormat::TarBz2) => {
-                extractTarBz2ArchiveToStorage(archivePath, stagingDir, storageHost)
-            }
-            (None, LocalModelArchiveFormat::TarBz2) => {
-                extractTarBz2ArchiveToNative(archivePath, stagingDir)
-            }
+        let storagePath = self.runtimeStoragePathString(archivePath)?;
+        let storageHost = self
+            .storageHost
+            .as_ref()
+            .ok_or_else(|| LocalModelDownloadError::Storage(storagePath))?;
+        match archiveFormat {
+            LocalModelArchiveFormat::TarBz2 => extractTarBz2ArchiveToStorage(
+                &self.runtimeRoot,
+                archivePath,
+                stagingDir,
+                storageHost,
+            ),
         }
     }
 
@@ -577,18 +623,19 @@ impl LocalModelInstaller {
         tempTarget: &Path,
         target: &Path,
     ) -> Result<(), LocalModelDownloadError> {
-        match &self.storageHost {
-            Some(storageHost) => {
-                let content = storageHost
-                    .readBytes(&storagePathString(tempTarget))
-                    .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
-                storageHost
-                    .writeBytes(&storagePathString(target), &content)
-                    .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
-                self.removePath(tempTarget)
-            }
-            None => replaceNativeFileWithVerifiedDownload(tempTarget, target),
-        }
+        let tempStoragePath = self.runtimeStoragePathString(tempTarget)?;
+        let targetStoragePath = self.runtimeStoragePathString(target)?;
+        let storageHost = self
+            .storageHost
+            .as_ref()
+            .ok_or_else(|| LocalModelDownloadError::Storage(tempStoragePath.clone()))?;
+        let content = storageHost
+            .readBytes(&tempStoragePath)
+            .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
+        storageHost
+            .writeBytes(&targetStoragePath, &content)
+            .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
+        self.removePath(tempTarget)
     }
 
     /// Promotes a verified staging directory into the final model install path.
@@ -597,23 +644,24 @@ impl LocalModelInstaller {
         stagingDir: &Path,
         installDir: &Path,
     ) -> Result<(), LocalModelDownloadError> {
-        match &self.storageHost {
-            Some(storageHost) => {
-                self.removePath(installDir)?;
-                copyStorageDirectory(storageHost, stagingDir, installDir)?;
-                self.removePath(stagingDir)
-            }
-            None => {
-                removeNativePath(installDir)?;
-                fs::rename(stagingDir, installDir)
-                    .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))
-            }
-        }
+        let storagePath = self.runtimeStoragePathString(installDir)?;
+        let storageHost = self
+            .storageHost
+            .as_ref()
+            .ok_or_else(|| LocalModelDownloadError::Storage(storagePath))?;
+        self.removePath(installDir)?;
+        copyStorageDirectory(storageHost, &self.runtimeRoot, stagingDir, installDir)?;
+        self.removePath(stagingDir)
     }
 
     /// Maps a runtime storage path to the installer runtime root.
     fn runtimeStoragePath(&self, storagePath: &str) -> Result<PathBuf, LocalModelDownloadError> {
         runtimeLayoutPath(&self.runtimeRoot, storagePath)
+    }
+
+    /// Maps a native runtime-root path back to a virtual runtime storage path.
+    fn runtimeStoragePathString(&self, path: &Path) -> Result<String, LocalModelDownloadError> {
+        runtimeStoragePathString(&self.runtimeRoot, path)
     }
 }
 
@@ -633,6 +681,22 @@ fn runtimeLayoutPath(
         .trim_start_matches(runtimePrefix)
         .replace('/', std::path::MAIN_SEPARATOR_STR);
     Ok(runtimeRoot.join(relative))
+}
+
+/// Maps a native runtime-root path into a virtual runtime storage path.
+fn runtimeStoragePathString(
+    runtimeRoot: &Path,
+    path: &Path,
+) -> Result<String, LocalModelDownloadError> {
+    let relative = path.strip_prefix(runtimeRoot).map_err(|_| {
+        LocalModelDownloadError::InvalidStoragePath(path.to_string_lossy().to_string())
+    })?;
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    if relative.is_empty() {
+        Ok("runtime".to_string())
+    } else {
+        Ok(format!("runtime/{relative}"))
+    }
 }
 
 /// Validates model id, version, and manifest file paths before installation.
@@ -705,6 +769,7 @@ fn archiveDownloadPath(
 }
 
 /// Removes one file or directory path from native local model staging.
+#[cfg(test)]
 fn removeNativePath(path: &Path) -> Result<(), LocalModelDownloadError> {
     if path.is_dir() {
         fs::remove_dir_all(path)
@@ -717,6 +782,7 @@ fn removeNativePath(path: &Path) -> Result<(), LocalModelDownloadError> {
 }
 
 /// Verifies one native file by size and SHA-256 checksum.
+#[cfg(test)]
 fn verifyNativeFile(file: &LocalModelFile, target: &Path) -> Result<u64, LocalModelDownloadError> {
     let mut input = fs::File::open(target)
         .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
@@ -766,6 +832,7 @@ fn verifyFileReader(
 }
 
 /// Verifies one native archive by size and SHA-256 checksum.
+#[cfg(test)]
 fn verifyNativeArchive(
     archive: &LocalModelArchive,
     archivePath: &Path,
@@ -821,6 +888,7 @@ fn verifyArchiveReader(
 }
 
 /// Extracts a Tar+Bzip2 model archive into a native staging directory.
+#[cfg(test)]
 fn extractTarBz2ArchiveToNative(
     archivePath: &Path,
     stagingDir: &Path,
@@ -848,12 +916,14 @@ fn extractTarBz2ArchiveToNative(
 
 /// Extracts a Tar+Bzip2 model archive into runtime storage.
 fn extractTarBz2ArchiveToStorage(
+    runtimeRoot: &Path,
     archivePath: &Path,
     stagingDir: &Path,
     storageHost: &Arc<dyn RuntimeStorageHost>,
 ) -> Result<(), LocalModelDownloadError> {
+    let archiveStoragePath = runtimeStoragePathString(runtimeRoot, archivePath)?;
     let archiveBytes = storageHost
-        .readBytes(&storagePathString(archivePath))
+        .readBytes(&archiveStoragePath)
         .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
     let decoder = DecoderReader::new(Cursor::new(archiveBytes));
     let mut archive = tar::Archive::new(decoder);
@@ -876,8 +946,9 @@ fn extractTarBz2ArchiveToStorage(
             .read_to_end(&mut content)
             .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
         let target = stagingDir.join(path);
+        let targetStoragePath = runtimeStoragePathString(runtimeRoot, &target)?;
         storageHost
-            .writeBytes(&storagePathString(&target), &content)
+            .writeBytes(&targetStoragePath, &content)
             .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
     }
     Ok(())
@@ -909,6 +980,7 @@ fn downloadTempPath(target: &Path) -> Result<PathBuf, LocalModelDownloadError> {
 }
 
 /// Replaces a native target file with a verified temporary download.
+#[cfg(test)]
 fn replaceNativeFileWithVerifiedDownload(
     tempTarget: &Path,
     target: &Path,
@@ -924,23 +996,27 @@ fn replaceNativeFileWithVerifiedDownload(
 /// Copies every staged runtime-storage file into a final directory.
 fn copyStorageDirectory(
     storageHost: &Arc<dyn RuntimeStorageHost>,
+    runtimeRoot: &Path,
     sourceDir: &Path,
     targetDir: &Path,
 ) -> Result<(), LocalModelDownloadError> {
-    let sourcePrefix = storagePathString(sourceDir);
+    let sourcePrefix = runtimeStoragePathString(runtimeRoot, sourceDir)?;
     let sourcePrefixWithSlash = format!("{}/", sourcePrefix.trim_end_matches('/'));
     let entries = storageHost
         .list(&sourcePrefix)
         .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
     for entry in entries {
-        if entry.isDirectory {
-            continue;
-        }
         let relative = entry
             .path
             .strip_prefix(&sourcePrefixWithSlash)
             .ok_or_else(|| LocalModelDownloadError::Storage(entry.path.clone()))?;
-        let targetPath = storagePathString(&targetDir.join(relative));
+        let target = targetDir.join(relative);
+        if entry.isDirectory {
+            let source = runtimeLayoutPath(runtimeRoot, &entry.path)?;
+            copyStorageDirectory(storageHost, runtimeRoot, &source, &target)?;
+            continue;
+        }
+        let targetPath = runtimeStoragePathString(runtimeRoot, &target)?;
         let content = storageHost
             .readBytes(&entry.path)
             .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
@@ -949,11 +1025,6 @@ fn copyStorageDirectory(
             .map_err(|error| LocalModelDownloadError::Storage(error.to_string()))?;
     }
     Ok(())
-}
-
-/// Converts a path into the virtual runtime-storage representation.
-fn storagePathString(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Normalizes a manifest relative file path for local installation.
@@ -1037,6 +1108,10 @@ mod tests {
                     completedFiles: 0,
                     totalFiles: request.files.len(),
                 });
+                if let Some(parent) = Path::new(&file.targetPath).parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| HostError::new(error.to_string()))?;
+                }
                 fs::copy(&self.archivePath, &file.targetPath)
                     .map_err(|error| HostError::new(error.to_string()))?;
                 onProgress(HttpDownloadProgress {

@@ -578,7 +578,7 @@ export namespace ToolPkg {
   /**
    * Enumerates every hook event that a ToolPkg plugin may register.
    */
-  export type HookEventName = AppLifecycleEvent | HookEventNameVariant2 | HookEventNameVariant3 | HookEventNameVariant4 | ChatInputEventName | ChatViewEventName | HookEventNameVariant7 | ToolLifecycleEventName | PromptInputEventName | PromptHistoryEventName | SystemPromptComposeEventName | ToolPromptComposeEventName | PromptFinalizeEventName | SummaryGenerateEventName | HostEventName;
+  export type HookEventName = AppLifecycleEvent | HookEventNameVariant2 | HookEventNameVariant3 | HookEventNameVariant4 | ChatInputEventName | ChatViewEventName | ChatMessageEventName | HookEventNameVariant7 | ToolLifecycleEventName | PromptInputEventName | PromptHistoryEventName | SystemPromptComposeEventName | ToolPromptComposeEventName | PromptFinalizeEventName | SummaryGenerateEventName | HostEventName;
 
   /**
    * Accepts a JSON result, no result, or asynchronous completion from a generic hook.
@@ -713,6 +713,11 @@ export namespace ToolPkg {
    * Names the open, update, and close stages of a chat view.
    */
   export type ChatViewEventName = "view_opened" | "view_updated" | "view_closed";
+
+  /**
+   * Names chat message persistence notifications.
+   */
+  export type ChatMessageEventName = "message_persisted";
 
   /**
    * Controls chat input handling and optionally supplies replacement text or metadata.
@@ -1133,7 +1138,26 @@ export namespace ToolPkg {
   /**
    * Enumerates immediate and asynchronous results accepted from a tool lifecycle hook.
    */
-  export type ToolLifecycleHookReturn = void | Promise<void>;
+  export interface ToolLifecycleHookObjectResult {
+    /**
+     * Selects whether the intercepted tool call may continue.
+     */
+    action?: string;
+    /**
+     * Explains why the intercepted tool call was blocked.
+     */
+    reason?: string;
+  }
+
+  /**
+   * Enumerates immediate and asynchronous results accepted from a tool lifecycle hook.
+   */
+  export type ToolLifecycleHookReturn = ToolLifecycleHookObjectResult | void | Promise<ToolLifecycleHookReturnVariant3Output>;
+
+  /**
+   * Enumerates asynchronous results accepted from a tool lifecycle hook.
+   */
+  export type ToolLifecycleHookReturnVariant3Output = ToolLifecycleHookObjectResult | void;
 
   /**
    * Enumerates immediate and asynchronous results accepted from a prompt input hook.
@@ -1189,6 +1213,11 @@ export namespace ToolPkg {
    * Callback invoked when a chat input event is dispatched.
    */
   export type ChatInputHookHandler = (arg0: ChatInputHookEvent) => ChatInputHookReturn;
+
+  /**
+   * Callback invoked after a chat message is persisted.
+   */
+  export type ChatMessageHookHandler = (arg0: ChatMessageHookEvent) => HookReturn;
 
   /**
    * Callback invoked when a navigation entry action event is dispatched.
@@ -1443,6 +1472,80 @@ export namespace ToolPkg {
   }
 
   /**
+   * Carries a persisted chat message supplied after storage succeeds.
+   */
+  export interface ChatMessageEventPayload extends JsonObject {
+    /**
+     * Identifies the conversation associated with the event.
+     */
+    chatId?: string;
+    /**
+     * Identifies the persisted message by its message timestamp.
+     */
+    timestamp?: number;
+    /**
+     * Identifies the message source stored by the host.
+     */
+    sender?: string;
+    /**
+     * Provides the display role name associated with the message.
+     */
+    roleName?: string;
+    /**
+     * Contains the persisted message content.
+     */
+    content?: string;
+    /**
+     * Records when assistant generation completed, in epoch milliseconds.
+     */
+    completedAt?: number;
+    /**
+     * Identifies the provider used for the message when available.
+     */
+    provider?: string;
+    /**
+     * Identifies the model used for the message when available.
+     */
+    modelName?: string;
+    /**
+     * Stores prompt token usage associated with the message.
+     */
+    inputTokens?: number;
+    /**
+     * Stores completion token usage associated with the message.
+     */
+    outputTokens?: number;
+    /**
+     * Stores cached prompt token usage associated with the message.
+     */
+    cachedInputTokens?: number;
+    /**
+     * Records when the model request was sent, in epoch milliseconds.
+     */
+    sentAt?: number;
+    /**
+     * Records model output duration in milliseconds.
+     */
+    outputDurationMs?: number;
+    /**
+     * Records model wait duration in milliseconds.
+     */
+    waitDurationMs?: number;
+    /**
+     * Identifies how the message is displayed by the host.
+     */
+    displayMode?: string;
+    /**
+     * Identifies the selected variant index for this timestamp.
+     */
+    selectedVariantIndex?: number;
+    /**
+     * Reports whether the user marked the message as favorite.
+     */
+    isFavorite?: boolean;
+  }
+
+  /**
    * Carries navigation entry action data supplied when the event is dispatched.
    */
   export interface NavigationEntryActionEventPayload extends JsonObject {
@@ -1502,6 +1605,12 @@ export namespace ToolPkg {
    * Combines shared dispatch metadata with the typed payload for a chat view hook.
    */
   export interface ChatViewHookEvent extends HookEventBase<ChatViewEventName, ChatViewEventPayload> {
+  }
+
+  /**
+   * Combines shared dispatch metadata with the typed payload for a chat message hook.
+   */
+  export interface ChatMessageHookEvent extends HookEventBase<ChatMessageEventName, ChatMessageEventPayload> {
   }
 
   /**
@@ -1941,7 +2050,7 @@ export namespace ToolPkg {
   /**
    * Enumerates supported navigation surface values.
    */
-  export type NavigationSurface = "toolbox" | "main_sidebar_plugins";
+  export type NavigationSurface = "toolbox" | "main_sidebar_plugins" | "app_bar";
 
   /**
    * Describes a plugin action exposed through a host navigation surface.
@@ -2113,6 +2222,20 @@ export namespace ToolPkg {
      * Provides the callback invoked for this chat view hook registration.
      */
     function: HookHandler<ChatViewHookEvent>;
+  }
+
+  /**
+   * Configures and identifies a chat message persistence hook registration.
+   */
+  export interface ChatMessageHookRegistration {
+    /**
+     * Uniquely identifies this chat message hook registration within the package.
+     */
+    id: string;
+    /**
+     * Provides the callback invoked for this chat message hook registration.
+     */
+    function: ChatMessageHookHandler;
   }
 
   /**
@@ -2884,6 +3007,30 @@ export namespace ToolPkg {
   export type RuntimeKind = "main" | "ui" | "sandbox" | "provider";
 
   /**
+   * Identifies the scalar ABI value type used by ToolPkg WASM exports.
+   */
+  export type WasmValueType = "i32" | "i64" | "f32" | "f64";
+
+  /**
+   * Stores one scalar value passed into or returned from a ToolPkg WASM export.
+   */
+  export type WasmScalarValue = number | string | null;
+
+  /**
+   * Describes one scalar ABI argument for a ToolPkg WASM export.
+   */
+  export interface WasmArg {
+    /**
+     * Identifies the scalar ABI type.
+     */
+    type: WasmValueType;
+    /**
+     * Stores the scalar argument value.
+     */
+    value: WasmScalarValue;
+  }
+
+  /**
    * Metadata passed to a handler registered with {@link IpcApi.on}.
    */
   export interface IpcMeta {
@@ -2942,6 +3089,16 @@ export namespace ToolPkg {
   }
 
   /**
+   * Represents the WASM API exposed on a ToolPkg registry.
+   */
+  export interface WasmApi {
+    /**
+     * Calls one WASM export and resolves with its scalar result.
+     */
+    call(moduleId: string, exportName: string, args?: WasmArg[]): Promise<WasmScalarValue>;
+  }
+
+  /**
    * Provides IPC and registration services for the current ToolPkg package.
    */
   export interface Registry {
@@ -2949,6 +3106,10 @@ export namespace ToolPkg {
      * Exposes inter-context messaging for this ToolPkg registry.
      */
     ipc: IpcApi;
+    /**
+     * Exposes declared WASM exports for this ToolPkg registry.
+     */
+    wasm: WasmApi;
     /**
      * Registers a Compose DSL screen in the toolbox UI.
      */
@@ -2989,6 +3150,10 @@ export namespace ToolPkg {
      * Registers a callback for chat view lifecycle changes.
      */
     registerChatViewHook(definition: ChatViewHookRegistration): void;
+    /**
+     * Registers a callback for persisted chat message notifications.
+     */
+    registerChatMessageHook(definition: ChatMessageHookRegistration): void;
     /**
      * Registers a typed timer, interval, or broadcast hook.
      */
@@ -3069,6 +3234,10 @@ declare global {
    * Registers a callback for chat input changes and submissions. The global binding delegates to the active ToolPkg registry.
    */
   function registerToolPkgChatInputHook(definition: ToolPkg.ChatInputHookRegistration): void;
+  /**
+   * Registers a callback for persisted chat message notifications. The global binding delegates to the active ToolPkg registry.
+   */
+  function registerToolPkgChatMessageHook(definition: ToolPkg.ChatMessageHookRegistration): void;
   /**
    * Registers a callback for chat view lifecycle changes. The global binding delegates to the active ToolPkg registry.
    */

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 
+use operit_host_api::FileSystemHost;
 use serde_json::Value;
 
 use crate::toolpkg::ToolPkgCommonPluginConstants::{
@@ -52,6 +52,10 @@ pub trait ToolPkgPackageHost: Send + Sync {
     /// Returns persisted ToolPkg subpackage enabled states.
     #[allow(non_snake_case)]
     fn getToolPkgSubpackageStatesInternal(&self) -> BTreeMap<String, bool>;
+
+    /// Returns the filesystem capability owned by the embedding runtime.
+    #[allow(non_snake_case)]
+    fn fileSystemHost(&self) -> std::sync::Arc<dyn FileSystemHost>;
 
     /// Persists the complete enabled package name list.
     #[allow(non_snake_case)]
@@ -487,6 +491,8 @@ impl<'a> ToolPkgPackageService<'a> {
         templateId: &str,
         destinationDir: &Path,
     ) -> Result<ToolPkgWorkspaceTemplateImportResult, String> {
+        let fileSystemHost = self.packageManager.fileSystemHost();
+        let destinationPath = destinationDir.to_string_lossy().to_string();
         self.packageManager.ensureInitialized();
         let normalizedContainerPackageName = self
             .packageManager
@@ -525,18 +531,20 @@ impl<'a> ToolPkgPackageService<'a> {
                 template.resource_key
             ));
         }
-        if destinationDir.exists() {
-            if !destinationDir.is_dir() {
+        let destinationInfo = fileSystemHost
+            .fileExists(&destinationPath)
+            .map_err(|error| error.to_string())?;
+        if destinationInfo.exists {
+            if !destinationInfo.isDirectory {
                 return Err(format!(
                     "Workspace destination is not a directory: {}",
                     destinationDir.display()
                 ));
             }
-            if destinationDir
-                .read_dir()
+            if !fileSystemHost
+                .listFiles(&destinationPath)
                 .map_err(|error| error.to_string())?
-                .next()
-                .is_some()
+                .is_empty()
             {
                 return Err(format!(
                     "Workspace destination must be empty: {}",
@@ -544,13 +552,15 @@ impl<'a> ToolPkgPackageService<'a> {
                 ));
             }
         } else {
-            fs::create_dir_all(destinationDir).map_err(|error| {
-                format!(
-                    "Failed to create workspace destination: {}: {}",
-                    destinationDir.display(),
-                    error
-                )
-            })?;
+            fileSystemHost
+                .makeDirectory(&destinationPath, true)
+                .map_err(|error| {
+                    format!(
+                        "Failed to create workspace destination: {}: {}",
+                        destinationDir.display(),
+                        error
+                    )
+                })?;
         }
         let resourceDir = self
             .packageManager
@@ -561,24 +571,38 @@ impl<'a> ToolPkgPackageService<'a> {
                     template.resource_key
                 )
             })?;
-        if !resourceDir.is_dir() {
+        let resourceDirPath = resourceDir.to_string_lossy().to_string();
+        let resourceInfo = fileSystemHost
+            .fileExists(&resourceDirPath)
+            .map_err(|error| error.to_string())?;
+        if !resourceInfo.exists || !resourceInfo.isDirectory {
             return Err(format!(
                 "Workspace template directory is invalid: {}",
                 template.resource_key
             ));
         }
-        for entry in fs::read_dir(&resourceDir).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            copyRecursively(&entry.path(), &destinationDir.join(entry.file_name()))?;
+        for entry in fileSystemHost
+            .listFiles(&resourceDirPath)
+            .map_err(|error| error.to_string())?
+        {
+            let sourcePath = joinHostPath(&resourceDirPath, &entry.name);
+            let destinationEntryPath = joinHostPath(&destinationPath, &entry.name);
+            fileSystemHost
+                .copyFile(&sourcePath, &destinationEntryPath, true)
+                .map_err(|error| error.to_string())?;
         }
-        let configPath = destinationDir.join(".operit").join("config.json");
-        if !configPath.is_file() {
+        let configPath = joinHostPath(&destinationPath, ".operit/config.json");
+        let configInfo = fileSystemHost
+            .fileExists(&configPath)
+            .map_err(|error| error.to_string())?;
+        if !configInfo.exists || configInfo.isDirectory {
             return Err(format!(
                 "Workspace template is missing .operit/config.json: {}",
                 template.id
             ));
         }
-        let workspaceConfig = fs::read_to_string(&configPath)
+        let workspaceConfig = fileSystemHost
+            .readFile(&configPath)
             .map_err(|error| error.to_string())
             .and_then(|text| {
                 serde_json::from_str::<Value>(&text).map_err(|error| error.to_string())
@@ -1110,6 +1134,119 @@ impl<'a> ToolPkgPackageService<'a> {
 
         None
     }
+
+    /// Reads bytes for one declared ToolPkg WASM module export.
+    #[allow(non_snake_case)]
+    pub fn readToolPkgWasmModuleBytes(
+        &self,
+        packageNameOrSubpackageId: &str,
+        moduleId: &str,
+        exportName: &str,
+        preferEnabledContainer: bool,
+    ) -> Result<Vec<u8>, String> {
+        self.packageManager.ensureInitialized();
+        let target = self
+            .packageManager
+            .normalizePackageName(packageNameOrSubpackageId);
+        let moduleId = moduleId.trim();
+        let exportName = exportName.trim();
+        if target.is_empty() {
+            return Err("ToolPkg WASM package target is required".to_string());
+        }
+        if moduleId.is_empty() {
+            return Err("ToolPkg WASM module id is required".to_string());
+        }
+        if exportName.is_empty() {
+            return Err("ToolPkg WASM export name is required".to_string());
+        }
+
+        let toolPkgContainers = self.packageManager.toolPkgContainersInternal();
+        if let Some(containerRuntime) = toolPkgContainers.get(&target) {
+            return self.readToolPkgWasmModuleBytesFromContainer(
+                containerRuntime,
+                moduleId,
+                exportName,
+            );
+        }
+
+        let directSubpackageRuntime = self
+            .packageManager
+            .resolveToolPkgSubpackageRuntimeInternal(&target);
+        if let Some(directSubpackageRuntime) = directSubpackageRuntime {
+            let containerRuntime = toolPkgContainers
+                .get(&directSubpackageRuntime.containerPackageName)
+                .ok_or_else(|| {
+                    format!(
+                        "ToolPkg container not found: {}",
+                        directSubpackageRuntime.containerPackageName
+                    )
+                })?;
+            return self.readToolPkgWasmModuleBytesFromContainer(
+                containerRuntime,
+                moduleId,
+                exportName,
+            );
+        }
+
+        let subpackages = self
+            .packageManager
+            .toolPkgSubpackageByPackageNameInternal()
+            .values()
+            .filter(|subpackage| subpackage.subpackageId.eq_ignore_ascii_case(&target))
+            .cloned()
+            .collect::<Vec<_>>();
+        if subpackages.is_empty() {
+            return Err(format!("ToolPkg target not found: {target}"));
+        }
+
+        let candidateContainers = if preferEnabledContainer {
+            let enabledSet = self.packageManager.getEnabledPackageNameSetInternal();
+            distinctContainerNames(
+                subpackages
+                    .iter()
+                    .filter(|subpackage| enabledSet.contains(&subpackage.containerPackageName)),
+            )
+        } else {
+            distinctContainerNames(subpackages.iter())
+        };
+        let containerName = candidateContainers
+            .first()
+            .ok_or_else(|| format!("ToolPkg target is not enabled: {target}"))?;
+        let containerRuntime = toolPkgContainers
+            .get(containerName)
+            .ok_or_else(|| format!("ToolPkg container not found: {containerName}"))?;
+        self.readToolPkgWasmModuleBytesFromContainer(containerRuntime, moduleId, exportName)
+    }
+
+    /// Reads bytes for one declared WASM module from a concrete container.
+    #[allow(non_snake_case)]
+    fn readToolPkgWasmModuleBytesFromContainer(
+        &self,
+        runtime: &ToolPkgContainerRuntime,
+        moduleId: &str,
+        exportName: &str,
+    ) -> Result<Vec<u8>, String> {
+        let enabledSet = self.packageManager.getEnabledPackageNameSetInternal();
+        if !enabledSet.contains(&runtime.packageName) {
+            return Err(format!(
+                "ToolPkg container is not enabled: {}",
+                runtime.packageName
+            ));
+        }
+        let module = runtime
+            .wasmModules
+            .iter()
+            .find(|module| module.id.eq_ignore_ascii_case(moduleId))
+            .ok_or_else(|| format!("ToolPkg WASM module not found: {moduleId}"))?;
+        if !module.exports.iter().any(|name| name == exportName) {
+            return Err(format!(
+                "ToolPkg WASM export '{exportName}' is not declared by module '{moduleId}'"
+            ));
+        }
+        self.packageManager
+            .readToolPkgResourceBytes(runtime, &module.path)
+            .ok_or_else(|| format!("ToolPkg WASM module bytes not found: {}", module.path))
+    }
 }
 
 /// Returns distinct container package names while preserving subpackage iteration order.
@@ -1140,28 +1277,12 @@ fn nonBlankOr(value: &str, defaultValue: &str) -> String {
     }
 }
 
-/// Copies one file or directory tree into a workspace template destination.
+/// Joins one relative path beneath a host-owned directory.
 #[allow(non_snake_case)]
-fn copyRecursively(source: &Path, destination: &Path) -> Result<(), String> {
-    if source.is_dir() {
-        fs::create_dir_all(destination).map_err(|error| error.to_string())?;
-        for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            copyRecursively(&entry.path(), &destination.join(entry.file_name()))?;
-        }
-        return Ok(());
-    }
-    if source.is_file() {
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        fs::copy(source, destination)
-            .map(|_| ())
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    Err(format!(
-        "Workspace template source is invalid: {}",
-        source.display()
-    ))
+fn joinHostPath(directory: &str, relativePath: &str) -> String {
+    format!(
+        "{}/{}",
+        directory.trim_end_matches(['/', '\\']),
+        relativePath
+    )
 }

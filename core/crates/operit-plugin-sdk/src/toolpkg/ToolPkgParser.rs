@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Cursor;
 
+use operit_host_api::FileSystemHost;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -15,7 +16,17 @@ use crate::toolpkg::ToolPkgTemplateModels::{
 pub enum ToolPkgSourceType {
     #[default]
     ASSET,
+    MARKET,
     EXTERNAL,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolPkgMarketOrigin {
+    pub market: String,
+    #[serde(rename = "toolpkgId")]
+    pub toolpkgId: String,
+    pub version: String,
+    pub author: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -23,6 +34,16 @@ pub struct ToolPkgResourceRuntime {
     pub key: String,
     pub path: String,
     pub mime: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ToolPkgWasmModuleRuntime {
+    pub id: String,
+    pub path: String,
+    pub exports: Vec<String>,
+    #[serde(rename = "sourceLanguage")]
+    pub sourceLanguage: String,
+    pub abi: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -299,6 +320,8 @@ pub struct ToolPkgRegisteredTagFunctionHook {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ToolPkgMainRegistration {
+    #[serde(rename = "marketOrigin", default)]
+    pub marketOrigin: Option<ToolPkgMarketOrigin>,
     #[serde(rename = "toolboxUiModules", default)]
     pub toolboxUiModules: Vec<ToolPkgRegisteredUiModule>,
     #[serde(rename = "uiRoutes", default)]
@@ -319,6 +342,8 @@ pub struct ToolPkgMainRegistration {
     pub chatInputHooks: Vec<ToolPkgRegisteredFunctionHook>,
     #[serde(rename = "chatViewHooks", default)]
     pub chatViewHooks: Vec<ToolPkgRegisteredFunctionHook>,
+    #[serde(rename = "chatMessageHooks", default)]
+    pub chatMessageHooks: Vec<ToolPkgRegisteredFunctionHook>,
     #[serde(rename = "hostEventHooks", default)]
     pub hostEventHooks: Vec<ToolPkgRegisteredHostEventHook>,
     #[serde(rename = "toolLifecycleHooks", default)]
@@ -370,6 +395,8 @@ pub struct ToolPkgContainerRuntime {
     pub sourcePath: String,
     pub subpackages: Vec<ToolPkgSubpackageRuntime>,
     pub resources: Vec<ToolPkgResourceRuntime>,
+    #[serde(rename = "wasmModules")]
+    pub wasmModules: Vec<ToolPkgWasmModuleRuntime>,
     #[serde(rename = "workflowTemplates")]
     pub workflowTemplates:
         Vec<crate::toolpkg::ToolPkgTemplateModels::ToolPkgWorkflowTemplateRuntime>,
@@ -396,6 +423,8 @@ pub struct ToolPkgContainerRuntime {
     pub chatInputHooks: Vec<ToolPkgFunctionHookRuntime>,
     #[serde(rename = "chatViewHooks")]
     pub chatViewHooks: Vec<ToolPkgFunctionHookRuntime>,
+    #[serde(rename = "chatMessageHooks")]
+    pub chatMessageHooks: Vec<ToolPkgFunctionHookRuntime>,
     #[serde(rename = "hostEventHooks")]
     pub hostEventHooks: Vec<ToolPkgHostEventHookRuntime>,
     #[serde(rename = "toolLifecycleHooks")]
@@ -428,6 +457,8 @@ pub struct ToolPkgLoadResult {
     pub subpackagePackages: Vec<ToolPackage>,
     #[serde(rename = "containerRuntime")]
     pub containerRuntime: ToolPkgContainerRuntime,
+    #[serde(rename = "marketOrigin", default)]
+    pub marketOrigin: Option<ToolPkgMarketOrigin>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -448,10 +479,14 @@ pub struct ToolPkgManifest {
     pub author: Vec<String>,
     #[serde(rename = "enabled_by_default", default = "defaultEnabledByDefault")]
     pub enabledByDefault: bool,
+    #[serde(rename = "market_only", default)]
+    pub marketOnly: bool,
     #[serde(default)]
     pub subpackages: Vec<ToolPkgManifestSubpackage>,
     #[serde(default)]
     pub resources: Vec<ToolPkgManifestResource>,
+    #[serde(rename = "wasm_modules", alias = "wasmModules", default)]
+    pub wasmModules: Vec<ToolPkgManifestWasmModule>,
     #[serde(rename = "workflow_templates", default)]
     pub workflowTemplates: Vec<ToolPkgManifestWorkflowTemplate>,
     #[serde(rename = "workspace_templates", default)]
@@ -470,6 +505,18 @@ pub struct ToolPkgManifestResource {
     pub path: String,
     #[serde(default)]
     pub mime: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ToolPkgManifestWasmModule {
+    pub id: String,
+    pub path: String,
+    #[serde(default)]
+    pub exports: Vec<String>,
+    #[serde(rename = "source_language", alias = "sourceLanguage", default)]
+    pub sourceLanguage: String,
+    #[serde(default)]
+    pub abi: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -526,12 +573,14 @@ impl ToolPkgArchiveParser {
     #[allow(non_snake_case)]
     pub fn parseToolPkgFromIndexedEntries<
         FReadEntryText,
+        FReadEntryProtectionHeader,
         FParseJsPackage,
         FParseMainRegistration,
         FReportPackageLoadError,
     >(
         entryIndex: &ToolPkgEntryIndex,
         mut readEntryText: FReadEntryText,
+        mut readEntryProtectionHeader: FReadEntryProtectionHeader,
         sourceType: ToolPkgSourceType,
         sourcePath: &str,
         isBuiltIn: bool,
@@ -541,6 +590,7 @@ impl ToolPkgArchiveParser {
     ) -> Result<ToolPkgLoadResult, String>
     where
         FReadEntryText: FnMut(&str) -> Option<String>,
+        FReadEntryProtectionHeader: FnMut(&str) -> Option<Vec<u8>>,
         FParseJsPackage: FnMut(&str, &mut dyn FnMut(String, String)) -> Option<ToolPackage>,
         FParseMainRegistration: FnMut(&str, &str, &str) -> ToolPkgMainRegistrationParseResult,
         FReportPackageLoadError: FnMut(String, String),
@@ -550,6 +600,13 @@ impl ToolPkgArchiveParser {
         let manifestText = readEntryText(&manifestEntryName)
             .ok_or_else(|| "Failed to read manifest entry".to_string())?;
         let manifest = parseToolPkgManifest(&manifestText, &manifestEntryName)?;
+        validateProtectedEntryPolicy(
+            &manifest,
+            &manifestEntryName,
+            entryIndex,
+            &mut readEntryProtectionHeader,
+            &sourceType,
+        )?;
         let manifestBasePath = manifestEntryName
             .rsplit_once('/')
             .map(|(base, _)| base.to_string())
@@ -695,6 +752,73 @@ impl ToolPkgArchiveParser {
             .iter()
             .map(|resource| (resource.key.to_ascii_lowercase(), resource))
             .collect::<BTreeMap<_, _>>();
+
+        let mut wasmModuleIds = BTreeSet::new();
+        let mut wasmModules = Vec::new();
+        for (index, module) in manifest.wasmModules.iter().enumerate() {
+            let id = module.id.trim().to_string();
+            if id.is_empty() {
+                return Err(format!("wasm_modules[{index}].id is required"));
+            }
+            if !wasmModuleIds.insert(id.to_ascii_lowercase()) {
+                return Err(format!("Duplicate wasm module id: {id}"));
+            }
+            let path = module.path.trim();
+            if path.is_empty() {
+                return Err(format!("wasm_modules[{index}].path is required"));
+            }
+            let normalizedPath = Self::resolveManifestRelativeZipEntryPath(&manifestBasePath, path)
+                .ok_or_else(|| format!("Invalid wasm module path: {path}"))?;
+            let extension = normalizedPath
+                .rsplit_once('.')
+                .map(|(_, extension)| extension.to_ascii_lowercase())
+                .unwrap_or_default();
+            if extension != "wasm" {
+                return Err(format!(
+                    "wasm_modules[{index}].path must reference a .wasm file"
+                ));
+            }
+            if !entryIndex.containsEntry(&normalizedPath) {
+                return Err(format!("Cannot find wasm module path '{path}'"));
+            }
+            let sourceLanguage = module.sourceLanguage.trim().to_string();
+            if sourceLanguage.is_empty() {
+                return Err(format!("wasm_modules[{index}].source_language is required"));
+            }
+            let abi = module.abi.trim().to_ascii_lowercase();
+            if abi.is_empty() {
+                return Err(format!("wasm_modules[{index}].abi is required"));
+            }
+            if abi != "scalar" {
+                return Err(format!("wasm_modules[{index}].abi is unsupported: {abi}"));
+            }
+            let mut exportNames = BTreeSet::new();
+            let mut exports = Vec::new();
+            for (exportIndex, exportName) in module.exports.iter().enumerate() {
+                let exportName = exportName.trim().to_string();
+                if exportName.is_empty() {
+                    return Err(format!(
+                        "wasm_modules[{index}].exports[{exportIndex}] is required"
+                    ));
+                }
+                if !exportNames.insert(exportName.clone()) {
+                    return Err(format!(
+                        "Duplicate wasm export '{exportName}' in module '{id}'"
+                    ));
+                }
+                exports.push(exportName);
+            }
+            if exports.is_empty() {
+                return Err(format!("wasm_modules[{index}].exports is required"));
+            }
+            wasmModules.push(ToolPkgWasmModuleRuntime {
+                id,
+                path: normalizedPath,
+                exports,
+                sourceLanguage,
+                abi,
+            });
+        }
 
         let mut workflowTemplateIds = BTreeSet::new();
         let mut workflowTemplates = Vec::new();
@@ -893,6 +1017,7 @@ impl ToolPkgArchiveParser {
             }
             if surface != TOOLPKG_NAV_SURFACE_TOOLBOX
                 && surface != TOOLPKG_NAV_SURFACE_MAIN_SIDEBAR_PLUGINS
+                && surface != TOOLPKG_NAV_SURFACE_APP_BAR
             {
                 return Err(format!("{TOOLPKG_REGISTRATION_NAVIGATION_ENTRY}[{index}].surface is unsupported: {surface}"));
             }
@@ -931,6 +1056,10 @@ impl ToolPkgArchiveParser {
         let chatViewHooks = validateFunctionHooks(
             &mainRegistration.chatViewHooks,
             TOOLPKG_REGISTRATION_CHAT_VIEW_HOOK,
+        )?;
+        let chatMessageHooks = validateFunctionHooks(
+            &mainRegistration.chatMessageHooks,
+            TOOLPKG_REGISTRATION_CHAT_MESSAGE_HOOK,
         )?;
         let hostEventHooks = validateHostEventHooks(
             &mainRegistration.hostEventHooks,
@@ -1003,6 +1132,7 @@ impl ToolPkgArchiveParser {
             sourcePath: sourcePath.to_string(),
             subpackages: subpackageRuntimes,
             resources,
+            wasmModules,
             workflowTemplates,
             workspaceTemplates,
             uiModules,
@@ -1015,6 +1145,7 @@ impl ToolPkgArchiveParser {
             inputMenuTogglePlugins,
             chatInputHooks,
             chatViewHooks,
+            chatMessageHooks,
             hostEventHooks,
             toolLifecycleHooks,
             promptInputHooks,
@@ -1031,6 +1162,7 @@ impl ToolPkgArchiveParser {
             containerPackage,
             subpackagePackages,
             containerRuntime: runtime,
+            marketOrigin: mainRegistration.marketOrigin,
         })
     }
 
@@ -1065,13 +1197,20 @@ impl ToolPkgArchiveParser {
 
     /// Builds a normalized entry index from an extracted ToolPkg directory.
     #[allow(non_snake_case)]
-    pub fn buildDirectoryEntryIndex(rootDir: &std::path::Path) -> ToolPkgEntryIndex {
+    pub fn buildDirectoryEntryIndex(
+        fileSystemHost: &dyn FileSystemHost,
+        rootDir: &str,
+    ) -> ToolPkgEntryIndex {
         let mut normalizedEntryNames = BTreeSet::new();
         let mut entryNamesByNormalizedLowercase = BTreeMap::new();
-        if !rootDir.exists() {
+        let Ok(rootInfo) = fileSystemHost.fileExists(rootDir) else {
+            return ToolPkgEntryIndex::default();
+        };
+        if !rootInfo.exists || !rootInfo.isDirectory {
             return ToolPkgEntryIndex::default();
         }
         collectDirectoryEntryIndex(
+            fileSystemHost,
             rootDir,
             rootDir,
             &mut normalizedEntryNames,
@@ -1160,6 +1299,29 @@ impl ToolPkgArchiveParser {
         crate::toolpkg::ToolPkgProtection::decodeUtf8(&bytes).ok()
     }
 
+    /// Reads at most one fixed-size protection header from an indexed ZIP entry.
+    #[allow(non_snake_case)]
+    pub fn readZipEntryPrefix<R: std::io::Read + std::io::Seek>(
+        archive: &mut zip::ZipArchive<R>,
+        entryIndex: &ToolPkgEntryIndex,
+        rawPath: &str,
+        byteCount: usize,
+    ) -> Option<Vec<u8>> {
+        let archiveEntryName = entryIndex.resolveEntryName(rawPath)?;
+        let mut entry = archive.by_name(&archiveEntryName).ok()?;
+        let mut bytes = vec![0u8; byteCount];
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let count = std::io::Read::read(&mut entry, &mut bytes[offset..]).ok()?;
+            if count == 0 {
+                break;
+            }
+            offset += count;
+        }
+        bytes.truncate(offset);
+        Some(bytes)
+    }
+
     /// Reads the ToolPkg manifest entry and returns the parsed manifest plus entry path.
     #[allow(non_snake_case)]
     pub fn readToolPkgManifestPreview<R: std::io::Read + std::io::Seek>(
@@ -1178,54 +1340,47 @@ impl ToolPkgArchiveParser {
     /// Reads one indexed directory entry as UTF-8 text.
     #[allow(non_snake_case)]
     pub fn readDirectoryEntryText(
-        rootDir: &std::path::Path,
+        fileSystemHost: &dyn FileSystemHost,
+        rootDir: &str,
         entryIndex: &ToolPkgEntryIndex,
         rawPath: &str,
     ) -> Option<String> {
         let relativePath = entryIndex.resolveEntryName(rawPath)?;
-        let bytes = std::fs::read(rootDir.join(relativePath)).ok()?;
+        let bytes = fileSystemHost
+            .readFileBytes(&joinToolPkgHostPath(rootDir, &relativePath))
+            .ok()?;
         crate::toolpkg::ToolPkgProtection::decodeUtf8(&bytes).ok()
     }
 
     /// Extracts normalized ToolPkg entries from an external ZIP file.
     #[allow(non_snake_case)]
     pub fn extractZipEntriesFromExternal(
+        fileSystemHost: &dyn FileSystemHost,
         zipFilePath: &str,
-        destinationDir: &std::path::Path,
+        destinationDir: &str,
     ) -> bool {
-        let zipFile = std::path::Path::new(zipFilePath);
-        if !zipFile.exists() {
+        let Ok(bytes) = fileSystemHost.readFileBytes(zipFilePath) else {
             return false;
-        }
-        Self::extractZipEntriesFromFile(zipFile, destinationDir)
+        };
+        Self::extractZipEntriesFromReader(Cursor::new(bytes), fileSystemHost, destinationDir)
     }
 
     /// Extracts normalized ToolPkg entries from embedded archive bytes.
     #[allow(non_snake_case)]
     pub fn extractZipEntriesFromAssetBytes(
         bytes: &'static [u8],
-        destinationDir: &std::path::Path,
+        fileSystemHost: &dyn FileSystemHost,
+        destinationDir: &str,
     ) -> bool {
-        Self::extractZipEntriesFromReader(Cursor::new(bytes), destinationDir)
-    }
-
-    /// Extracts normalized ToolPkg entries from an opened archive file.
-    #[allow(non_snake_case)]
-    fn extractZipEntriesFromFile(
-        zipFile: &std::path::Path,
-        destinationDir: &std::path::Path,
-    ) -> bool {
-        let Ok(file) = std::fs::File::open(zipFile) else {
-            return false;
-        };
-        Self::extractZipEntriesFromReader(file, destinationDir)
+        Self::extractZipEntriesFromReader(Cursor::new(bytes), fileSystemHost, destinationDir)
     }
 
     /// Extracts normalized ToolPkg entries from a generic seekable reader.
     #[allow(non_snake_case)]
     fn extractZipEntriesFromReader<R: std::io::Read + std::io::Seek>(
         reader: R,
-        destinationDir: &std::path::Path,
+        fileSystemHost: &dyn FileSystemHost,
+        destinationDir: &str,
     ) -> bool {
         let Ok(mut archive) = zip::ZipArchive::new(reader) else {
             return false;
@@ -1240,21 +1395,37 @@ impl ToolPkgArchiveParser {
             let Some(normalizedEntry) = Self::normalizeZipEntryPath(entry.name()) else {
                 continue;
             };
-            let outputFile = destinationDir.join(normalizedEntry);
-            if let Some(parent) = outputFile.parent() {
-                if std::fs::create_dir_all(parent).is_err() {
-                    return false;
-                }
-            }
-            let Ok(mut output) = std::fs::File::create(outputFile) else {
+            let mut content = Vec::new();
+            if std::io::Read::read_to_end(&mut entry, &mut content).is_err() {
                 return false;
-            };
-            if std::io::copy(&mut entry, &mut output).is_err() {
+            }
+            if fileSystemHost
+                .writeFileBytes(
+                    &joinToolPkgHostPath(destinationDir, &normalizedEntry),
+                    &content,
+                )
+                .is_err()
+            {
                 return false;
             }
         }
         true
     }
+}
+
+#[allow(non_snake_case)]
+/// Keeps the parser signature stable while ToolPkg artifacts use standard ZIP entries.
+fn validateProtectedEntryPolicy<FReadEntryProtectionHeader>(
+    _manifest: &ToolPkgManifest,
+    _manifestEntryName: &str,
+    _entryIndex: &ToolPkgEntryIndex,
+    _readEntryProtectionHeader: &mut FReadEntryProtectionHeader,
+    _sourceType: &ToolPkgSourceType,
+) -> Result<(), String>
+where
+    FReadEntryProtectionHeader: FnMut(&str) -> Option<Vec<u8>>,
+{
+    Ok(())
 }
 
 #[allow(non_snake_case)]
@@ -1557,28 +1728,32 @@ fn duplicateLabel(registryName: &str) -> &'static str {
 #[allow(non_snake_case)]
 /// Recursively adds directory entries to a normalized ToolPkg entry index.
 fn collectDirectoryEntryIndex(
-    rootDir: &std::path::Path,
-    currentDir: &std::path::Path,
+    fileSystemHost: &dyn FileSystemHost,
+    rootDir: &str,
+    currentDir: &str,
     normalizedEntryNames: &mut BTreeSet<String>,
     entryNamesByNormalizedLowercase: &mut BTreeMap<String, String>,
 ) {
-    let Ok(entries) = std::fs::read_dir(currentDir) else {
+    let Ok(entries) = fileSystemHost.listFiles(currentDir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
+    for entry in entries {
+        let path = joinToolPkgHostPath(currentDir, &entry.name);
+        if entry.isDirectory {
             collectDirectoryEntryIndex(
+                fileSystemHost,
                 rootDir,
                 &path,
                 normalizedEntryNames,
                 entryNamesByNormalizedLowercase,
             );
-        } else if path.is_file() {
-            let Ok(relativePath) = path.strip_prefix(rootDir) else {
+        } else {
+            let Some(relativePath) = path
+                .strip_prefix(rootDir.trim_end_matches(['/', '\\']))
+                .map(|value| value.trim_start_matches(['/', '\\']).replace('\\', "/"))
+            else {
                 continue;
             };
-            let relativePath = relativePath.to_string_lossy().replace('\\', "/");
             let Some(normalizedName) = ToolPkgArchiveParser::normalizeZipEntryPath(&relativePath)
             else {
                 continue;
@@ -1589,6 +1764,11 @@ fn collectDirectoryEntryIndex(
                 .or_insert(relativePath);
         }
     }
+}
+
+/// Joins a normalized ToolPkg entry beneath one host-owned directory path.
+fn joinToolPkgHostPath(rootDir: &str, entryPath: &str) -> String {
+    format!("{}/{}", rootDir.trim_end_matches(['/', '\\']), entryPath)
 }
 
 #[allow(non_snake_case)]

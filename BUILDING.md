@@ -33,6 +33,15 @@ MSVC x64 and ARM64 components
 LLVM clang at C:\Program Files\LLVM\bin\clang.exe
 ```
 
+Linux desktop App builds:
+
+```text
+CMake, Ninja, pkg-config, clang, and GTK development headers
+GStreamer development headers exposing gstreamer-1.0, gstreamer-app-1.0, and
+gstreamer-audio-1.0 through pkg-config
+WebKitGTK 4.1 development headers exposing pkg-config package webkit2gtk-4.1
+```
+
 Flutter app builds:
 
 ```text
@@ -72,7 +81,7 @@ sudo dnf install -y musl-gcc musl-devel musl-libc-static gcc-aarch64-linux-gnu s
 ```
 
 The aarch64 Linux CLI release requires an `aarch64-linux-gnu-gcc` cross C compiler and
-the Fedora `/usr/aarch64-redhat-linux/sys-root/fc43` sysroot. The release script injects
+the Fedora `/usr/aarch64-redhat-linux/sys-root/fc43` sysroot. The build release script injects
 the sysroot's `limits.h` while compiling C dependencies because Fedora's cross compiler
 is built without target headers.
 
@@ -99,7 +108,7 @@ cargo run --manifest-path apps/cli/Cargo.toml --bin operit2 -- cli update check 
 cargo run --manifest-path apps/cli/Cargo.toml --bin operit2 -- tui --update-current-version 0.0.0-preview.0
 ```
 
-## Release Script
+## Build Release Script
 
 Interactive release helper:
 
@@ -107,38 +116,46 @@ Interactive release helper:
 .\.venv\Scripts\python.exe tools\release\release_interactive.py
 ```
 
-Direct release script:
+Direct build release script:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py
+.\.venv\Scripts\python.exe tools\release\build_release.py
 ```
 
 Environment check only:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\build_scripts\build_local.py --products all --cli-arches host --check
-.\.venv\Scripts\python.exe tools\release\release.py --scope full --cli-arches all --check-environment
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope full --cli-arches all --check-environment
 ```
 
 Scopes:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli
-.\.venv\Scripts\python.exe tools\release\release.py --scope app
-.\.venv\Scripts\python.exe tools\release\release.py --scope full
-.\.venv\Scripts\python.exe tools\release\release.py --scope none --build-only --no-wsl
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope app
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope full
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope none --no-wsl
 ```
 
 Build only:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli --build-only
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli
+```
+
+`tools/release/dist` is the shared staging directory for local, SSH-collected,
+and GitHub Actions assets. `build_release.py` keeps existing staged files so
+platform builds can be composed. Start a new staged set explicitly with:
+
+```powershell
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli --clean-dist
 ```
 
 Release environment assumptions:
 
 ```text
-Local Windows release.py:
+Local Windows build_release.py:
   Builds Android, OpenHarmony, Windows App, Windows CLI, and WSL Linux assets.
   Requires Windows build tools, Android/OpenHarmony signing files, and Fedora WSL
   when WSL Linux assets are selected.
@@ -148,9 +165,19 @@ Local build_local.py:
   requirements. macOS can add unsigned iOS with --include-ios.
 
 GitHub Actions:
-  Apple Release Build, macOS Flutter Build, and iOS Flutter Build are manual
-  cloud entrypoints. Artifacts downloaded from cloud runs must be collected into
+  Apple Release Build, macOS Flutter Build, iOS Flutter Build, Windows Release
+  Build, Linux Release Build, and Android Flutter Build are manual cloud
+  entrypoints. Artifacts downloaded from cloud runs are collected into
   tools/release/dist with download_action_artifacts.py.
+```
+
+Cloud build composition:
+
+```text
+1. Trigger the platform workflows needed for this release.
+2. Wait for every selected workflow to succeed.
+3. Collect every run into tools/release/dist with one --run-id per run.
+4. Run publish_dist.py only when the collected files are ready to publish.
 ```
 
 Successful App and full builds advance the Flutter build number in
@@ -160,8 +187,8 @@ change it.
 CLI architecture selection:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli --build-only --cli-arches host
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli --build-only --cli-arches all
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli --cli-arches host
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli --cli-arches all
 ```
 
 On Windows, `--cli-arches all` builds:
@@ -173,18 +200,49 @@ operit2-cli-linux-x86_64.tar.gz
 operit2-cli-linux-aarch64.tar.gz
 ```
 
-Apple release assets are built in GitHub Actions for normal release work. Use
-the Apple aggregate workflow for macOS App, macOS CLI, and unsigned iOS archives,
-or trigger the individual macOS and iOS workflows while diagnosing one product.
-These workflows are manual `workflow_dispatch` entrypoints, and the macOS/iOS
-workflows are also reusable through `workflow_call`.
+Cloud workflows are independent manual `workflow_dispatch` entrypoints. The
+Apple aggregate workflow invokes the reusable macOS and iOS workflows; the
+other workflows build exactly one platform family:
+
+```text
+Apple Release Build       macOS App, macOS CLI, and unsigned iOS App
+macOS Flutter Build       macOS App and/or CLI
+iOS Flutter Build         unsigned iOS App
+Windows Release Build     Windows App and/or CLI
+Linux Release Build       Linux App and/or CLI
+Android Flutter Build     signed Android APKs
+```
+
+Android Flutter Build requires these repository secrets before it can run:
+
+```text
+ANDROID_RELEASE_KEYSTORE_BASE64
+ANDROID_RELEASE_STORE_PASSWORD
+ANDROID_RELEASE_KEY_ALIAS
+ANDROID_RELEASE_KEY_PASSWORD
+```
+
+`ANDROID_RELEASE_KEYSTORE_BASE64` is the Base64 encoding of the Android release
+keystore. The workflow writes the signing material only inside its runner.
+
+OpenHarmony has no GitHub Actions workflow yet. Its SDK and command-line tools
+are not currently distributed from a reproducible URL available to this
+repository, so a cloud workflow cannot provision a valid toolchain. The local
+OpenHarmony procedure below remains the supported build path until that SDK
+distribution source and the signing secrets are supplied.
 
 ```powershell
 gh workflow run "Apple Release Build" -f products=all -f include_ios=true -f build_web_assets=false
 gh workflow run "macOS Flutter Build" -f products=all -f build_web_assets=false
 gh workflow run "iOS Flutter Build" -f build_web_assets=false
-.\.venv\Scripts\python.exe tools\release\download_action_artifacts.py --run-id <run-id>
+gh workflow run "Windows Release Build" -f products=all -f cli_arches=all
+gh workflow run "Linux Release Build" -f products=all -f cli_arches=all
+gh workflow run "Android Flutter Build"
+.\.venv\Scripts\python.exe tools\release\download_action_artifacts.py --run-id <apple-run-id> --run-id <windows-run-id> --run-id <linux-run-id> --run-id <android-run-id>
 ```
+
+`download_action_artifacts.py` accepts only completed successful runs and copies
+their release archives into the existing `tools/release/dist` staging directory.
 
 Collaborators can still build the current host locally with one Python command.
 Run it from the repository root. On Windows, use the project virtual environment.
@@ -227,24 +285,30 @@ README.txt
 Skip WSL Linux packaging:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli --build-only --cli-arches all --no-wsl
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli --cli-arches all --no-wsl
 ```
 
 ## Publishing
 
-Publish selected scope to GitHub Release:
+Publish the already-built files in `tools/release/dist` to GitHub Release:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli
+.\.venv\Scripts\python.exe tools\release\publish_dist.py
 ```
 
-Publish as draft:
+Validate the staged files and GitHub credentials without uploading:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli --draft
+.\.venv\Scripts\python.exe tools\release\publish_dist.py --check-only
 ```
 
-The release script reads versions from:
+Publish staged files as a draft:
+
+```powershell
+.\.venv\Scripts\python.exe tools\release\publish_dist.py --draft
+```
+
+The build release script reads versions from:
 
 ```text
 apps/cli/Cargo.toml
@@ -260,7 +324,7 @@ docs/release-versioning.md
 
 ## Flutter App
 
-The release script builds app packages through Flutter. Local checks can be run from:
+The build release script builds app packages through Flutter. Local checks can be run from:
 
 ```powershell
 cd apps\flutter\app
@@ -374,7 +438,7 @@ fvm flutter create --platforms ohos .
 Build the shared Web Access bundle from the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\build_scripts\build_flutter_web_access.py
+.\.venv\Scripts\python.exe tools\build_scripts\build_flutter_web_access.py --base-href /
 ```
 
 The remote access bundle is written to `apps/web_access/build/bundle` and

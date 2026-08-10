@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,26 @@ from pathlib import Path
 MANIFEST_FILENAMES = ("manifest.hjson", "manifest.json")
 SYNCABLE_SUFFIXES = {".js", ".toolpkg"}
 HOT_RELOAD_STATE_FILE = ".sync_hot_reload_state.json"
+XCODE_CROSS_ENVIRONMENT_KEYS = {
+    "ARCHS",
+    "AR",
+    "CC",
+    "CFLAGS",
+    "CPP",
+    "CPPFLAGS",
+    "CURRENT_ARCH",
+    "CXX",
+    "CXXFLAGS",
+    "EFFECTIVE_PLATFORM_NAME",
+    "IPHONEOS_DEPLOYMENT_TARGET",
+    "LDFLAGS",
+    "NATIVE_ARCH",
+    "PLATFORM_NAME",
+    "RANLIB",
+    "SDKROOT",
+    "TARGET_BUILD_DIR",
+    "VALID_ARCHS",
+}
 @dataclass(frozen=True)
 class SyncPlanItem:
     mode: str
@@ -77,21 +98,65 @@ def _collect_sync_plan(source_dir: Path) -> list[SyncPlanItem]:
     return plans
 
 
-def _run_checked_command(command: list[str], cwd: Path, *, dry_run: bool) -> None:
+# Runs one command and reports the exact command line on failure.
+def _run_checked_command(
+    command: list[str],
+    cwd: Path,
+    *,
+    dry_run: bool,
+    env: dict[str, str] | None = None,
+) -> None:
     command_text = subprocess.list2cmdline(command)
     if dry_run:
         print(f"DRY-RUN-CMD: (cd {cwd}) {command_text}")
         return
     print(f"RUN-CMD: (cd {cwd}) {command_text}")
-    completed = subprocess.run(command, cwd=str(cwd))
+    completed = subprocess.run(command, cwd=str(cwd), env=env)
     if completed.returncode != 0:
         raise RuntimeError(f"Command failed with exit code {completed.returncode}: {command_text}")
+
+
+# Builds the environment used for host-only Cargo code generators.
+def _host_cargo_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for key in XCODE_CROSS_ENVIRONMENT_KEYS:
+        environment.pop(key, None)
+    if sys.platform == "darwin":
+        completed = subprocess.run(
+            ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        environment["SDKROOT"] = completed.stdout.strip()
+    return environment
 
 
 def _platform_command(executable: str) -> str:
     if os.name == "nt":
         return f"{executable}.cmd"
     return executable
+
+
+def _generate_plugin_sdk_types(repo_root: Path, *, dry_run: bool) -> None:
+    core_root = repo_root / "core"
+    sdk_source_root = core_root / "crates" / "operit-plugin-sdk" / "src"
+    declaration_root = repo_root / "plugins" / "types"
+    _run_checked_command(
+        [
+            "cargo",
+            "run",
+            "-p",
+            "operit-plugin-sdk-codegen",
+            "--",
+            "generate",
+            str(sdk_source_root),
+            str(declaration_root),
+        ],
+        core_root,
+        dry_run=dry_run,
+        env=_host_cargo_environment(),
+    )
 
 
 def _iter_signature_files(paths: list[Path]) -> list[Path]:
@@ -370,6 +435,8 @@ def main() -> int:
     parser.add_argument("--no-hot-reload", action="store_true")
     parser.add_argument("--hot-reload-timeout", type=float, default=5.0)
     args = parser.parse_args()
+
+    _generate_plugin_sdk_types(repo_root, dry_run=bool(args.dry_run))
 
     total_copied = 0
     total_packed = 0

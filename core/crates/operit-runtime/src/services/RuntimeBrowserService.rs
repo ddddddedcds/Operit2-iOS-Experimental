@@ -3,12 +3,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use operit_host_api::HostManager::HostManager;
+use operit_util::stream::ReverseStream::ReverseStream;
+use operit_host_api::TimeUtils::currentTimeMillis;
 use operit_host_api::{
     BrowserSessionCommand, BrowserSessionCommandResult, BrowserSessionHost, BrowserSessionInfo,
     BrowserSessionSnapshot, HostError, HostResult,
 };
 use operit_util::stream::HotStream::MutableSharedStreamImpl;
-use operit_util::stream::Stream::Stream;
+use operit_util::stream::Stream::{CollectFuture, Stream};
 use operit_util::AppLogger::AppLogger;
 use serde::{Deserialize, Serialize};
 
@@ -111,8 +113,8 @@ impl Stream for RuntimeBrowserEventStream {
     type Item = RuntimeBrowserStreamEvent;
 
     /// Collects serialized browser events from the shared stream.
-    fn collect(&mut self, collector: &mut dyn FnMut(Self::Item)) {
-        self.upstream.collect(collector);
+    fn collect<'a>(&'a mut self, collector: &'a mut dyn FnMut(Self::Item)) -> CollectFuture<'a> {
+        self.upstream.collect(collector)
     }
 }
 
@@ -372,7 +374,7 @@ impl RuntimeBrowserService {
         &self,
         command: RuntimeBrowserCommand,
     ) -> Result<RuntimeBrowserCommandResult, String> {
-        let started_at = std::time::Instant::now();
+        let startedAtMillis = currentTimeMillis();
         let log_context = (command.action != BROWSER_RUNTIME_INTERACTION_ACTION)
             .then(|| (command.action.clone(), command.sessionId.clone()));
         if let Some((action, session_id)) = log_context.as_ref() {
@@ -393,11 +395,38 @@ impl RuntimeBrowserService {
                     "command done action={} session={:?} elapsedMs={}",
                     action,
                     session_id,
-                    started_at.elapsed().as_millis()
+                    currentTimeMillis() - startedAtMillis
                 ),
             );
         }
         Ok(result)
+    }
+
+    /// Applies ordered compositor interactions supplied by one caller-owned input stream.
+    #[allow(non_snake_case)]
+    pub async fn submitBrowserInteractions(
+        &self,
+        mut commands: ReverseStream<RuntimeBrowserCommand>,
+    ) -> Result<(), String> {
+        let mut interactionError = None;
+        commands
+            .collect(&mut |command| {
+                if interactionError.is_some() {
+                    return;
+                }
+                if command.action != BROWSER_RUNTIME_INTERACTION_ACTION {
+                    interactionError = Some("browser interaction stream received a non-interaction command".to_string());
+                    return;
+                }
+                if let Err(error) = self.submitBrowserCommand(command) {
+                    interactionError = Some(error);
+                }
+            })
+            .await;
+        match interactionError {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Returns the latest browser session snapshot for a controller.

@@ -3,6 +3,7 @@ use std::sync::{Mutex, OnceLock};
 use serde_json::Value;
 
 use crate::plugins::toolpkg::ToolPkgHookBridgeSupport::ToolPkgBridgeRuntime;
+use crate::plugins::toolpkg::ToolPkgPreHookTimeout::ToolPkgPreHookTimeout;
 use operit_plugin_sdk::toolpkg::ToolPkgCommonPluginConstants::TOOLPKG_EVENT_CHAT_INPUT;
 use operit_plugin_sdk::toolpkg::ToolPkgHooks::{
     decodeToolPkgHookResult, ToolPkgChatInputHookRegistration,
@@ -11,12 +12,23 @@ use operit_plugin_sdk::toolpkg::ToolPkgParser::ToolPkgContainerRuntime;
 use operit_util::ChainLogger::{self, PLUGIN_CHAIN};
 
 static CHAT_INPUT_HOOKS: OnceLock<Mutex<Vec<ToolPkgChatInputHookRegistration>>> = OnceLock::new();
+static CHAT_INPUT_RUNTIME: OnceLock<ToolPkgBridgeRuntime> = OnceLock::new();
 
+pub const CHAT_INPUT_EVENT_INPUT_CHANGED: &str = "input_changed";
 pub const CHAT_INPUT_EVENT_SUBMIT_REQUESTED: &str = "submit_requested";
+pub const CHAT_INPUT_EVENT_SUBMITTED: &str = "submitted";
 pub const CHAT_INPUT_SUBMIT_ACTION_ALLOW: &str = "allow";
 pub const CHAT_INPUT_SUBMIT_ACTION_BLOCK: &str = "block";
 pub const CHAT_INPUT_SUBMIT_ACTION_CONSUME: &str = "consume";
 pub const CHAT_INPUT_SUBMIT_ACTION_REPLACE: &str = "replace";
+
+/// Builds the chat-input timeout notice with the exact package and Hook ID.
+fn build_chat_input_timeout_message(hook: &ToolPkgChatInputHookRegistration) -> String {
+    format!(
+        "前置插件「{}:{}」响应超时，已跳过并继续发送",
+        hook.containerPackageName, hook.hookId
+    )
+}
 
 #[derive(Clone, Debug)]
 pub struct ChatInputHookContext {
@@ -39,6 +51,7 @@ pub struct ChatInputHookResult {
     pub text: Option<String>,
     pub message: Option<String>,
     pub clearInput: bool,
+    pub timedOut: bool,
     pub metadata: serde_json::Map<String, Value>,
 }
 
@@ -47,6 +60,7 @@ pub struct ToolPkgChatInputHookBridge;
 impl ToolPkgChatInputHookBridge {
     /// Registers chat input hooks for one application runtime.
     pub fn register(runtime: ToolPkgBridgeRuntime) {
+        CHAT_INPUT_RUNTIME.get_or_init(|| runtime.clone());
         let manager = runtime.package_manager();
         manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
             ToolPkgChatInputHookBridge::syncToolPkgRegistrations(activeContainers);
@@ -106,7 +120,25 @@ impl ToolPkgChatInputHookBridge {
             ],
         );
         let manager = runtime.package_manager();
+        let budget = ToolPkgPreHookTimeout::fromPreferences();
+        let mut timedOut = false;
+        let mut timeoutNoticeMessage: Option<String> = None;
         for hook in activeHooks {
+            let Some(timeoutMillis) = budget.remainingTimeoutMillis() else {
+                timedOut = true;
+                if current.eventName == CHAT_INPUT_EVENT_SUBMIT_REQUESTED {
+                    timeoutNoticeMessage = Some(build_chat_input_timeout_message(&hook));
+                }
+                ChainLogger::error(
+                    PLUGIN_CHAIN,
+                    "plugin.toolpkg.chat_input.timeout",
+                    &[
+                        ("event", current.eventName.clone()),
+                        ("stage", "before_hook".to_string()),
+                    ],
+                );
+                break;
+            };
             ChainLogger::info(
                 PLUGIN_CHAIN,
                 "plugin.toolpkg.chat_input.run.start",
@@ -117,7 +149,7 @@ impl ToolPkgChatInputHookBridge {
                     ("function", hook.functionName.clone()),
                 ],
             );
-            let result = match manager.runToolPkgMainHook(
+            let raw = manager.runToolPkgMainHookWithTimeoutMillis(
                 &hook.containerPackageName,
                 &hook.functionName,
                 TOOLPKG_EVENT_CHAT_INPUT,
@@ -128,7 +160,30 @@ impl ToolPkgChatInputHookBridge {
                 None,
                 None,
                 None,
-            ) {
+                timeoutMillis,
+            );
+            let hookTimedOut = raw
+                .as_ref()
+                .err()
+                .map(|error| ToolPkgPreHookTimeout::isTimeoutError(error))
+                .unwrap_or(false);
+            if hookTimedOut || budget.hasExpired() {
+                timedOut = true;
+                if current.eventName == CHAT_INPUT_EVENT_SUBMIT_REQUESTED {
+                    timeoutNoticeMessage = Some(build_chat_input_timeout_message(&hook));
+                }
+                ChainLogger::error(
+                    PLUGIN_CHAIN,
+                    "plugin.toolpkg.chat_input.timeout",
+                    &[
+                        ("event", current.eventName.clone()),
+                        ("package", hook.containerPackageName.clone()),
+                        ("hookId", hook.hookId.clone()),
+                    ],
+                );
+                break;
+            }
+            let result = match raw {
                 Ok(raw) => decodeToolPkgHookResult(raw),
                 Err(error) => {
                     ChainLogger::error(
@@ -204,13 +259,23 @@ impl ToolPkgChatInputHookBridge {
             Some(ChatInputHookResult {
                 action: CHAT_INPUT_SUBMIT_ACTION_ALLOW.to_string(),
                 text: Some(current.text),
-                message: None,
+                message: timeoutNoticeMessage,
                 clearInput: false,
+                timedOut,
                 metadata: serde_json::Map::new(),
             })
         } else {
             None
         }
+    }
+
+    /// Dispatches chat input hooks through the runtime registered by the common bridge.
+    #[allow(non_snake_case)]
+    pub fn dispatchRegisteredChatInputHooks(
+        context: ChatInputHookContext,
+    ) -> Option<ChatInputHookResult> {
+        let runtime = CHAT_INPUT_RUNTIME.get()?;
+        Self::dispatchChatInputHooks(runtime, context)
     }
 }
 
@@ -242,6 +307,7 @@ fn parseChatInputHookResult(decoded: Option<&Value>) -> Option<ChatInputHookResu
                     text: Some(value.clone()),
                     message: None,
                     clearInput: false,
+                    timedOut: false,
                     metadata: serde_json::Map::new(),
                 })
             }
@@ -280,6 +346,7 @@ fn parseChatInputHookResult(decoded: Option<&Value>) -> Option<ChatInputHookResu
                     .get("clearInput")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                timedOut: false,
                 metadata,
             })
         }

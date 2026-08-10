@@ -1,35 +1,28 @@
 use crate::core::chat::AIMessageManager::AIMessageManager;
 use crate::core::chat::ChatRuntimeHolder::ChatRuntimeHolder;
 use crate::core::events::RuntimeEvent::RuntimeEvent;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::data::backup::Operit1SnapshotImportManager::{
-    observeOperit1SnapshotImportProgress, publishOperit1SnapshotImportProgress,
-    Operit1ModelConfigImportResult, Operit1ModelConfigSnapshotPreview,
-    Operit1SnapshotImportManager, Operit1SnapshotImportProgress, Operit1SnapshotImportResult,
-    Operit1SnapshotPreview,
-};
-use crate::data::backup::RawSnapshotBackupManager::{
-    RawSnapshotBackupManager, RawSnapshotManifest,
-};
 use crate::data::preferences::ApiPreferences::ApiPreferences;
 use crate::data::preferences::CharacterCardManager::CharacterCardManager;
 use crate::data::preferences::FunctionalConfigManager::FunctionalConfigManager;
 use crate::data::preferences::ModelConfigManager::ModelConfigManager;
 use crate::data::preferences::UserPreferencesManager::UserPreferencesManager;
+use crate::plugins::toolpkg::ToolPkgAppLifecycleHookBridge::ToolPkgAppLifecycleHookBridge;
 use crate::plugins::toolpkg::ToolPkgHookBridgeSupport::ToolPkgBridgeRuntime;
 use crate::plugins::toolpkg::ToolPkgInputMenuToggleBridge::ToolPkgInputMenuToggleBridge;
 use crate::plugins::PluginRegistry::PluginRegistry;
 use crate::services::ProviderRuntimeSupportService::ProviderRuntimeSupportService;
 use crate::services::ToolRuntimeSupportService::ToolRuntimeSupportService;
-use operit_host_api::HostManager::{setDefaultHttpHost, HostManager};
-use operit_host_api::HostRuntimeEventRegistration;
+use operit_host_api::HostManager::{
+    setDefaultHostRuntimeTaskSchedulerHost, setDefaultHttpHost, HostManager,
+};
 use operit_host_api::TimeUtils::currentTimeMillis;
+use operit_host_api::{HostRuntimeEventRegistration, HostRuntimeTaskSchedulerHost};
 #[cfg(feature = "javascript")]
 use operit_js_bridge::javascript::JsExecutionProvider::QuickJsExecutionProvider;
 use operit_model::Memory::{Memory, MemoryLink};
 use operit_providers::chat::llmprovider::ModelConfigConnectionTester::ModelConnectionTestReport;
 use operit_providers::runtime_support::ProviderRuntimeContext;
-use operit_store::db::AppDatabase::AppDatabase;
+use operit_store::repository::UserMarkdownRepository::UserMarkdownRepository;
 use operit_store::sync::SqlChatSyncStore::{SqlChatSyncStore, CHAT_SYNC_DOMAIN};
 use operit_store::ObjectBoxStore::{ObjectBox, OBJECTBOX_SYNC_DOMAIN};
 use operit_store::PreferencesDataStore::PreferencesDataStore;
@@ -42,6 +35,8 @@ use operit_store::RuntimeStorePaths::RuntimeStorePaths;
 use operit_store::SyncOperationStore::{
     compactSyncOperations, SyncClock, SyncOperation, SyncOperationStore,
 };
+use operit_tools::files::PathMapper::PathMapper;
+use operit_tools::files::VisualFileSystem::VisualFileSystem;
 use operit_tools::runtime_support::ToolRuntimeDependencies;
 use operit_tools::tools::mcp_runtime::plugins::MCPStarter::MCPStarter;
 use operit_tools::tools::mcp_runtime::MCPRepository::MCPRepository;
@@ -49,7 +44,6 @@ use operit_tools::tools::packTool::RuntimePackageManager::RuntimePackageManager;
 use operit_tools::tools::skill_runtime::SkillRepository::SkillRepository;
 use operit_tools::tools::AIToolHandler::AIToolHandler;
 use operit_util::RuntimeStoreRoot::{setDefaultRuntimeStoreRootConfig, RuntimeStoreRootConfig};
-use std::fs;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -87,7 +81,21 @@ impl OperitApplication {
             let workspaceRoot = runtimeStorageHost
                 .workspaceRootDir()
                 .expect("runtime storage host must provide a workspace root directory");
-            AppLogger::configure_log_files(&runtimeRoot);
+            let fileSystemHost = hostManager
+                .fileSystemHost
+                .clone()
+                .expect("runtime storage host requires a file-system host for logging");
+            let pathMapper = PathMapper::new(runtimeRoot.clone(), workspaceRoot.clone());
+            let logFile = pathMapper
+                .resolve("/app/data/logs/operit.log")
+                .expect("runtime log path must resolve through the file-system host")
+                .physicalPath;
+            let packageLogFile = pathMapper
+                .resolve("/app/data/logs/toolpkg.log")
+                .expect("ToolPkg log path must resolve through the file-system host")
+                .physicalPath;
+            AppLogger::configure_log_files(fileSystemHost, logFile, packageLogFile)
+                .expect("runtime log files must be configured through the file-system host");
             setDefaultRuntimeStoreRootConfig(RuntimeStoreRootConfig::new(
                 runtimeRoot,
                 workspaceRoot,
@@ -103,7 +111,16 @@ impl OperitApplication {
         if let Some(httpHost) = hostManager.httpHost.clone() {
             setDefaultHttpHost(httpHost);
         }
-        let chatRuntimeHolder = Arc::new(AsyncMutex::new(ChatRuntimeHolder::new()));
+        if let Some(taskSchedulerHost) = hostManager.hostRuntimeTaskSchedulerHost.clone() {
+            setDefaultHostRuntimeTaskSchedulerHost(taskSchedulerHost);
+        }
+        let chatFileSystemHost = hostManager
+            .fileSystemHost
+            .clone()
+            .expect("Chat runtime requires a FileSystemHost");
+        let chatRuntimeHolder = Arc::new(AsyncMutex::new(ChatRuntimeHolder::new(
+            chatFileSystemHost.clone(),
+        )));
         let runtimeToolSupport =
             ToolRuntimeSupportService::create(hostManager.clone(), chatRuntimeHolder.clone());
         #[cfg(feature = "javascript")]
@@ -122,6 +139,7 @@ impl OperitApplication {
             .try_lock()
             .expect("new chat runtime holder must be unlocked") =
             ChatRuntimeHolder::newWithRuntimeDependencies(
+                chatFileSystemHost,
                 toolHandler.clone(),
                 providerRuntimeContext.clone(),
             );
@@ -138,13 +156,63 @@ impl OperitApplication {
         }
     }
 
+    /// Removes files queued for cleanup through the configured file-system host.
+    #[allow(non_snake_case)]
+    fn cleanOnExitFiles(&self) -> Result<(), String> {
+        let fileSystem = self.runtimeFileSystem()?;
+        const CLEAN_ON_EXIT_PATH: &str = "/app/data/temp/clean_on_exit";
+        fileSystem.makeDirectory(CLEAN_ON_EXIT_PATH, true)?;
+        for entry in fileSystem.listFiles(CLEAN_ON_EXIT_PATH)? {
+            let path = PathMapper::joinVfsPath(CLEAN_ON_EXIT_PATH, &entry.name)?;
+            fileSystem.deleteFile(&path, entry.isDirectory)?;
+        }
+        Ok(())
+    }
+
+    /// Builds the virtual file system backed by the configured runtime hosts.
+    fn runtimeFileSystem(&self) -> Result<VisualFileSystem, String> {
+        let runtimeStorageHost = self
+            .hostManager
+            .runtimeStorageHost
+            .as_ref()
+            .ok_or_else(|| {
+                "RuntimeStorageHost is not registered for runtime file-system access".to_string()
+            })?;
+        let runtimeRoot = runtimeStorageHost.runtimeRootDir().ok_or_else(|| {
+            "RuntimeStorageHost runtime root is not configured for runtime file-system access"
+                .to_string()
+        })?;
+        let workspaceRoot = runtimeStorageHost.workspaceRootDir().ok_or_else(|| {
+            "RuntimeStorageHost workspace root is not configured for runtime file-system access"
+                .to_string()
+        })?;
+        let fileSystemHost = self.hostManager.fileSystemHost.clone().ok_or_else(|| {
+            "FileSystemHost is not registered for runtime file-system access".to_string()
+        })?;
+        Ok(VisualFileSystem::new(
+            fileSystemHost,
+            PathMapper::new(runtimeRoot, workspaceRoot),
+        ))
+    }
+
+    /// Ensures a mapped directory exists through the configured file-system host.
+    fn ensureHostDirectory(&self, path: &std::path::Path) -> Result<(), String> {
+        let fileSystemHost = self.hostManager.fileSystemHost.as_ref().ok_or_else(|| {
+            "FileSystemHost is not registered for runtime directory creation".to_string()
+        })?;
+        fileSystemHost
+            .makeDirectory(&path.to_string_lossy(), true)
+            .map_err(|error| error.message)
+    }
+
     /// Initializes persistent stores, prompt managers, tool handlers, plugins, and runtime events.
     #[allow(non_snake_case)]
     pub fn onCreate(&mut self) -> Result<(), String> {
         self.appStartupTimeMs = currentTimeMillis();
+        AppLogger::i("OperitApplication", "runtime initialization start");
         setHostManager(self.hostManager.clone());
         self.configureOpenMpEnvironment();
-        OperitPaths::cleanOnExitCleanup()?;
+        self.cleanOnExitFiles()?;
         self.ensureWorkManagerInitialized();
         AIMessageManager::initialize();
         self.initializeJsonSerializer();
@@ -154,16 +222,60 @@ impl OperitApplication {
         self.initializeFunctionalPromptManager()?;
         self.preloadDatabase();
         let mut toolHandler = self.toolHandler.clone();
+        let toolRegistrationStartedAt = currentTimeMillis();
+        AppLogger::i("OperitApplication", "default tool registration start");
         toolHandler.registerDefaultTools();
+        AppLogger::i(
+            "OperitApplication",
+            &format!(
+                "default tool registration done elapsedMs={}",
+                currentTimeMillis() - toolRegistrationStartedAt
+            ),
+        );
+        let pluginInitializationStartedAt = currentTimeMillis();
+        AppLogger::i("OperitApplication", "built-in plugin initialization start");
         PluginRegistry::initializeBuiltins(self.toolPkgBridgeRuntime.clone());
+        AppLogger::i(
+            "OperitApplication",
+            &format!(
+                "built-in plugin initialization done elapsedMs={}",
+                currentTimeMillis() - pluginInitializationStartedAt
+            ),
+        );
+        ToolPkgAppLifecycleHookBridge::dispatchEvent(
+            &self.toolPkgBridgeRuntime,
+            operit_plugin_sdk::toolpkg::ToolPkgCommonPluginConstants::TOOLPKG_EVENT_APPLICATION_ON_CREATE,
+            serde_json::json!({
+                "extras": {
+                    "startupTimeMs": self.appStartupTimeMs,
+                    "elapsedMs": currentTimeMillis() - self.appStartupTimeMs,
+                }
+            }),
+        );
+        let runtimeEventRegistrationStartedAt = currentTimeMillis();
+        AppLogger::i("OperitApplication", "host runtime event registration start");
         self.hostRuntimeEventRegistration =
             crate::services::RuntimeEventIngressService::RuntimeEventIngressService::startHostRuntimeEventSupport(
                 self.hostManager.clone(),
                 self.toolPkgBridgeRuntime.clone(),
             )?
             .map(|registration| Arc::new(Mutex::new(registration)));
+        AppLogger::i(
+            "OperitApplication",
+            &format!(
+                "host runtime event registration done elapsedMs={}",
+                currentTimeMillis() - runtimeEventRegistrationStartedAt
+            ),
+        );
         self.initialized = true;
         self.initMcpPlugins();
+        AppLogger::i(
+            "OperitApplication",
+            &format!(
+                "runtime initialization done elapsedMs={}",
+                currentTimeMillis() - self.appStartupTimeMs
+            ),
+        );
         Ok(())
     }
 
@@ -229,16 +341,21 @@ impl OperitApplication {
     pub fn initMcpPlugins(&self) {
         let hostManager = self.hostManager.clone();
         let runtimeSupport = self.toolHandler.runtimeSupport();
-        std::thread::Builder::new()
-            .name("operit-mcp-startup".to_string())
-            .spawn(move || {
-                let starter = MCPStarter::new(hostManager, runtimeSupport);
-                let timeoutSeconds = ApiPreferences::getInstance()
-                    .getMcpStartupTimeoutSeconds()
-                    .expect("api preferences must provide mcp startup timeout seconds");
-                let _ = starter.startAllDeployedPluginsWithTimeout(timeoutSeconds);
-            })
-            .expect("MCP startup thread must be created");
+        let taskScheduler = self
+            .hostManager
+            .hostRuntimeTaskSchedulerHost
+            .clone()
+            .expect("runtime task scheduler host must be configured for MCP startup");
+        let startup = move || {
+            let starter = MCPStarter::new(hostManager, runtimeSupport);
+            let timeoutSeconds = ApiPreferences::getInstance()
+                .getMcpStartupTimeoutSeconds()
+                .expect("api preferences must provide mcp startup timeout seconds");
+            let _ = starter.startAllDeployedPluginsWithTimeout(timeoutSeconds);
+        };
+        taskScheduler
+            .scheduleHostRuntimeTask("operit-mcp-startup", Box::new(startup))
+            .expect("MCP startup task must be scheduled");
     }
 
     /// Returns the initialized tool handler owned by this runtime.
@@ -257,6 +374,12 @@ impl OperitApplication {
     #[allow(non_snake_case)]
     pub fn skillRepository(&self) -> SkillRepository {
         SkillRepository::getInstance(&self.hostManager, self.toolHandler.runtimeSupport())
+    }
+
+    /// Creates a user-markdown repository using this runtime's configured storage host.
+    #[allow(non_snake_case)]
+    pub fn userMarkdownRepository(&self, ownerKey: String) -> UserMarkdownRepository {
+        UserMarkdownRepository::new(ownerKey, defaultRuntimeStorageHost())
     }
 
     /// Creates an input menu bridge backed by this application's tool package runtime.
@@ -331,19 +454,25 @@ impl OperitApplication {
     /// Returns the user-visible Operit root directory path.
     #[allow(non_snake_case)]
     pub fn operitRootPath(&self) -> Result<String, String> {
-        OperitPaths::operitRootPathSdcard()
+        let path = OperitPaths::operitRootDir()?;
+        self.ensureHostDirectory(&path)?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     /// Returns the directory used for exported user artifacts.
     #[allow(non_snake_case)]
     pub fn exportsPath(&self) -> Result<String, String> {
-        OperitPaths::exportsPathSdcard()
+        let path = OperitPaths::exportsDir()?;
+        self.ensureHostDirectory(&path)?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     /// Returns the directory used for files removed during clean-on-exit maintenance.
     #[allow(non_snake_case)]
     pub fn cleanOnExitPath(&self) -> Result<String, String> {
-        OperitPaths::cleanOnExitPathSdcard()
+        let path = OperitPaths::cleanOnExitDir()?;
+        self.ensureHostDirectory(&path)?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     /// Clears the current runtime log files.
@@ -440,109 +569,6 @@ impl OperitApplication {
             applied += 1;
         }
         Ok(serde_json::json!({ "applied": applied }))
-    }
-
-    /// Exports all raw runtime storage into a portable snapshot archive.
-    #[allow(non_snake_case)]
-    pub fn exportRawSnapshot(&self) -> Result<Vec<u8>, String> {
-        RawSnapshotBackupManager::new(defaultRuntimeStorageHost()).exportSnapshot()
-    }
-
-    /// Restores a raw runtime storage snapshot after closing the active database handle.
-    #[allow(non_snake_case)]
-    pub fn importRawSnapshot(&self, bytes: Vec<u8>) -> Result<(), String> {
-        AppDatabase::closeDatabase();
-        RawSnapshotBackupManager::new(defaultRuntimeStorageHost()).restoreSnapshot(bytes)
-    }
-
-    /// Reads snapshot metadata without mutating the current runtime store.
-    #[allow(non_snake_case)]
-    pub fn inspectRawSnapshot(&self, bytes: Vec<u8>) -> Result<RawSnapshotManifest, String> {
-        RawSnapshotBackupManager::new(defaultRuntimeStorageHost()).inspectSnapshot(bytes)
-    }
-
-    /// Previews an Operit 1 model-configuration snapshot before import.
-    #[allow(non_snake_case)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn inspectOperit1ModelConfigSnapshot(
-        &self,
-        bytes: Vec<u8>,
-    ) -> Result<Operit1ModelConfigSnapshotPreview, String> {
-        Operit1SnapshotImportManager::new(RuntimeStorePaths::default())
-            .inspectModelConfigSnapshot(bytes)
-    }
-
-    /// Previews an Operit 1 full snapshot before import.
-    #[allow(non_snake_case)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn inspectOperit1Snapshot(&self, bytes: Vec<u8>) -> Result<Operit1SnapshotPreview, String> {
-        Operit1SnapshotImportManager::new(RuntimeStorePaths::default()).inspectSnapshot(bytes)
-    }
-
-    /// Reads and previews an Operit 1 snapshot file from disk.
-    #[allow(non_snake_case)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn inspectOperit1SnapshotFile(
-        &self,
-        path: String,
-    ) -> Result<Operit1SnapshotPreview, String> {
-        let bytes = fs::read(path).map_err(|_| "无法读取 Operit1 快照文件".to_string())?;
-        Operit1SnapshotImportManager::new(RuntimeStorePaths::default()).inspectSnapshot(bytes)
-    }
-
-    /// Imports a model configuration from an Operit 1 snapshot into the selected profile.
-    #[allow(non_snake_case)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn importOperit1ModelConfigSnapshot(
-        &self,
-        bytes: Vec<u8>,
-        configId: String,
-        modelId: String,
-    ) -> Result<Operit1ModelConfigImportResult, String> {
-        Operit1SnapshotImportManager::new(RuntimeStorePaths::default())
-            .importModelConfigSnapshot(bytes, configId, modelId)
-    }
-
-    /// Imports an Operit 1 full snapshot from bytes and publishes progress events.
-    #[allow(non_snake_case)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn importOperit1Snapshot(
-        &self,
-        bytes: Vec<u8>,
-    ) -> Result<Operit1SnapshotImportResult, String> {
-        publishOperit1SnapshotImportProgress(Operit1SnapshotImportProgress {
-            stage: "parse".to_string(),
-            title: "解析快照".to_string(),
-            detail: "正在读取 Operit1 快照内容。".to_string(),
-            progress: 0.04,
-            active: true,
-        });
-        Operit1SnapshotImportManager::new(RuntimeStorePaths::default()).importSnapshot(bytes)
-    }
-
-    /// Reads and imports an Operit 1 full snapshot file from disk.
-    #[allow(non_snake_case)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn importOperit1SnapshotFile(
-        &self,
-        path: String,
-    ) -> Result<Operit1SnapshotImportResult, String> {
-        publishOperit1SnapshotImportProgress(Operit1SnapshotImportProgress {
-            stage: "read_file".to_string(),
-            title: "读取快照文件".to_string(),
-            detail: "正在从所选路径读取快照。".to_string(),
-            progress: 0.02,
-            active: true,
-        });
-        let bytes = fs::read(path).map_err(|_| "无法读取 Operit1 快照文件".to_string())?;
-        Operit1SnapshotImportManager::new(RuntimeStorePaths::default()).importSnapshot(bytes)
-    }
-
-    /// Observes the latest Operit 1 snapshot import progress state.
-    #[allow(non_snake_case)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn operit1SnapshotImportProgressFlow(&self) -> StateFlow<Operit1SnapshotImportProgress> {
-        observeOperit1SnapshotImportProgress()
     }
 
     /// Applies a single non-chat sync operation to the correct persistent domain.

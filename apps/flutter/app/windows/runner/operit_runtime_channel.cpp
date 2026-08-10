@@ -5,15 +5,14 @@
 #include <flutter/standard_method_codec.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <deque>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -22,6 +21,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include "engine_channel_lifetime.h"
 
 namespace {
 
@@ -39,27 +40,174 @@ using BridgePushClose = OperitByteBuffer (*)(BridgeHandle, const char*);
 using BridgeWatchSnapshot = OperitByteBuffer (*)(BridgeHandle, const unsigned char*, size_t);
 using BridgeWatchStream = OperitByteBuffer (*)(BridgeHandle, const unsigned char*, size_t);
 using BridgeNextWatchChannelEvent = OperitByteBuffer (*)(BridgeHandle);
+using BridgeCloseWatchChannel = void (*)(BridgeHandle);
 using BridgeCloseWatchStream = OperitByteBuffer (*)(BridgeHandle, const char*);
 using BridgeFreeBytes = void (*)(OperitByteBuffer);
 using BridgeStartWebAccessServer =
     char* (*)(BridgeHandle, const char*, const char*, const char*, const char*,
-              const char*, const char*, const char*, const char*, const char*,
-              const char*, const char*);
-using BridgeDiscoverDevices =
-    char* (*)(BridgeHandle, const char*);
+              const char*, const char*, const char*);
 using BridgeStopWebAccessServer = char* (*)(BridgeHandle);
-using BridgeRemotePairStart =
-    char* (*)(BridgeHandle, const char*, const char*, const char*);
-using BridgeRemotePairFinish = char* (*)(BridgeHandle, const char*, const char*);
 using BridgeFreeString = void (*)(char*);
 
-std::vector<std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>>
+using OperitRuntimeMethodChannel =
+    flutter::MethodChannel<flutter::EncodableValue>;
+
+struct OperitRuntimeChannelOwner {
+  std::shared_ptr<OperitRuntimeMethodChannel> channel;
+  HWND window = nullptr;
+  std::atomic_bool accepting_responses{true};
+};
+
+std::vector<std::shared_ptr<OperitRuntimeChannelOwner>>
     g_operit_runtime_channels;
 HWND g_operit_runtime_window = nullptr;
 DWORD g_operit_runtime_platform_thread_id = 0;
 std::atomic_bool g_watch_channel_pump_running{false};
+std::atomic_uint64_t g_watch_channel_pump_generation{0};
+std::atomic_bool g_operit_runtime_shutting_down{false};
+std::mutex g_watch_channel_pump_mutex;
+std::thread g_watch_channel_pump_thread;
+std::deque<flutter::EncodableMap> g_pending_notification_activations;
+bool g_notification_activation_receiver_ready = false;
 
 constexpr UINT kOperitRuntimePlatformTaskMessage = WM_APP + 0x520;
+
+/// Returns whether the current foreground window belongs to this process.
+bool IsOperitApplicationForeground() {
+  const HWND foreground_window = ::GetForegroundWindow();
+  if (foreground_window == nullptr) {
+    return false;
+  }
+  DWORD foreground_process_id = 0;
+  ::GetWindowThreadProcessId(foreground_window, &foreground_process_id);
+  return foreground_process_id == ::GetCurrentProcessId();
+}
+
+/// Decodes one URL query component with application/x-www-form-urlencoded rules.
+bool DecodeNotificationQueryComponent(const std::string& encoded,
+                                      std::string* decoded) {
+  if (decoded == nullptr) {
+    return false;
+  }
+  std::string value;
+  value.reserve(encoded.size());
+  for (size_t index = 0; index < encoded.size(); ++index) {
+    const char character = encoded[index];
+    if (character == '+') {
+      value.push_back(' ');
+      continue;
+    }
+    if (character != '%') {
+      value.push_back(character);
+      continue;
+    }
+    if (index + 2 >= encoded.size()) {
+      return false;
+    }
+    const auto hex_value = [](char input) -> int {
+      if (input >= '0' && input <= '9') {
+        return input - '0';
+      }
+      if (input >= 'A' && input <= 'F') {
+        return input - 'A' + 10;
+      }
+      if (input >= 'a' && input <= 'f') {
+        return input - 'a' + 10;
+      }
+      return -1;
+    };
+    const int high = hex_value(encoded[index + 1]);
+    const int low = hex_value(encoded[index + 2]);
+    if (high < 0 || low < 0) {
+      return false;
+    }
+    value.push_back(static_cast<char>((high << 4) | low));
+    index += 2;
+  }
+  *decoded = std::move(value);
+  return true;
+}
+
+/// Parses one Operit notification protocol URI into the Flutter activation schema.
+bool ParseNotificationActivationUri(const std::string& uri,
+                                    flutter::EncodableMap* activation) {
+  if (activation == nullptr) {
+    return false;
+  }
+  constexpr char kOpenApplicationUri[] = "operit2://notification/open-app";
+  constexpr char kOpenChatPrefix[] = "operit2://notification/open-chat?";
+  if (uri == kOpenApplicationUri) {
+    (*activation)[flutter::EncodableValue("type")] =
+        flutter::EncodableValue("open_application");
+    return true;
+  }
+  const std::string open_chat_prefix(kOpenChatPrefix);
+  if (uri.compare(0, open_chat_prefix.size(), open_chat_prefix) != 0) {
+    return false;
+  }
+  const std::string query = uri.substr(open_chat_prefix.size());
+  std::string chat_id;
+  bool found_chat_id = false;
+  size_t query_start = 0;
+  while (query_start <= query.size()) {
+    const size_t separator = query.find('&', query_start);
+    const std::string parameter = query.substr(
+        query_start, separator == std::string::npos
+                         ? std::string::npos
+                         : separator - query_start);
+    const size_t equals = parameter.find('=');
+    if (equals == std::string::npos) {
+      return false;
+    }
+    std::string key;
+    std::string value;
+    if (!DecodeNotificationQueryComponent(parameter.substr(0, equals), &key) ||
+        !DecodeNotificationQueryComponent(parameter.substr(equals + 1), &value)) {
+      return false;
+    }
+    if (key == "chatId") {
+      if (found_chat_id || value.empty()) {
+        return false;
+      }
+      chat_id = std::move(value);
+      found_chat_id = true;
+    }
+    if (separator == std::string::npos) {
+      break;
+    }
+    query_start = separator + 1;
+  }
+  if (!found_chat_id) {
+    return false;
+  }
+  (*activation)[flutter::EncodableValue("type")] =
+      flutter::EncodableValue("open_chat");
+  (*activation)[flutter::EncodableValue("chatId")] =
+      flutter::EncodableValue(chat_id);
+  return true;
+}
+
+/// Sends one notification activation to each running Flutter engine.
+void EmitNotificationActivation(const flutter::EncodableMap& activation) {
+  for (const auto& owner : g_operit_runtime_channels) {
+    if (!owner->accepting_responses.load() ||
+        owner->window != g_operit_runtime_window) {
+      continue;
+    }
+    owner->channel->InvokeMethod(
+        "notificationActivation",
+        std::make_unique<flutter::EncodableValue>(activation));
+  }
+}
+
+/// Queues or emits one notification activation on the Windows platform thread.
+void DispatchNotificationActivation(flutter::EncodableMap activation) {
+  if (!g_notification_activation_receiver_ready) {
+    g_pending_notification_activations.push_back(std::move(activation));
+    return;
+  }
+  EmitNotificationActivation(activation);
+}
 
 /// Builds a filesystem path from UTF-8 bytes under C++20 char8_t rules.
 std::filesystem::path PathFromUtf8(const std::string& value) {
@@ -355,18 +503,15 @@ class OperitRuntimeLibrary {
           reinterpret_cast<BridgeNextWatchChannelEvent>(
               GetProcAddress(library_,
                              "operit_flutter_bridge_next_watch_channel_event"));
+      close_watch_channel_ = reinterpret_cast<BridgeCloseWatchChannel>(
+          GetProcAddress(library_,
+                         "operit_flutter_bridge_close_watch_channel"));
       close_watch_stream_ = reinterpret_cast<BridgeCloseWatchStream>(
           GetProcAddress(library_, "operit_flutter_bridge_close_watch_stream"));
-      discover_devices_ = reinterpret_cast<BridgeDiscoverDevices>(
-          GetProcAddress(library_, "operit_flutter_bridge_discover_devices"));
       start_web_access_server_ = reinterpret_cast<BridgeStartWebAccessServer>(
           GetProcAddress(library_, "operit_flutter_bridge_start_web_access_server"));
       stop_web_access_server_ = reinterpret_cast<BridgeStopWebAccessServer>(
           GetProcAddress(library_, "operit_flutter_bridge_stop_web_access_server"));
-      remote_pair_start_ = reinterpret_cast<BridgeRemotePairStart>(
-          GetProcAddress(library_, "operit_flutter_bridge_remote_pair_start"));
-      remote_pair_finish_ = reinterpret_cast<BridgeRemotePairFinish>(
-          GetProcAddress(library_, "operit_flutter_bridge_remote_pair_finish"));
       free_string_ = reinterpret_cast<BridgeFreeString>(
           GetProcAddress(library_, "operit_flutter_bridge_free_string"));
       free_bytes_ = reinterpret_cast<BridgeFreeBytes>(
@@ -376,9 +521,9 @@ class OperitRuntimeLibrary {
           push_item_ == nullptr || push_close_ == nullptr ||
           watch_snapshot_ == nullptr || watch_stream_ == nullptr ||
           next_watch_channel_event_ == nullptr ||
+          close_watch_channel_ == nullptr ||
           close_watch_stream_ == nullptr ||
           start_web_access_server_ == nullptr || stop_web_access_server_ == nullptr ||
-          remote_pair_start_ == nullptr || remote_pair_finish_ == nullptr ||
           free_string_ == nullptr || free_bytes_ == nullptr) {
         AssignError(error, "operit flutter bridge exports are incomplete");
         return false;
@@ -451,6 +596,14 @@ class OperitRuntimeLibrary {
     return TakeBridgeBytes(next_watch_channel_event_(handle_), response, error);
   }
 
+  /// Wakes the native watch-event reader during bridge shutdown.
+  void CloseWatchChannel() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (handle_ != nullptr) {
+      close_watch_channel_(handle_);
+    }
+  }
+
   bool CloseWatchStream(const std::string& subscription, std::vector<uint8_t>* response,
                         std::string* error) {
     if (!EnsureReadyThreadSafe(error)) {
@@ -463,10 +616,6 @@ class OperitRuntimeLibrary {
                             const std::string& token,
                             const std::string& shutdown_token,
                             const std::string& web_root,
-                            const std::string& device_id,
-                            const std::string& accepted_sessions,
-                            const std::string& accepted_session_store_path,
-                            const std::string& pairing_code_path,
                             const std::string& device_info,
                             const std::string& enable_web_access,
                             const std::string& enable_discovery,
@@ -476,19 +625,8 @@ class OperitRuntimeLibrary {
     }
       char* raw_response = start_web_access_server_(
           handle_, bind_address.c_str(), token.c_str(), shutdown_token.c_str(),
-          web_root.c_str(), device_id.c_str(), accepted_sessions.c_str(),
-          accepted_session_store_path.c_str(), pairing_code_path.c_str(),
-          device_info.c_str(), enable_web_access.c_str(),
+          web_root.c_str(), device_info.c_str(), enable_web_access.c_str(),
           enable_discovery.c_str());
-    return TakeBridgeString(raw_response, response, error);
-  }
-
-  bool DiscoverDevices(const std::string& timeout_ms,
-                       std::string* response, std::string* error) {
-    if (!EnsureReadyThreadSafe(error)) {
-      return false;
-    }
-    char* raw_response = discover_devices_(handle_, timeout_ms.c_str());
     return TakeBridgeString(raw_response, response, error);
   }
 
@@ -497,29 +635,6 @@ class OperitRuntimeLibrary {
       return false;
     }
     char* raw_response = stop_web_access_server_(handle_);
-    return TakeBridgeString(raw_response, response, error);
-  }
-
-  bool RemotePairStart(const std::string& base_url, const std::string& token_hash,
-                       const std::string& client_device_info,
-                       std::string* response, std::string* error) {
-    if (!EnsureReadyThreadSafe(error)) {
-      return false;
-    }
-    char* raw_response =
-        remote_pair_start_(handle_, base_url.c_str(), token_hash.c_str(),
-                           client_device_info.c_str());
-    return TakeBridgeString(raw_response, response, error);
-  }
-
-  bool RemotePairFinish(const std::string& pairing_id,
-                        const std::string& pairing_code,
-                        std::string* response, std::string* error) {
-    if (!EnsureReadyThreadSafe(error)) {
-      return false;
-    }
-    char* raw_response = remote_pair_finish_(
-        handle_, pairing_id.c_str(), pairing_code.c_str());
     return TakeBridgeString(raw_response, response, error);
   }
 
@@ -618,17 +733,17 @@ class OperitRuntimeLibrary {
   BridgeWatchSnapshot watch_snapshot_ = nullptr;
   BridgeWatchStream watch_stream_ = nullptr;
   BridgeNextWatchChannelEvent next_watch_channel_event_ = nullptr;
+  BridgeCloseWatchChannel close_watch_channel_ = nullptr;
   BridgeCloseWatchStream close_watch_stream_ = nullptr;
   BridgeStartWebAccessServer start_web_access_server_ = nullptr;
-  BridgeDiscoverDevices discover_devices_ = nullptr;
   BridgeStopWebAccessServer stop_web_access_server_ = nullptr;
-  BridgeRemotePairStart remote_pair_start_ = nullptr;
-  BridgeRemotePairFinish remote_pair_finish_ = nullptr;
   BridgeFreeString free_string_ = nullptr;
   BridgeFreeBytes free_bytes_ = nullptr;
 };
 
-std::shared_ptr<OperitRuntimeLibrary> g_operit_runtime_library;
+using OperitRuntimeActiveLibrary = OperitRuntimeLibrary;
+
+std::shared_ptr<OperitRuntimeActiveLibrary> g_operit_runtime_library;
 
 const std::string* StringArgument(
     const flutter::MethodCall<flutter::EncodableValue>& method_call) {
@@ -737,37 +852,103 @@ void RequestWindowsAdminAuthorization(
   result->Success();
 }
 
+/// Unregisters and removes one runtime channel while its engine is alive.
+void ShutdownOperitRuntimeChannelInstance(
+    const std::shared_ptr<OperitRuntimeChannelOwner>& owner) {
+  owner->accepting_responses.store(false);
+  owner->channel->SetMethodCallHandler(nullptr);
+  const auto channel_iterator = std::find(
+      g_operit_runtime_channels.begin(), g_operit_runtime_channels.end(), owner);
+  if (channel_iterator != g_operit_runtime_channels.end()) {
+    g_operit_runtime_channels.erase(channel_iterator);
+  }
+}
+
+/// Sends one native watch event to every live Flutter runtime channel.
 void DispatchWatchChannelEvent(std::vector<uint8_t> frame) {
   PostOperitRuntimePlatformTask([frame = std::move(frame)]() {
-    for (const auto& channel : g_operit_runtime_channels) {
-      channel->InvokeMethod(
+    for (const auto& owner : g_operit_runtime_channels) {
+      if (!owner->accepting_responses.load()) {
+        continue;
+      }
+      owner->channel->InvokeMethod(
           "watchChannelEvent",
           std::make_unique<flutter::EncodableValue>(frame));
     }
   });
 }
 
-void EnsureWatchChannelPump(std::shared_ptr<OperitRuntimeLibrary> library) {
-  bool expected = false;
-  if (!g_watch_channel_pump_running.compare_exchange_strong(expected, true)) {
+/// Reads bridge watch events until the pump is stopped or the channel closes.
+void RunWatchChannelPump(
+    std::shared_ptr<OperitRuntimeActiveLibrary> library,
+    uint64_t generation) {
+  while (g_watch_channel_pump_running.load() &&
+         g_watch_channel_pump_generation.load() == generation) {
+    std::vector<uint8_t> frame;
+    std::string error;
+    if (!library->NextWatchChannelEvent(&frame, &error)) {
+      break;
+    }
+    DispatchWatchChannelEvent(std::move(frame));
+  }
+  if (g_watch_channel_pump_generation.load() == generation) {
+    g_watch_channel_pump_running.store(false);
+  }
+}
+
+/// Stops the watch-event pump and waits for its native thread to finish.
+void StopWatchChannelPump() {
+  std::shared_ptr<OperitRuntimeActiveLibrary> library;
+  std::thread pump_thread;
+  {
+    std::lock_guard<std::mutex> lock(g_watch_channel_pump_mutex);
+    g_watch_channel_pump_running.store(false);
+    g_watch_channel_pump_generation.fetch_add(1);
+    library = g_operit_runtime_library;
+    pump_thread = std::move(g_watch_channel_pump_thread);
+  }
+  if (library) {
+    library->CloseWatchChannel();
+  }
+  if (pump_thread.joinable()) {
+    pump_thread.join();
+  }
+}
+
+/// Starts the single bridge watch-event pump when the runtime is active.
+void EnsureWatchChannelPump(std::shared_ptr<OperitRuntimeActiveLibrary> library) {
+  if (g_operit_runtime_shutting_down.load()) {
     return;
   }
-  std::thread([library = std::move(library)]() {
-    while (g_watch_channel_pump_running.load()) {
-      std::vector<uint8_t> frame;
-      std::string error;
-      if (!library->NextWatchChannelEvent(&frame, &error)) {
-        break;
-      }
-      DispatchWatchChannelEvent(std::move(frame));
+  std::thread completed_pump_thread;
+  {
+    std::lock_guard<std::mutex> lock(g_watch_channel_pump_mutex);
+    if (g_operit_runtime_shutting_down.load() ||
+        g_watch_channel_pump_running.load()) {
+      return;
     }
-    g_watch_channel_pump_running.store(false);
-  }).detach();
+    completed_pump_thread = std::move(g_watch_channel_pump_thread);
+  }
+  if (completed_pump_thread.joinable()) {
+    completed_pump_thread.join();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_watch_channel_pump_mutex);
+    if (g_operit_runtime_shutting_down.load() ||
+        g_watch_channel_pump_running.load()) {
+      return;
+    }
+    const uint64_t generation = g_watch_channel_pump_generation.load();
+    g_watch_channel_pump_running.store(true);
+    g_watch_channel_pump_thread = std::thread(
+        RunWatchChannelPump, std::move(library), generation);
+  }
 }
 
 /// Runs one Rust bridge operation off the Windows platform thread.
 template <typename Operation>
 void RespondRuntimeStringAsync(
+    const std::shared_ptr<OperitRuntimeChannelOwner>& channel_owner,
     Operation operation,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   auto* workers = g_operit_runtime_workers.get();
@@ -780,14 +961,17 @@ void RespondRuntimeStringAsync(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>>(
       std::move(result));
   const bool submitted = workers->Post(
-      [operation = std::move(operation), result_holder]() mutable {
+      [channel_owner, operation = std::move(operation), result_holder]() mutable {
     std::string response;
     std::string error;
     const bool ok = operation(&response, &error);
     auto platform_result = std::move(*result_holder);
     PostOperitRuntimePlatformTask(
-        [result = std::move(platform_result), ok, response = std::move(response),
+        [channel_owner, result = std::move(platform_result), ok, response = std::move(response),
          error = std::move(error)]() mutable {
+          if (!channel_owner->accepting_responses.load()) {
+            return;
+          }
           if (ok) {
             result->Success(flutter::EncodableValue(response));
           } else {
@@ -805,6 +989,7 @@ void RespondRuntimeStringAsync(
 /// Runs one binary Link bridge operation off the Windows platform thread.
 template <typename Operation>
 void RespondRuntimeBytesAsync(
+    const std::shared_ptr<OperitRuntimeChannelOwner>& channel_owner,
     Operation operation,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   auto* workers = g_operit_runtime_workers.get();
@@ -817,13 +1002,16 @@ void RespondRuntimeBytesAsync(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>>(
       std::move(result));
   const bool submitted = workers->Post(
-      [operation = std::move(operation), result_holder]() mutable {
+      [channel_owner, operation = std::move(operation), result_holder]() mutable {
     std::vector<uint8_t> response;
     std::string error;
     const bool ok = operation(&response, &error);
     auto platform_result = std::move(*result_holder);
     PostOperitRuntimePlatformTask(
-        [result = std::move(platform_result), ok, response = std::move(response), error = std::move(error)]() mutable {
+        [channel_owner, result = std::move(platform_result), ok, response = std::move(response), error = std::move(error)]() mutable {
+          if (!channel_owner->accepting_responses.load()) {
+            return;
+          }
           if (ok) {
             result->Success(flutter::EncodableValue(response));
           } else {
@@ -838,8 +1026,48 @@ void RespondRuntimeBytesAsync(
   }
 }
 
+/// Runs one void Rust bridge operation off the Windows platform thread.
+template <typename Operation>
+void RespondRuntimeVoidAsync(
+    const std::shared_ptr<OperitRuntimeChannelOwner>& channel_owner,
+    Operation operation,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  auto* workers = g_operit_runtime_workers.get();
+  if (workers == nullptr) {
+    result->Error("RUNTIME_WORKER_QUEUE_CLOSED",
+                  "runtime worker queue is not available");
+    return;
+  }
+  auto result_holder = std::make_shared<
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>>(
+      std::move(result));
+  const bool submitted = workers->Post(
+      [channel_owner, operation = std::move(operation), result_holder]() mutable {
+    std::string error;
+    const bool ok = operation(&error);
+    auto platform_result = std::move(*result_holder);
+    PostOperitRuntimePlatformTask(
+        [channel_owner, result = std::move(platform_result), ok, error = std::move(error)]() mutable {
+          if (!channel_owner->accepting_responses.load()) {
+            return;
+          }
+          if (ok) {
+            result->Success();
+          } else {
+            result->Error("RUNTIME_BRIDGE_ERROR", error);
+          }
+        });
+  });
+  if (!submitted) {
+    auto platform_result = std::move(*result_holder);
+    platform_result->Error("RUNTIME_WORKER_QUEUE_CLOSED",
+                           "runtime worker queue is not accepting work");
+  }
+}
+
 /// Runs a core proxy call off the Windows platform thread.
 void RespondRuntimeCallAsync(
+    const std::shared_ptr<OperitRuntimeChannelOwner>& channel_owner,
     std::vector<uint8_t> request,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   auto* workers = g_operit_runtime_workers.get();
@@ -853,14 +1081,17 @@ void RespondRuntimeCallAsync(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>>(
       std::move(result));
   const bool submitted = workers->Post(
-      [library, request = std::move(request), result_holder]() mutable {
+      [channel_owner, library, request = std::move(request), result_holder]() mutable {
     std::vector<uint8_t> response;
     std::string error;
     const bool ok = library->Call(request, &response, &error);
     auto platform_result = std::move(*result_holder);
     PostOperitRuntimePlatformTask(
-        [result = std::move(platform_result), ok, response = std::move(response),
+        [channel_owner, result = std::move(platform_result), ok, response = std::move(response),
          error = std::move(error)]() mutable {
+          if (!channel_owner->accepting_responses.load()) {
+            return;
+          }
           if (ok) {
             result->Success(flutter::EncodableValue(response));
           } else {
@@ -877,6 +1108,7 @@ void RespondRuntimeCallAsync(
 
 }  // namespace
 
+/// Dispatches queued runtime results on the Windows platform thread.
 bool HandleOperitRuntimeChannelWindowMessage(UINT message,
                                              WPARAM wparam,
                                              LPARAM lparam,
@@ -899,28 +1131,95 @@ bool HandleOperitRuntimeChannelWindowMessage(UINT message,
   return true;
 }
 
+/// Receives one protocol activation from a secondary Windows process.
+bool HandleOperitNotificationActivationWindowMessage(UINT message,
+                                                      WPARAM wparam,
+                                                      LPARAM lparam,
+                                                      LRESULT* result) {
+  (void)wparam;
+  if (message != WM_COPYDATA) {
+    return false;
+  }
+  const auto* copy_data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+  if (copy_data == nullptr ||
+      copy_data->dwData != kOperitNotificationActivationCopyData ||
+      copy_data->lpData == nullptr || copy_data->cbData == 0) {
+    return false;
+  }
+  const auto* bytes = static_cast<const char*>(copy_data->lpData);
+  std::string uri(bytes, bytes + copy_data->cbData);
+  if (!uri.empty() && uri.back() == '\0') {
+    uri.pop_back();
+  }
+  flutter::EncodableMap activation;
+  if (!ParseNotificationActivationUri(uri, &activation)) {
+    if (result != nullptr) {
+      *result = FALSE;
+    }
+    return true;
+  }
+  DispatchNotificationActivation(std::move(activation));
+  if (result != nullptr) {
+    *result = TRUE;
+  }
+  return true;
+}
+
+/// Registers one runtime channel whose lifetime follows its Flutter engine.
 void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
+  g_operit_runtime_shutting_down.store(false);
   if (g_operit_runtime_window == nullptr) {
     g_operit_runtime_window = window;
     g_operit_runtime_platform_thread_id = ::GetCurrentThreadId();
   }
   if (!g_operit_runtime_library) {
-    g_operit_runtime_library = std::make_shared<OperitRuntimeLibrary>();
+    g_operit_runtime_library = std::make_shared<OperitRuntimeActiveLibrary>();
   }
   if (!g_operit_runtime_workers) {
     g_operit_runtime_workers = std::make_unique<OperitRuntimeWorkerQueue>(4);
   }
-  auto channel =
-      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+  auto channel_owner = std::make_shared<OperitRuntimeChannelOwner>();
+  channel_owner->window = window;
+  channel_owner->channel = std::make_shared<OperitRuntimeMethodChannel>(
           engine->messenger(), "operit/runtime",
           &flutter::StandardMethodCodec::GetInstance());
   auto runtime_library = g_operit_runtime_library;
 
-  channel->SetMethodCallHandler(
-      [runtime_library](const flutter::MethodCall<flutter::EncodableValue>& method_call,
+  channel_owner->channel->SetMethodCallHandler(
+      [channel_owner, runtime_library](const flutter::MethodCall<flutter::EncodableValue>& method_call,
          std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
              result) {
         std::string error;
+        if (method_call.method_name().compare(
+                "notificationActivationInitial") == 0) {
+          if (g_pending_notification_activations.empty()) {
+            result->Success();
+            return;
+          }
+          flutter::EncodableMap activation =
+              std::move(g_pending_notification_activations.front());
+          g_pending_notification_activations.pop_front();
+          result->Success(flutter::EncodableValue(activation));
+          return;
+        }
+        if (method_call.method_name().compare(
+                "notificationActivationReady") == 0) {
+          g_notification_activation_receiver_ready = true;
+          while (!g_pending_notification_activations.empty()) {
+            flutter::EncodableMap activation =
+                std::move(g_pending_notification_activations.front());
+            g_pending_notification_activations.pop_front();
+            EmitNotificationActivation(activation);
+          }
+          result->Success();
+          return;
+        }
+        if (method_call.method_name().compare(
+                "applicationIsForeground") == 0) {
+          result->Success(
+              flutter::EncodableValue(IsOperitApplicationForeground()));
+          return;
+        }
         if (method_call.method_name().compare(
                 "localRuntimeStorageDefaults") == 0) {
           std::string runtime_root;
@@ -988,7 +1287,7 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
             result->Error("INVALID_ARGS", "call expects MessagePack bytes");
             return;
           }
-          RespondRuntimeCallAsync(*request, std::move(result));
+          RespondRuntimeCallAsync(channel_owner, *request, std::move(result));
           return;
         }
         if (method_call.method_name().compare("pushOpen") == 0 ||
@@ -1001,6 +1300,7 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
           }
           const bool opening = method_call.method_name().compare("pushOpen") == 0;
           RespondRuntimeBytesAsync(
+              channel_owner,
               [runtime_library, request = *request, opening](
                   std::vector<uint8_t>* response, std::string* operation_error) {
                 return opening
@@ -1017,6 +1317,7 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
             return;
           }
           RespondRuntimeBytesAsync(
+              channel_owner,
               [runtime_library, push_id = *push_id](
                   std::vector<uint8_t>* response, std::string* operation_error) {
                 return runtime_library->PushClose(push_id, response, operation_error);
@@ -1032,6 +1333,7 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
             return;
           }
           RespondRuntimeBytesAsync(
+              channel_owner,
               [runtime_library, request = *request](
                   std::vector<uint8_t>* response, std::string* operation_error) {
                 return runtime_library->WatchSnapshot(
@@ -1048,6 +1350,7 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
             return;
           }
           RespondRuntimeBytesAsync(
+              channel_owner,
               [runtime_library, request = *request](
                   std::vector<uint8_t>* response, std::string* operation_error) {
                 if (!runtime_library->WatchStream(
@@ -1068,6 +1371,7 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
             return;
           }
           RespondRuntimeBytesAsync(
+              channel_owner,
               [runtime_library, subscription = *subscription](
                   std::vector<uint8_t>* response, std::string* operation_error) {
                 return runtime_library->CloseWatchStream(
@@ -1082,15 +1386,7 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
           const std::string* token = StringMapValue(method_call, "token");
           const std::string* shutdown_token =
               StringMapValue(method_call, "shutdownToken");
-            const std::string* web_root = StringMapValue(method_call, "webRoot");
-            const std::string* device_id =
-                StringMapValue(method_call, "deviceId");
-            const std::string* accepted_sessions =
-                StringMapValue(method_call, "acceptedSessions");
-          const std::string* accepted_session_store_path =
-              StringMapValue(method_call, "acceptedSessionStorePath");
-          const std::string* pairing_code_path =
-              StringMapValue(method_call, "pairingCodePath");
+          const std::string* web_root = StringMapValue(method_call, "webRoot");
           const std::string* device_info =
               StringMapValue(method_call, "deviceInfo");
           const std::string* enable_web_access =
@@ -1099,51 +1395,26 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
               StringMapValue(method_call, "enableDiscovery");
           if (bind_address == nullptr || token == nullptr ||
                 shutdown_token == nullptr || web_root == nullptr ||
-                device_id == nullptr ||
-                accepted_sessions == nullptr ||
-                accepted_session_store_path == nullptr ||
-                pairing_code_path == nullptr || device_info == nullptr ||
+                device_info == nullptr ||
                 enable_web_access == nullptr || enable_discovery == nullptr) {
               result->Error("INVALID_ARGS",
-                           "startWebAccessServer expects bindAddress, token, shutdownToken, webRoot, deviceId, acceptedSessions, acceptedSessionStorePath, pairingCodePath, deviceInfo, enableWebAccess and enableDiscovery");
+                           "startWebAccessServer expects bindAddress, token, shutdownToken, webRoot, deviceInfo, enableWebAccess and enableDiscovery");
               return;
             }
           RespondRuntimeStringAsync(
+              channel_owner,
               [runtime_library,
                bind_address = *bind_address,
                token = *token,
                shutdown_token = *shutdown_token,
                web_root = *web_root,
-               device_id = *device_id,
-               accepted_sessions = *accepted_sessions,
-               accepted_session_store_path = *accepted_session_store_path,
-               pairing_code_path = *pairing_code_path,
                device_info = *device_info,
                enable_web_access = *enable_web_access,
                enable_discovery = *enable_discovery](
                   std::string* response, std::string* operation_error) {
                 return runtime_library->StartWebAccessServer(
-                    bind_address, token, shutdown_token, web_root, device_id,
-                    accepted_sessions, accepted_session_store_path,
-                    pairing_code_path, device_info, enable_web_access,
+                    bind_address, token, shutdown_token, web_root, device_info, enable_web_access,
                     enable_discovery, response, operation_error);
-              },
-              std::move(result));
-          return;
-        }
-        if (method_call.method_name().compare("discoverDevices") == 0) {
-          int64_t timeout_ms = 0;
-          if (!IntegerMapValue(method_call, "timeoutMs", &timeout_ms)) {
-            result->Error("INVALID_ARGS",
-                          "discoverDevices expects timeoutMs");
-            return;
-          }
-          std::string timeout = std::to_string(timeout_ms);
-          RespondRuntimeStringAsync(
-              [runtime_library, timeout = std::move(timeout)](
-                  std::string* response, std::string* operation_error) {
-                return runtime_library->DiscoverDevices(
-                    timeout, response, operation_error);
               },
               std::move(result));
           return;
@@ -1178,6 +1449,7 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
         }
         if (method_call.method_name().compare("stopWebAccessServer") == 0) {
           RespondRuntimeStringAsync(
+              channel_owner,
               [runtime_library](
                   std::string* response, std::string* operation_error) {
                 return runtime_library->StopWebAccessServer(
@@ -1186,63 +1458,27 @@ void RegisterOperitRuntimeChannel(flutter::FlutterEngine* engine, HWND window) {
               std::move(result));
           return;
         }
-        if (method_call.method_name().compare("remotePairStart") == 0) {
-          const std::string* base_url = StringMapValue(method_call, "baseUrl");
-          const std::string* token_hash =
-              StringMapValue(method_call, "tokenHash");
-          const std::string* client_device_info =
-              StringMapValue(method_call, "clientDeviceInfo");
-          if (base_url == nullptr || token_hash == nullptr ||
-              client_device_info == nullptr) {
-            result->Error("INVALID_ARGS",
-                          "remotePairStart expects baseUrl, tokenHash and clientDeviceInfo");
-            return;
-          }
-          RespondRuntimeStringAsync(
-              [runtime_library,
-               base_url = *base_url,
-               token_hash = *token_hash,
-               client_device_info = *client_device_info](
-                  std::string* response, std::string* operation_error) {
-                return runtime_library->RemotePairStart(
-                    base_url, token_hash, client_device_info, response,
-                    operation_error);
-              },
-              std::move(result));
-          return;
-        }
-        if (method_call.method_name().compare("remotePairFinish") == 0) {
-          const std::string* pairing_id =
-              StringMapValue(method_call, "pairingId");
-          const std::string* pairing_code =
-              StringMapValue(method_call, "pairingCode");
-          if (pairing_id == nullptr || pairing_code == nullptr) {
-            result->Error("INVALID_ARGS",
-                          "remotePairFinish expects pairingId and pairingCode");
-            return;
-          }
-          RespondRuntimeStringAsync(
-              [runtime_library,
-               pairing_id = *pairing_id,
-               pairing_code = *pairing_code](
-                  std::string* response, std::string* operation_error) {
-                return runtime_library->RemotePairFinish(
-                    pairing_id, pairing_code, response, operation_error);
-              },
-              std::move(result));
-          return;
-        }
         result->NotImplemented();
       });
-  g_operit_runtime_channels.push_back(std::move(channel));
+  g_operit_runtime_channels.push_back(channel_owner);
+  RegisterOperitEngineChannelShutdown(
+      engine, [channel_owner]() {
+        ShutdownOperitRuntimeChannelInstance(channel_owner);
+      });
 }
 
+/// Stops runtime work before the bridge library is unloaded.
 void ShutdownOperitRuntimeChannel() {
-  g_watch_channel_pump_running.store(false);
+  g_operit_runtime_shutting_down.store(true);
+  for (const auto& channel_owner : g_operit_runtime_channels) {
+    channel_owner->accepting_responses.store(false);
+  }
   g_operit_runtime_workers.reset();
-  g_operit_runtime_channels.clear();
+  StopWatchChannelPump();
   ClearOperitRuntimePlatformTasks();
   g_operit_runtime_library.reset();
+  g_pending_notification_activations.clear();
+  g_notification_activation_receiver_ready = false;
   g_operit_runtime_window = nullptr;
   g_operit_runtime_platform_thread_id = 0;
 }

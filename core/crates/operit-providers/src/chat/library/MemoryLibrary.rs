@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::thread;
 
-use chrono::Utc;
 use regex::Regex;
 use serde_json::Value;
 
@@ -10,12 +8,15 @@ use crate::chat::config::FunctionalPrompts::FunctionalPrompts;
 use crate::chat::enhance::MultiServiceManager::SharedAIServiceHandle;
 use crate::chat::llmprovider::AIService::SendMessageRequest;
 use crate::runtime_support::ProviderRuntimeContext;
+use operit_host_api::HostManager::defaultHostRuntimeTaskSchedulerHost;
+use operit_host_api::TimeUtils::currentTimeMillis;
 use operit_model::FunctionType::FunctionType;
 use operit_model::Memory::{Memory, MemoryTag};
 use operit_model::PromptTurn::{toPromptTurns, PromptTurn, PromptTurnKind};
 use operit_store::repository::MemoryRepository::MemoryRepository;
 use operit_store::repository::UsageStatisticsStore::{UsageRequestSource, UsageStatisticsStore};
 use operit_store::repository::UserMarkdownRepository::UserMarkdownRepository;
+use operit_store::RuntimeStorageHost::defaultRuntimeStorageHost;
 use operit_util::stream::Stream::Stream;
 use operit_util::AppLogger::AppLogger;
 use operit_util::ChatMarkupRegex::{tag_ranges, ChatMarkupRegex};
@@ -96,22 +97,26 @@ impl MemoryLibrary {
         characterCardId: Option<String>,
         runtimeContext: ProviderRuntimeContext,
     ) {
-        thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("tokio runtime must build for MemoryLibrary");
-            let result = runtime.block_on(Self::saveMemoryNow(
-                conversationHistory,
-                content,
-                aiService,
-                characterCardId,
-                runtimeContext,
-            ));
-            if let Err(error) = result {
-                AppLogger::e(TAG, &format!("保存记忆失败: {error}"));
-            }
-        });
+        defaultHostRuntimeTaskSchedulerHost()
+            .scheduleHostRuntimeAsyncTask(
+                "operit-memory-persistence",
+                Box::new(move || {
+                    Box::pin(async move {
+                        let result = Self::saveMemoryNow(
+                            conversationHistory,
+                            content,
+                            aiService,
+                            characterCardId,
+                            runtimeContext,
+                        )
+                        .await;
+                        if let Err(error) = result {
+                            AppLogger::e(TAG, &format!("保存记忆失败: {error}"));
+                        }
+                    })
+                }),
+            )
+            .expect("memory persistence task must be scheduled");
     }
 
     /// Persists memory immediately with an explicit provider runtime context.
@@ -245,7 +250,7 @@ impl MemoryLibrary {
         }
 
         if !analysis.userPreferences.is_empty() {
-            UserMarkdownRepository::new(&ownerKey)
+            UserMarkdownRepository::new(&ownerKey, defaultRuntimeStorageHost())
                 .writeUserMarkdown(analysis.userPreferences.clone())?;
         }
 
@@ -338,7 +343,8 @@ impl MemoryLibrary {
         runtimeContext: &ProviderRuntimeContext,
     ) -> Result<ParsedAnalysis, String> {
         let useEnglish = false;
-        let currentPreferences = UserMarkdownRepository::new(ownerKey).readUserMarkdown()?;
+        let currentPreferences = UserMarkdownRepository::new(ownerKey, defaultRuntimeStorageHost())
+            .readUserMarkdown()?;
         let contextQuery = buildCandidateSearchQuery(query, solution);
         let searchConfig = runtimeContext.support().memorySearchConfig(ownerKey)?;
         let candidateMemories = memoryRepository
@@ -407,9 +413,11 @@ impl MemoryLibrary {
                 })
                 .await
                 .map_err(|error| error.to_string())?;
-            stream.collect(&mut |chunk| {
-                result.push_str(&chunk);
-            });
+            stream
+                .collect(&mut |chunk| {
+                    result.push_str(&chunk);
+                })
+                .await;
             (
                 providerModel,
                 service.input_token_count(),
@@ -797,7 +805,7 @@ fn newMemory(
     credibility: f32,
     importance: f32,
 ) -> Memory {
-    let now = Utc::now().timestamp_millis();
+    let now = currentTimeMillis();
     Memory {
         id: 0,
         uuid: uuid::Uuid::new_v4().to_string(),

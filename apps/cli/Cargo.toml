@@ -1,6 +1,6 @@
 [package]
 name = "operit-cli"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 edition = "2021"
 license = "MIT"
 publish = false
@@ -28,7 +28,9 @@ include_dir = { version = "0.7", optional = true }
 operit-core-proxy = { path = "../../core/crates/operit-core-proxy" }
 operit-command-core = { path = "../../core/crates/operit-command-core" }
 operit-host-api = { path = "../../core/crates/operit-host-api" }
+operit-host-native-common = { path = "../../hosts/common/operit-host-native-common", default-features = false, features = ["storage"] }
 operit-link = { path = "../../core/crates/operit-link" }
+operit-link-access = { path = "../../core/crates/operit-link-access" }
 operit-model = { path = "../../core/crates/operit-model" }
 operit-providers = { path = "../../core/crates/operit-providers" }
 operit-runtime = { path = "../../core/crates/operit-runtime" }
@@ -57,4 +59,4 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 operit-host-linux-native = { path = "../../hosts/linux" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-operit-host-apple-native = { path = "../../hosts/apple" }
+operit-host-macos-native = { path = "../../hosts/macos" }

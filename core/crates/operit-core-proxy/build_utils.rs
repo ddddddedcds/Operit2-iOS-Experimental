@@ -1,13 +1,5 @@
 use std::path::Path;
 
-pub(crate) fn full_type_for_source(
-    runtime_src: &Path,
-    source_path: &Path,
-    type_name: &str,
-) -> String {
-    full_type_for_source_with_crate(runtime_src, source_path, type_name, "operit_runtime")
-}
-
 pub(crate) fn full_type_for_source_with_crate(
     source_root: &Path,
     source_path: &Path,
@@ -20,10 +12,6 @@ pub(crate) fn full_type_for_source_with_crate(
     )
 }
 
-pub(crate) fn module_path_for_source(runtime_src: &Path, source_path: &Path) -> String {
-    module_path_for_source_with_crate(runtime_src, source_path, "operit_runtime")
-}
-
 pub(crate) fn module_path_for_source_with_crate(
     source_root: &Path,
     source_path: &Path,
@@ -33,6 +21,9 @@ pub(crate) fn module_path_for_source_with_crate(
         .strip_prefix(source_root)
         .expect("source path must be inside source root");
     let mut module_path = Vec::from([crate_name.to_string()]);
+    if relative == Path::new("lib.rs") {
+        return module_path.join("::");
+    }
     for component in relative.with_extension("").components() {
         module_path.push(component.as_os_str().to_string_lossy().to_string());
     }

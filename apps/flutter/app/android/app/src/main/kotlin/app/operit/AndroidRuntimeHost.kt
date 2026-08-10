@@ -3,13 +3,20 @@ package app.operit
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.ArrayDeque
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class AndroidRuntimeHost(context: Context) {
+    private companion object {
+        private const val TAG = "AndroidRuntimeHost"
+    }
+
     private val applicationContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val runtimeLock = Any()
@@ -19,8 +26,13 @@ class AndroidRuntimeHost(context: Context) {
             Thread(runnable, "operit-runtime-${runtimeThreadIndex.incrementAndGet()}")
         }
     private var runtimeHandle: Long = 0
+    private val pendingRuntimeEvents = ArrayDeque<String>()
     private var configuredRuntimeRoot: File? = null
     private var configuredWorkspaceRoot: File? = null
+    @Volatile
+    private var runtimeStartupState = "preparing"
+    @Volatile
+    private var runtimeStartupMessage = "正在准备本地运行时"
 
     /** Installs storage roots and accepts repeated identical configuration. */
     fun setStorageRoots(runtimePath: String?, workspacePath: String?) {
@@ -37,13 +49,6 @@ class AndroidRuntimeHost(context: Context) {
             configuredRuntimeRoot = runtimeRoot
             configuredWorkspaceRoot = workspaceRoot
         }
-        AndroidRuntimeStorageConfigStore.write(
-            applicationContext,
-            AndroidRuntimeStorageRoots(
-                runtimeRoot = runtimeRoot.absolutePath,
-                workspaceRoot = workspaceRoot.absolutePath,
-            ),
-        )
     }
 
     /** Returns the active native runtime handle, creating it when required. */
@@ -52,17 +57,47 @@ class AndroidRuntimeHost(context: Context) {
             if (runtimeHandle != 0L) {
                 return runtimeHandle
             }
-            val paths = prepareAndroidRuntimePaths()
-            runtimeHandle = OperitRuntimeNative.create(
-                paths.runtimeRoot.absolutePath,
-                paths.workspaceRoot.absolutePath,
-                this,
-            )
-            if (runtimeHandle == 0L) {
-                throw IllegalStateException(OperitRuntimeNative.createError())
+            val startedAtMillis = System.currentTimeMillis()
+            updateRuntimeStartupStatus("preparingAssets", "正在准备本地运行时资源")
+            Log.i(TAG, "native runtime create start")
+            try {
+                val paths = prepareAndroidRuntimePaths()
+                updateRuntimeStartupStatus("initializingCore", "正在初始化本地核心服务")
+                Log.i(
+                    TAG,
+                    "native runtime assets ready elapsedMs=" +
+                        (System.currentTimeMillis() - startedAtMillis),
+                )
+                runtimeHandle = OperitRuntimeNative.create(
+                    paths.runtimeRoot.absolutePath,
+                    paths.workspaceRoot.absolutePath,
+                    this,
+                )
+                if (runtimeHandle == 0L) {
+                    updateRuntimeStartupStatus("failed", "本地运行时启动失败")
+                    throw IllegalStateException(OperitRuntimeNative.createError())
+                }
+                flushPendingRuntimeEventsLocked()
+            } catch (error: Throwable) {
+                updateRuntimeStartupStatus("failed", "本地运行时启动失败")
+                throw error
             }
+            updateRuntimeStartupStatus("ready", "本地运行时已就绪")
+            Log.i(
+                TAG,
+                "native runtime create done elapsedMs=" +
+                    (System.currentTimeMillis() - startedAtMillis),
+            )
             return runtimeHandle
         }
+    }
+
+    /** Returns the current native runtime startup stage for Flutter bootstrap UI. */
+    fun runtimeStartupStatusMap(): Map<String, String> {
+        return mapOf(
+            "state" to runtimeStartupState,
+            "message" to runtimeStartupMessage,
+        )
     }
 
     /** Executes a runtime bridge call on the runtime executor. */
@@ -82,6 +117,39 @@ class AndroidRuntimeHost(context: Context) {
     /** Executes host work on the runtime executor. */
     fun runBackground(block: () -> Unit) {
         runtimeExecutor.execute(block)
+    }
+
+    /** Delivers an Android lifecycle event after the native Core runtime is available. */
+    fun emitRuntimeEvent(event: org.json.JSONObject) {
+        val eventJson = event.toString()
+        synchronized(runtimeLock) {
+            val handle = runtimeHandle
+            if (handle == 0L) {
+                pendingRuntimeEvents.addLast(eventJson)
+                return
+            }
+            scheduleRuntimeEventLocked(handle, eventJson)
+        }
+    }
+
+    private fun flushPendingRuntimeEventsLocked() {
+        while (pendingRuntimeEvents.isNotEmpty()) {
+            scheduleRuntimeEventLocked(runtimeHandle, pendingRuntimeEvents.removeFirst())
+        }
+    }
+
+    private fun scheduleRuntimeEventLocked(handle: Long, eventJson: String) {
+        runtimeExecutor.execute {
+            try {
+                val response = OperitRuntimeNative.emitRuntimeEvent(handle, eventJson)
+                val result = org.json.JSONObject(response)
+                check(result.getBoolean("ok")) {
+                    result.optString("error", "Core rejected Android runtime event")
+                }
+            } catch (error: Throwable) {
+                Log.e(TAG, "failed to deliver Android runtime event", error)
+            }
+        }
     }
 
     /** Prepares Android runtime assets for the configured storage roots. */
@@ -163,6 +231,9 @@ class AndroidRuntimeHost(context: Context) {
         AndroidHostSecretStore.delete(applicationContext, key)
     }
 
+    /** Returns the Android system locale language tag. */
+    fun systemLanguageCode(): String = Locale.getDefault().toLanguageTag()
+
     /** Reconciles ToolPkg timers and intervals with Android AlarmManager. */
     fun replaceHostRuntimeEventSchedules(schedulesJson: String) {
         AndroidHostEventScheduler.replaceSchedules(applicationContext, schedulesJson)
@@ -176,6 +247,12 @@ class AndroidRuntimeHost(context: Context) {
     /** Executes one installed local text-to-speech model request. */
     fun synthesizeLocalSpeech(requestJson: String): String {
         return AndroidLocalInference.synthesize(requestJson)
+    }
+
+    /** Updates the startup stage after a real native runtime lifecycle boundary. */
+    private fun updateRuntimeStartupStatus(state: String, message: String) {
+        runtimeStartupState = state
+        runtimeStartupMessage = message
     }
 
     /** Validates one required absolute storage root. */

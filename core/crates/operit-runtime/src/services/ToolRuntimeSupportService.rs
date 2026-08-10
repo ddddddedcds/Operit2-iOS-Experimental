@@ -204,15 +204,20 @@ impl ToolRuntimeSupport for RuntimeToolSupport {
     /// Returns AI-visible skill package metadata.
     #[allow(non_snake_case)]
     fn aiVisibleSkillPackages(&self) -> Vec<RuntimeSkillCatalogEntry> {
-        SkillManager::fromDefaultPaths()
-            .getAvailableSkills()
-            .into_iter()
-            .filter(|(name, _)| SkillVisibilityPreferences::getInstance().isSkillVisibleToAi(name))
-            .map(|(name, skill)| RuntimeSkillCatalogEntry {
-                name,
-                description: skill.description,
-            })
-            .collect()
+        SkillManager::fromDefaultPaths(
+            self.hostManager
+                .fileSystemHost
+                .clone()
+                .expect("ToolRuntimeSupportService requires a FileSystemHost"),
+        )
+        .getAvailableSkills()
+        .into_iter()
+        .filter(|(name, _)| SkillVisibilityPreferences::getInstance().isSkillVisibleToAi(name))
+        .map(|(name, skill)| RuntimeSkillCatalogEntry {
+            name,
+            description: skill.description,
+        })
+        .collect()
     }
 
     /// Returns cached MCP tool descriptions for a server.
@@ -292,7 +297,7 @@ impl ToolRuntimeSupport for RuntimeToolSupport {
                 .await
                 .map_err(|error| error.to_string())?;
             let mut output = String::new();
-            stream.collect(&mut |chunk| output.push_str(&chunk));
+            stream.collect(&mut |chunk| output.push_str(&chunk)).await;
             Ok(output.trim().to_string())
         })
     }

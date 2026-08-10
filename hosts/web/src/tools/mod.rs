@@ -1,10 +1,13 @@
 pub mod audio;
+pub mod archive;
 pub mod bluetooth;
 pub mod browser;
+pub mod browser_session;
 pub mod fs;
 pub mod http;
 pub mod local_inference;
 pub mod runtime;
 pub mod storage;
 pub mod system;
+pub mod terminal;
 pub mod tts;

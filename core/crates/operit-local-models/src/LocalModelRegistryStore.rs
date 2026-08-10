@@ -1,8 +1,13 @@
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(test)]
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use operit_host_api::RuntimeStorageHost;
+#[cfg(test)]
+use operit_host_api::{HostError, HostResult, RuntimeStorageEntry};
 use operit_util::RuntimeStorageLayout::RUNTIME_LOCAL_MODEL_REGISTRY_PATH;
 use thiserror::Error;
 
@@ -20,86 +25,62 @@ pub enum LocalModelRegistryStoreError {
 
 #[derive(Clone)]
 pub struct LocalModelRegistryStore {
-    backend: LocalModelRegistryStoreBackend,
-}
-
-#[derive(Clone)]
-enum LocalModelRegistryStoreBackend {
-    NativePath {
-        path: PathBuf,
-    },
-    RuntimeStorage {
-        path: String,
-        storageHost: Arc<dyn RuntimeStorageHost>,
-    },
+    path: String,
+    storageHost: Arc<dyn RuntimeStorageHost>,
 }
 
 impl std::fmt::Debug for LocalModelRegistryStore {
     /// Formats the registry store without exposing host internals.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.backend {
-            LocalModelRegistryStoreBackend::NativePath { path } => formatter
-                .debug_struct("LocalModelRegistryStore")
-                .field("path", path)
-                .finish(),
-            LocalModelRegistryStoreBackend::RuntimeStorage { path, .. } => formatter
-                .debug_struct("LocalModelRegistryStore")
-                .field("path", path)
-                .finish(),
-        }
+        formatter
+            .debug_struct("LocalModelRegistryStore")
+            .field("path", &self.path)
+            .finish()
     }
 }
 
 impl LocalModelRegistryStore {
-    /// Creates a registry store under one runtime root.
-    pub fn forRuntimeRoot(runtimeRoot: PathBuf) -> Result<Self, LocalModelRegistryStoreError> {
-        let path = runtimeLayoutPath(&runtimeRoot, RUNTIME_LOCAL_MODEL_REGISTRY_PATH)?;
-        Ok(Self {
-            backend: LocalModelRegistryStoreBackend::NativePath { path },
-        })
-    }
-
-    /// Creates a registry store for one exact native path.
-    pub fn new(path: PathBuf) -> Self {
-        Self {
-            backend: LocalModelRegistryStoreBackend::NativePath { path },
-        }
-    }
-
     /// Creates a registry store backed by the runtime storage host.
     pub fn forRuntimeStorage(storageHost: Arc<dyn RuntimeStorageHost>) -> Self {
         Self {
-            backend: LocalModelRegistryStoreBackend::RuntimeStorage {
-                path: RUNTIME_LOCAL_MODEL_REGISTRY_PATH.to_string(),
-                storageHost,
-            },
+            path: RUNTIME_LOCAL_MODEL_REGISTRY_PATH.to_string(),
+            storageHost,
+        }
+    }
+
+    /// Creates a registry store backed by a native runtime root for tests.
+    #[cfg(test)]
+    pub fn forRuntimeRoot(runtimeRoot: PathBuf) -> Result<Self, LocalModelRegistryStoreError> {
+        Ok(Self {
+            path: RUNTIME_LOCAL_MODEL_REGISTRY_PATH.to_string(),
+            storageHost: testRuntimeStorageHost(runtimeRoot),
+        })
+    }
+
+    /// Creates a registry store backed by one explicit native registry path for tests.
+    #[cfg(test)]
+    pub fn new(registryPath: PathBuf) -> Self {
+        Self {
+            path: RUNTIME_LOCAL_MODEL_REGISTRY_PATH.to_string(),
+            storageHost: Arc::new(TestRuntimeStorageHost::forRegistryPath(registryPath)),
         }
     }
 
     /// Reads the installed model and engine registry snapshot.
     pub fn read(&self) -> Result<LocalModelRegistrySnapshot, LocalModelRegistryStoreError> {
-        let content = match &self.backend {
-            LocalModelRegistryStoreBackend::NativePath { path } => {
-                if !path.exists() {
-                    return Ok(LocalModelRegistrySnapshot::empty());
-                }
-                fs::read_to_string(path)
-                    .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))?
-            }
-            LocalModelRegistryStoreBackend::RuntimeStorage { path, storageHost } => {
-                if !storageHost
-                    .exists(path)
-                    .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))?
-                {
-                    return Ok(LocalModelRegistrySnapshot::empty());
-                }
-                let bytes = storageHost
-                    .readBytes(path)
-                    .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))?;
-                String::from_utf8(bytes)
-                    .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))?
-            }
-        };
+        if !self
+            .storageHost
+            .exists(&self.path)
+            .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))?
+        {
+            return Ok(LocalModelRegistrySnapshot::empty());
+        }
+        let bytes = self
+            .storageHost
+            .readBytes(&self.path)
+            .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))?;
+        let content = String::from_utf8(bytes)
+            .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))?;
         serde_json::from_str(&content)
             .map_err(|error| LocalModelRegistryStoreError::Json(error.to_string()))
     }
@@ -111,41 +92,169 @@ impl LocalModelRegistryStore {
     ) -> Result<(), LocalModelRegistryStoreError> {
         let content = serde_json::to_vec_pretty(snapshot)
             .map_err(|error| LocalModelRegistryStoreError::Json(error.to_string()))?;
-        match &self.backend {
-            LocalModelRegistryStoreBackend::NativePath { path } => {
-                let parent = path.parent().ok_or_else(|| {
-                    LocalModelRegistryStoreError::InvalidStoragePath(
-                        path.to_string_lossy().to_string(),
-                    )
-                })?;
-                fs::create_dir_all(parent)
-                    .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))?;
-                fs::write(path, content)
-                    .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))
-            }
-            LocalModelRegistryStoreBackend::RuntimeStorage { path, storageHost } => storageHost
-                .writeBytes(path, &content)
-                .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string())),
+        self.storageHost
+            .writeBytes(&self.path, &content)
+            .map_err(|error| LocalModelRegistryStoreError::Storage(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+/// Creates a test runtime storage host rooted at one native runtime directory.
+pub(crate) fn testRuntimeStorageHost(runtimeRoot: PathBuf) -> Arc<dyn RuntimeStorageHost> {
+    Arc::new(TestRuntimeStorageHost::forRuntimeRoot(runtimeRoot))
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct TestRuntimeStorageHost {
+    runtimeRoot: Option<PathBuf>,
+    registryPath: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl TestRuntimeStorageHost {
+    /// Creates a test storage host rooted at one runtime directory.
+    fn forRuntimeRoot(runtimeRoot: PathBuf) -> Self {
+        Self {
+            runtimeRoot: Some(runtimeRoot),
+            registryPath: None,
         }
     }
 
-    /// Returns the exact native registry path when the store is native-backed.
-    pub fn path(&self) -> Option<&Path> {
-        match &self.backend {
-            LocalModelRegistryStoreBackend::NativePath { path } => Some(path.as_path()),
-            LocalModelRegistryStoreBackend::RuntimeStorage { .. } => None,
+    /// Creates a test storage host bound to one registry file.
+    fn forRegistryPath(registryPath: PathBuf) -> Self {
+        Self {
+            runtimeRoot: None,
+            registryPath: Some(registryPath),
+        }
+    }
+
+    /// Resolves one virtual runtime storage path to its native test path.
+    fn resolve(&self, path: &str) -> HostResult<PathBuf> {
+        if path == RUNTIME_LOCAL_MODEL_REGISTRY_PATH {
+            if let Some(registryPath) = &self.registryPath {
+                return Ok(registryPath.clone());
+            }
+        }
+        let runtimeRoot = self.runtimeRoot.as_ref().ok_or_else(|| {
+            HostError::new(format!(
+                "test runtime root is required for storage path: {path}"
+            ))
+        })?;
+        let mut components = Path::new(path.trim()).components();
+        match components.next() {
+            Some(Component::Normal(segment)) if segment == "runtime" => {}
+            _ => {
+                return Err(HostError::new(format!(
+                    "runtime storage path must start with runtime/: {path}"
+                )));
+            }
+        }
+        let mut resolved = runtimeRoot.clone();
+        for component in components {
+            match component {
+                Component::Normal(segment) => resolved.push(segment),
+                Component::CurDir => {}
+                _ => {
+                    return Err(HostError::new(format!(
+                        "invalid runtime storage path: {path}"
+                    )));
+                }
+            }
+        }
+        Ok(resolved)
+    }
+
+    /// Converts one native test path into a virtual runtime storage path.
+    fn storagePathForNative(&self, path: &Path) -> HostResult<String> {
+        let runtimeRoot = self.runtimeRoot.as_ref().ok_or_else(|| {
+            HostError::new(format!(
+                "test runtime root is required for native path: {}",
+                path.display()
+            ))
+        })?;
+        let relative = path.strip_prefix(runtimeRoot).map_err(|_| {
+            HostError::new(format!(
+                "native path is outside the test runtime root: {}",
+                path.display()
+            ))
+        })?;
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if relative.is_empty() {
+            Ok("runtime".to_string())
+        } else {
+            Ok(format!("runtime/{relative}"))
         }
     }
 }
 
-/// Maps a runtime-layout path into a native path under the runtime root.
-fn runtimeLayoutPath(
-    runtimeRoot: &Path,
-    storagePath: &str,
-) -> Result<PathBuf, LocalModelRegistryStoreError> {
-    let relative = storagePath
-        .trim()
-        .strip_prefix("runtime/")
-        .ok_or_else(|| LocalModelRegistryStoreError::InvalidStoragePath(storagePath.to_string()))?;
-    Ok(runtimeRoot.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR)))
+#[cfg(test)]
+impl RuntimeStorageHost for TestRuntimeStorageHost {
+    /// Returns the runtime root used by root-backed registry tests.
+    fn runtimeRootDir(&self) -> Option<PathBuf> {
+        self.runtimeRoot.clone()
+    }
+
+    /// Returns no workspace root because registry tests do not use workspace storage.
+    fn workspaceRootDir(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Reads bytes from a virtual runtime storage path.
+    fn readBytes(&self, path: &str) -> HostResult<Vec<u8>> {
+        Ok(fs::read(self.resolve(path)?)?)
+    }
+
+    /// Writes bytes to a virtual runtime storage path.
+    fn writeBytes(&self, path: &str, content: &[u8]) -> HostResult<()> {
+        let path = self.resolve(path)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Deletes a virtual runtime storage path.
+    fn delete(&self, path: &str, recursive: bool) -> HostResult<()> {
+        let path = self.resolve(path)?;
+        if !path.exists() {
+            return Ok(());
+        }
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            if recursive {
+                fs::remove_dir_all(path)?;
+            } else {
+                fs::remove_dir(path)?;
+            }
+        } else {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// Checks whether a virtual runtime storage path exists.
+    fn exists(&self, path: &str) -> HostResult<bool> {
+        Ok(self.resolve(path)?.exists())
+    }
+
+    /// Lists direct children under one virtual runtime storage directory.
+    fn list(&self, prefix: &str) -> HostResult<Vec<RuntimeStorageEntry>> {
+        let directory = self.resolve(prefix)?;
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            entries.push(RuntimeStorageEntry {
+                path: self.storagePathForNative(&entry.path())?,
+                isDirectory: metadata.is_dir(),
+                size: metadata.len() as i64,
+            });
+        }
+        Ok(entries)
+    }
 }

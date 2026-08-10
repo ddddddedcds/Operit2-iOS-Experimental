@@ -2515,6 +2515,30 @@ pub struct SnackbarHostProps {
     /// Shared node layout, drawing, identity, and lifecycle properties.
     pub base_compose_common_props: ComposeCommonProps,
 }
+/// Properties for embedding the host AI chat content without its workspace panel.
+pub struct AiChatProps {
+    /// Shared node layout, drawing, identity, and lifecycle properties.
+    pub base_compose_common_props: ComposeCommonProps,
+}
+/// Properties for a responsive trailing panel controlled by the Compose screen.
+pub struct AdaptiveSidePanelProps {
+    /// Shared node layout, drawing, identity, and lifecycle properties.
+    pub base_compose_common_props: ComposeCommonProps,
+    /// Controls whether the trailing panel is visible.
+    pub open: bool,
+    /// Content rendered inside the trailing panel.
+    pub side: ComposeChildren,
+    /// Receives visibility changes initiated by the host surface.
+    pub onOpenChanged: Arc<dyn Fn(bool) -> () + Send + Sync>,
+    /// Width used by default on wide layouts.
+    pub defaultWidth: Option<f64>,
+    /// Smallest permitted width on wide layouts.
+    pub minWidth: Option<f64>,
+    /// Minimum width reserved for the primary content on wide layouts.
+    pub minContentWidth: Option<f64>,
+    /// Viewport width at which the panel switches to overlay mode.
+    pub breakpoint: Option<f64>,
+}
 /// Drawing commands, viewport transform, and gesture callbacks for a canvas node.
 pub struct CanvasProps {
     /// Shared node layout, drawing, identity, and lifecycle properties.
@@ -2731,6 +2755,10 @@ pub struct ComposeUiFactoryRegistry {
     pub CircularProgressIndicator: ComposeNodeFactory<CircularProgressIndicatorProps>,
     /// Creates the presentation slot for queued snackbars.
     pub SnackbarHost: ComposeNodeFactory<SnackbarHostProps>,
+    /// Embeds the host AI chat content without the workspace panel.
+    pub AiChat: ComposeNodeFactory<AiChatProps>,
+    /// Creates a responsive trailing panel around the supplied screen content.
+    pub AdaptiveSidePanel: ComposeNodeFactory<AdaptiveSidePanelProps>,
     /// Creates a command-driven drawing surface.
     pub Canvas: ComposeNodeFactory<CanvasProps>,
     /// Creates an embedded platform WebView.
@@ -2770,27 +2798,41 @@ pub struct ComposeResolveToolNameRequest {
     /// Whether an imported package binding should win over a local definition.
     pub preferImported: Option<bool>,
 }
-/// Selection filters and permission behavior for the host file picker.
+/// Selects one source for the host file picker.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum ComposeFilePickerMode {
+    /// Opens the platform document picker.
+    #[serde(rename = "document")]
+    Document,
+    /// Opens the platform photo selector.
+    #[serde(rename = "photo")]
+    Photo,
+    /// Opens the platform video selector.
+    #[serde(rename = "video")]
+    Video,
+    /// Opens the platform photo and video selector.
+    #[serde(rename = "media")]
+    Media,
+}
+/// Selection behavior for the host file picker.
 pub struct ComposeFilePickerOptions {
-    /// Accepted media types shown by the picker.
-    pub mimeTypes: Option<Vec<String>>,
-    /// Whether the user may select more than one file.
+    /// Selection source; document selection is used when this field is absent.
+    pub picker: Option<ComposeFilePickerMode>,
+    /// Whether the user may select more than one document or visual-media item.
     pub allowMultiple: Option<bool>,
-    /// Whether the host should retain URI access beyond the current session.
-    pub persistPermission: Option<bool>,
 }
 /// File metadata returned by the host picker.
 pub struct ComposePickedFile {
-    /// Platform URI granting access to the selected content.
+    /// URI representing the selected document or media item.
     pub uri: String,
-    /// Resolved filesystem path when the provider exposes one.
-    pub path: Option<String>,
+    /// Platform file path or browser object URL for the selected item.
+    pub path: String,
     /// Display name reported by the content provider.
     pub name: Option<String>,
     /// Media type reported for the selected file.
     pub mimeType: Option<String>,
-    /// File size in bytes when reported by the provider.
-    pub size: JsOptional<f64>,
+    /// File size in bytes.
+    pub size: f64,
 }
 /// Outcome of a host file-picker request.
 pub struct ComposeFilePickerResult {

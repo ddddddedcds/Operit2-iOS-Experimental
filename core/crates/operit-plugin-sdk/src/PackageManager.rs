@@ -8,6 +8,7 @@ use crate::toolpkg::ToolPkgManager::{
 use crate::toolpkg::ToolPkgParser::{
     ToolPkgContainerRuntime, ToolPkgLoadResult, ToolPkgSubpackageRuntime,
 };
+use operit_host_api::FileSystemHost;
 
 /// Resolves the active conditional state for one package.
 pub trait PackageStateResolver: Send + Sync {
@@ -33,6 +34,7 @@ impl PluginPackageManager {
     pub fn new(
         executionEngineFactory: Arc<dyn ToolPkgExecutionEngineFactory>,
         assetSource: Arc<dyn ToolPkgAssetSource>,
+        fileSystemHost: Arc<dyn FileSystemHost>,
         packageStateResolver: Arc<dyn PackageStateResolver>,
     ) -> Self {
         Self {
@@ -40,7 +42,11 @@ impl PluginPackageManager {
             availablePackages: BTreeMap::new(),
             enabledPackageNames: BTreeSet::new(),
             activePackageStateIds: BTreeMap::new(),
-            toolPkgManager: ToolPkgManager::new(executionEngineFactory, assetSource),
+            toolPkgManager: ToolPkgManager::new(
+                executionEngineFactory,
+                assetSource,
+                fileSystemHost,
+            ),
             packageStateResolver,
         }
     }
@@ -319,10 +325,8 @@ fn normalizePackageName(packageName: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::fs;
-    use std::path::PathBuf;
+    use std::io::Write;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde_json::Value;
 
@@ -335,6 +339,127 @@ mod tests {
     use crate::toolpkg::ToolPkgParser::{
         ToolPkgContainerRuntime, ToolPkgLoadResult, ToolPkgSourceType,
     };
+    use operit_host_api::{
+        FileEntry, FileExistence, FileInfo, FileSystemHost, FindFilesRequest, GrepCodeRequest,
+        GrepCodeResult, HostEnvironmentDescriptor, HostError, HostResult,
+    };
+
+    /// Rejects filesystem operations because these package manager tests do not access host files.
+    struct RejectingFileSystemHost;
+
+    impl RejectingFileSystemHost {
+        /// Returns the explicit error used for unsupported test filesystem operations.
+        fn unsupported<T>() -> HostResult<T> {
+            Err(HostError::new("filesystem access is not used by this test"))
+        }
+    }
+
+    impl FileSystemHost for RejectingFileSystemHost {
+        /// Returns the test host label.
+        fn envLabel(&self) -> &str {
+            "test"
+        }
+
+        /// Returns the test environment descriptor.
+        fn environmentDescriptor(&self) -> HostEnvironmentDescriptor {
+            HostEnvironmentDescriptor::linux()
+        }
+
+        /// Rejects path validation.
+        fn validatePath(&self, _path: &str, _paramName: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects directory listing.
+        fn listFiles(&self, _path: &str) -> HostResult<Vec<FileEntry>> {
+            Self::unsupported()
+        }
+
+        /// Rejects text reads.
+        fn readFile(&self, _path: &str) -> HostResult<String> {
+            Self::unsupported()
+        }
+
+        /// Rejects bounded text reads.
+        fn readFileWithLimit(&self, _path: &str, _maxBytes: usize) -> HostResult<String> {
+            Self::unsupported()
+        }
+
+        /// Rejects byte reads.
+        fn readFileBytes(&self, _path: &str) -> HostResult<Vec<u8>> {
+            Self::unsupported()
+        }
+
+        /// Rejects text writes.
+        fn writeFile(&self, _path: &str, _content: &str, _append: bool) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects byte writes.
+        fn writeFileBytes(&self, _path: &str, _content: &[u8]) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects deletion.
+        fn deleteFile(&self, _path: &str, _recursive: bool) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects file existence checks.
+        fn fileExists(&self, _path: &str) -> HostResult<FileExistence> {
+            Self::unsupported()
+        }
+
+        /// Rejects moves.
+        fn moveFile(&self, _source: &str, _destination: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects copies.
+        fn copyFile(&self, _source: &str, _destination: &str, _recursive: bool) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects directory creation.
+        fn makeDirectory(&self, _path: &str, _createParents: bool) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects file searching.
+        fn findFiles(&self, _request: FindFilesRequest) -> HostResult<Vec<String>> {
+            Self::unsupported()
+        }
+
+        /// Rejects file metadata reads.
+        fn fileInfo(&self, _path: &str) -> HostResult<FileInfo> {
+            Self::unsupported()
+        }
+
+        /// Rejects code searches.
+        fn grepCode(&self, _request: GrepCodeRequest) -> HostResult<GrepCodeResult> {
+            Self::unsupported()
+        }
+
+        /// Rejects archive creation.
+        fn zipFiles(&self, _source: &str, _destination: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects archive extraction.
+        fn unzipFiles(&self, _source: &str, _destination: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects host file opening.
+        fn openFile(&self, _path: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects host file sharing.
+        fn shareFile(&self, _path: &str, _title: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+    }
 
     /// JavaScript engine used by package manager contract tests.
     struct TestExecutionEngine;
@@ -351,6 +476,24 @@ mod tests {
             _onIntermediateResult: Option<Arc<dyn Fn(String) + Send + Sync>>,
             _dispatchIntermediateOnMain: bool,
             _timeoutSec: u64,
+        ) -> JsExecutionResult<Option<String>> {
+            Ok(params
+                .get("event")
+                .and_then(Value::as_str)
+                .map(str::to_string))
+        }
+
+        /// Returns the dispatched event name for exact-deadline hook tests.
+        #[allow(non_snake_case)]
+        fn execute_script_function_with_timeout_millis(
+            &self,
+            _script: &str,
+            _functionName: &str,
+            params: &BTreeMap<String, Value>,
+            _envOverrides: &BTreeMap<String, String>,
+            _onIntermediateResult: Option<Arc<dyn Fn(String) + Send + Sync>>,
+            _dispatchIntermediateOnMain: bool,
+            _timeoutMillis: u64,
         ) -> JsExecutionResult<Option<String>> {
             Ok(params
                 .get("event")
@@ -377,6 +520,7 @@ mod tests {
             script: &str,
             _runtimeOptions: &BTreeMap<String, Value>,
             _envOverrides: &BTreeMap<String, String>,
+            _textResources: Arc<BTreeMap<String, String>>,
         ) -> JsExecutionResult<Option<String>> {
             Ok(Some(script.to_string()))
         }
@@ -409,14 +553,27 @@ mod tests {
         }
     }
 
-    /// Asset source used by tests that load ToolPkg resources from directories.
+    /// Asset source used by tests that load the ToolPkg hook main entry.
     struct TestAssetSource;
 
     impl ToolPkgAssetSource for TestAssetSource {
-        /// Returns no embedded assets because tests use external directories.
+        /// Returns a minimal embedded ToolPkg archive containing the hook main entry.
         #[allow(non_snake_case)]
         fn toolPkgAssetBytes(&self, _assetName: &str) -> Option<Vec<u8>> {
-            None
+            let mut bytes = Vec::new();
+            let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            archive
+                .start_file("main.js", options)
+                .expect("test ToolPkg main entry should start");
+            archive
+                .write_all(b"function onEvent() {}")
+                .expect("test ToolPkg main entry should be written");
+            archive
+                .finish()
+                .expect("test ToolPkg archive should finish");
+            Some(bytes)
         }
     }
 
@@ -436,20 +593,9 @@ mod tests {
         PluginPackageManager::new(
             Arc::new(TestExecutionEngineFactory),
             Arc::new(TestAssetSource),
+            Arc::new(RejectingFileSystemHost),
             Arc::new(TestPackageStateResolver),
         )
-    }
-
-    /// Creates an isolated temporary directory for one test.
-    fn temporaryDirectory(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time must be after unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "operit-plugin-sdk-{label}-{}-{nonce}",
-            std::process::id()
-        ))
     }
 
     /// Verifies JavaScript package registration, activation, and state selection.
@@ -491,11 +637,6 @@ mod tests {
     /// Verifies that an embedding application can dispatch a ToolPkg hook through the SDK.
     #[test]
     fn dispatchesToolPkgHookThroughPublicInterface() {
-        let root = temporaryDirectory("hook");
-        fs::create_dir_all(&root).expect("temporary ToolPkg directory must be created");
-        fs::write(root.join("main.js"), "function onEvent() {}")
-            .expect("ToolPkg main script must be written");
-
         let mut manager = packageManager();
         let registered = manager.registerToolPkg(ToolPkgLoadResult {
             containerPackage: ToolPackage {
@@ -506,10 +647,11 @@ mod tests {
             containerRuntime: ToolPkgContainerRuntime {
                 packageName: "container".to_string(),
                 mainEntry: "main.js".to_string(),
-                sourceType: ToolPkgSourceType::EXTERNAL,
-                sourcePath: root.to_string_lossy().to_string(),
+                sourceType: ToolPkgSourceType::ASSET,
+                sourcePath: "test-hook.toolpkg".to_string(),
                 ..ToolPkgContainerRuntime::default()
             },
+            marketOrigin: None,
         });
         assert!(registered);
         manager.setEnabledPackageNames(&["container".to_string()]);
@@ -530,7 +672,7 @@ mod tests {
                     runtimeKind: None,
                     envOverrides: BTreeMap::new(),
                     timestampMs: 1,
-                    timeoutSec: 10,
+                    timeoutMillis: 10_000,
                     dispatchIntermediateOnMain: true,
                     onIntermediateResult: None,
                 },
@@ -538,6 +680,5 @@ mod tests {
             .expect("ToolPkg hook dispatch must succeed");
 
         assert_eq!(output.as_deref(), Some("host_event"));
-        fs::remove_dir_all(root).expect("temporary ToolPkg directory must be removed");
     }
 }

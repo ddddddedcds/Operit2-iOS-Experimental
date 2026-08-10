@@ -17,9 +17,12 @@ use operit_model::ToolPrompt::ToolPrompt;
 use operit_util::stream::RevisableTextStream::{
     with_event_channel, RevisableTextStreamLike, TextStreamEventCarrier,
 };
-use operit_util::stream::Stream::FnStream;
+use operit_util::stream::Stream::{FnStream, Stream};
+use operit_util::AppLogger::AppLogger;
 use operit_util::ChatUtils::ChatUtils;
 use operit_util::TokenCacheManager::TokenCacheManager;
+
+const PROVIDER_TRANSPORT_LOG_TAG: &str = "ProviderTransport";
 
 #[derive(Clone)]
 pub struct DeepseekProvider {
@@ -38,9 +41,9 @@ pub struct DeepseekProvider {
 
 #[derive(Default)]
 struct DeepseekProviderState {
-    inputTokenCount: i32,
-    cachedInputTokenCount: i32,
-    outputTokenCount: i32,
+    inputTokenCount: i64,
+    cachedInputTokenCount: i64,
+    outputTokenCount: i64,
     cancelled: bool,
     tokenCacheManager: TokenCacheManager,
     activeParent: Option<OpenAIProvider>,
@@ -77,18 +80,18 @@ impl DeepseekProvider {
         if let Ok(mut state) = self.state.lock() {
             if token_counts.input > 0 || token_counts.cached_input > 0 {
                 state.tokenCacheManager.update_actual_tokens(
-                    token_counts.input.max(0) as usize,
-                    token_counts.cached_input.max(0) as usize,
+                    token_counts.input.max(0),
+                    token_counts.cached_input.max(0),
                 );
             }
             if token_counts.output > 0 {
                 state
                     .tokenCacheManager
-                    .set_output_tokens(token_counts.output.max(0) as usize);
+                    .set_output_tokens(token_counts.output.max(0));
             }
-            state.inputTokenCount = state.tokenCacheManager.total_input_token_count() as i32;
-            state.cachedInputTokenCount = state.tokenCacheManager.cached_input_token_count() as i32;
-            state.outputTokenCount = state.tokenCacheManager.output_token_count() as i32;
+            state.inputTokenCount = state.tokenCacheManager.total_input_token_count();
+            state.cachedInputTokenCount = state.tokenCacheManager.cached_input_token_count();
+            state.outputTokenCount = state.tokenCacheManager.output_token_count();
         }
     }
 
@@ -257,7 +260,7 @@ impl DeepseekProvider {
         provider_ready_history: &[PromptTurn],
         tools_json: Option<&str>,
         preserve_think_in_history: bool,
-    ) -> i32 {
+    ) -> i64 {
         let comparableHistory = provider_ready_history
             .iter()
             .map(|turn| {
@@ -285,9 +288,9 @@ impl DeepseekProvider {
                 tools_json,
                 true,
             );
-            state.inputTokenCount = state.tokenCacheManager.total_input_token_count() as i32;
-            state.cachedInputTokenCount = state.tokenCacheManager.cached_input_token_count() as i32;
-            tokenCount as i32
+            state.inputTokenCount = state.tokenCacheManager.total_input_token_count();
+            state.cachedInputTokenCount = state.tokenCacheManager.cached_input_token_count();
+            tokenCount
         } else {
             0
         }
@@ -386,24 +389,24 @@ impl DeepseekProvider {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl AIService for DeepseekProvider {
-    fn input_token_count(&self) -> i32 {
+    fn input_token_count(&self) -> i64 {
         self.state
             .lock()
-            .map(|state| state.tokenCacheManager.total_input_token_count() as i32)
+            .map(|state| state.tokenCacheManager.total_input_token_count())
             .unwrap_or(0)
     }
 
-    fn cached_input_token_count(&self) -> i32 {
+    fn cached_input_token_count(&self) -> i64 {
         self.state
             .lock()
-            .map(|state| state.tokenCacheManager.cached_input_token_count() as i32)
+            .map(|state| state.tokenCacheManager.cached_input_token_count())
             .unwrap_or(0)
     }
 
-    fn output_token_count(&self) -> i32 {
+    fn output_token_count(&self) -> i64 {
         self.state
             .lock()
-            .map(|state| state.tokenCacheManager.output_token_count() as i32)
+            .map(|state| state.tokenCacheManager.output_token_count())
             .unwrap_or(0)
     }
 
@@ -443,6 +446,13 @@ impl AIService for DeepseekProvider {
 
         let request_body = self.create_request_body(&request)?;
         if request.stream {
+            AppLogger::i(
+                PROVIDER_TRANSPORT_LOG_TAG,
+                &format!(
+                    "provider.deepseek.parent.create providerModel={} stream=true",
+                    self.provider_model(),
+                ),
+            );
             let mut parent = OpenAIProvider::new_with_capabilities(
                 self.api_endpoint.clone(),
                 self.api_key.clone(),
@@ -455,22 +465,51 @@ impl AIService for DeepseekProvider {
                 self.enable_tool_call,
             );
             let mut result = parent.send_prepared_request(request, request_body).await?;
+            AppLogger::i(
+                PROVIDER_TRANSPORT_LOG_TAG,
+                &format!(
+                    "provider.deepseek.parent.stream.ready providerModel={}",
+                    self.provider_model(),
+                ),
+            );
             let event_channel = result.event_channel().clone();
             let mut provider = self.clone();
             let activeParentGeneration = provider.setActiveParent(parent.clone());
             if provider.isCancelled() {
                 parent.cancel_streaming();
             }
+            let mut ownedResult = Some(result);
+            let mut ownedParent = Some(parent);
+            let mut ownedProvider = Some(provider);
             let cold_stream = FnStream::new(move |emit| {
-                result.collect(&mut |content| {
-                    emit(content);
-                });
-                provider.apply_token_counts(TokenCounts {
-                    input: parent.input_token_count(),
-                    cached_input: parent.cached_input_token_count(),
-                    output: parent.output_token_count(),
-                });
-                provider.clearActiveParent(activeParentGeneration);
+                let mut result = ownedResult
+                    .take()
+                    .expect("Deepseek parent stream must only be collected once");
+                let parent = ownedParent
+                    .take()
+                    .expect("Deepseek parent stream must only be collected once");
+                let mut provider = ownedProvider
+                    .take()
+                    .expect("Deepseek parent stream must only be collected once");
+                Box::pin(async move {
+                    result.collect(emit).await;
+                    AppLogger::i(
+                        PROVIDER_TRANSPORT_LOG_TAG,
+                        &format!(
+                            "provider.deepseek.parent.stream.done providerModel={} inputTokens={} cachedInputTokens={} outputTokens={}",
+                            parent.provider_model(),
+                            parent.input_token_count(),
+                            parent.cached_input_token_count(),
+                            parent.output_token_count(),
+                        ),
+                    );
+                    provider.apply_token_counts(TokenCounts {
+                        input: parent.input_token_count(),
+                        cached_input: parent.cached_input_token_count(),
+                        output: parent.output_token_count(),
+                    });
+                    provider.clearActiveParent(activeParentGeneration);
+                })
             });
             return Ok(Box::new(with_event_channel(cold_stream, event_channel)));
         }
@@ -560,7 +599,7 @@ impl AIService for DeepseekProvider {
         &self,
         chat_history: &[PromptTurn],
         available_tools: &[ToolPrompt],
-    ) -> Result<i32, AiServiceError> {
+    ) -> Result<i64, AiServiceError> {
         let useToolCall = self.enable_tool_call && !available_tools.is_empty();
         let providerReadyHistory =
             StructuredToolCallBridge::compileHistoryForProvider(chat_history, useToolCall);
@@ -638,17 +677,17 @@ fn parse_usage_counts(usage: &Value) -> TokenCounts {
         .get("prompt_tokens")
         .or_else(|| usage.get("input_tokens"))
         .and_then(Value::as_i64)
-        .unwrap_or(0) as i32;
+        .unwrap_or(0) as i64;
     let cached_tokens = usage
         .pointer("/prompt_tokens_details/cached_tokens")
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens"))
         .and_then(Value::as_i64)
-        .unwrap_or(0) as i32;
+        .unwrap_or(0) as i64;
     let completion_tokens = usage
         .get("completion_tokens")
         .or_else(|| usage.get("output_tokens"))
         .and_then(Value::as_i64)
-        .unwrap_or(0) as i32;
+        .unwrap_or(0) as i64;
     let actual_input_tokens = (prompt_tokens - cached_tokens).max(0);
 
     TokenCounts {

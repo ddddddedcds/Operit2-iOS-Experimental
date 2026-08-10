@@ -12,7 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use operit_host_api::{
     AppListData, AppOperationData, AppUsageTimeResultData, DeviceInfoData, HostError, HostResult,
-    LocationData, NotificationData, OCRLanguage, OCRQuality, SystemOperationHost, SystemSettingData,
+    LocationData, NotificationData, OCRLanguage, OCRQuality, SystemNotificationRequest,
+    SystemOperationHost, SystemSettingData,
 };
 use operit_host_apple_native::AppleSystemOperationHost;
 
@@ -75,8 +76,8 @@ impl SystemOperationHost for IosSystemOperationHost {
     fn toast(&self, message: &str) -> HostResult<()> {
         self.inner.toast(message)
     }
-    fn sendNotification(&self, title: &str, message: &str) -> HostResult<()> {
-        self.inner.sendNotification(title, message)
+    fn sendNotification(&self, request: &SystemNotificationRequest) -> HostResult<()> {
+        self.inner.sendNotification(request)
     }
     fn modifySystemSetting(
         &self,

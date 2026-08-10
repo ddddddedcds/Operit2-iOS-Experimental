@@ -64,7 +64,7 @@ v2.0.0            -> GitHub prerelease = false
 
 Draft releases are ignored by the updater.
 
-The release script derives the GitHub prerelease flag from the tag version. Prerelease tags publish as GitHub prereleases. Stable tags publish as stable GitHub releases.
+The publish script derives the GitHub prerelease flag from the tag version. Prerelease tags publish as GitHub prereleases. Stable tags publish as stable GitHub releases.
 
 The first public Operit2 preview should use:
 
@@ -128,16 +128,16 @@ For `2.0.0-preview.1`, the Flutter platform version is:
 2.0.0+1
 ```
 
-The release script uses the full Operit2 SemVer for Git tags and updater metadata. The Flutter `major.minor.patch` must match the Operit2 release version. Flutter `buildNumber` is only platform package metadata for Android, Windows, Linux, and macOS builds.
+The build and publish scripts use the full Operit2 SemVer for Git tags and updater metadata. The Flutter `major.minor.patch` must match the Operit2 release version. Flutter `buildNumber` is only platform package metadata for Android, Windows, Linux, and macOS builds.
 
-For App and full runs, including `--build-only`, the release script builds with the current Flutter `buildNumber` and then increments `apps/flutter/app/pubspec.yaml` by 1 after all selected App assets succeed. CLI-only runs do not change the Flutter `buildNumber`.
+For App and full runs, the build release script builds with the current Flutter `buildNumber` and then increments `apps/flutter/app/pubspec.yaml` by 1 after all selected App assets succeed. CLI-only runs do not change the Flutter `buildNumber`.
 
-## Release Script
+## Build Release Script
 
-The release script is:
+The build release script is:
 
 ```text
-tools/release/release.py
+tools/release/build_release.py
 ```
 
 GitHub publish credentials live in:
@@ -151,30 +151,41 @@ That directory is ignored by git.
 Default publish command on Windows:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py
+.\.venv\Scripts\python.exe tools\release\publish_dist.py
 ```
 
 Release scope:
 
 ```powershell
 # CLI/TUI only
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli
 
 # App only
-.\.venv\Scripts\python.exe tools\release\release.py --scope app
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope app
 
 # App and CLI/TUI
-.\.venv\Scripts\python.exe tools\release\release.py --scope full
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope full
+```
+
+`build_release.py` only builds release assets. `publish_dist.py` uploads files
+already staged in `tools/release/dist`.
+
+`tools/release/dist` accumulates assets from local builds, SSH collection, and
+GitHub Actions downloads. Use `--clean-dist` with `build_release.py` only when
+starting a new staged release set:
+
+```powershell
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli --clean-dist
 ```
 
 CLI architecture selection:
 
 ```powershell
 # Current host architecture only
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli --build-only --cli-arches host
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli --cli-arches host
 
 # x86_64 and aarch64 for the current desktop platforms available from this host
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli --build-only --cli-arches all
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli --cli-arches all
 ```
 
 On Windows, `--cli-arches all` builds Windows x86_64 and Windows aarch64 locally, and Linux x86_64 and Linux aarch64 through WSL. Windows aarch64 requires the Rust target, Visual Studio ARM64 build tools, and LLVM clang. Linux aarch64 in Fedora WSL requires:
@@ -182,7 +193,7 @@ On Windows, `--cli-arches all` builds Windows x86_64 and Windows aarch64 locally
 Before a local release build, run the environment check for the selected scope:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\release\release.py --scope full --cli-arches all --check-environment
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope full --cli-arches all --check-environment
 ```
 
 ```bash
@@ -194,16 +205,47 @@ sudo cp -a lib64/libgcc_s*.so* /usr/aarch64-redhat-linux/sys-root/fc43/usr/lib64
 sudo ln -sf libgcc_s.so.1 /usr/aarch64-redhat-linux/sys-root/fc43/usr/lib64/libgcc_s.so
 ```
 
-macOS App, macOS CLI, and unsigned iOS assets are produced by GitHub Actions for
-normal release work. Apple workflows are manual `workflow_dispatch` entrypoints,
-and the macOS/iOS workflows are also reusable through `workflow_call`:
+Cloud release builds are composable. All available platform workflows are manual
+`workflow_dispatch` entrypoints; macOS and iOS are additionally reusable through
+`workflow_call` from Apple Release Build:
+
+```text
+Apple Release Build       macOS App, macOS CLI, unsigned iOS App
+macOS Flutter Build       macOS App and/or CLI
+iOS Flutter Build         unsigned iOS App
+Windows Release Build     Windows App and/or CLI
+Linux Release Build       Linux App and/or CLI
+Android Flutter Build     signed Android APKs
+```
+
+Android Flutter Build requires these repository secrets:
+
+```text
+ANDROID_RELEASE_KEYSTORE_BASE64
+ANDROID_RELEASE_STORE_PASSWORD
+ANDROID_RELEASE_KEY_ALIAS
+ANDROID_RELEASE_KEY_PASSWORD
+```
+
+The Android keystore secret must be Base64 encoded. OpenHarmony remains a local
+build because this repository has no reproducible distribution URL for its SDK
+and command-line tools. Do not treat it as an available cloud build until that
+external toolchain source and the signing secrets are configured.
 
 ```powershell
 gh workflow run "Apple Release Build" -f products=all -f include_ios=true -f build_web_assets=false
 gh workflow run "macOS Flutter Build" -f products=all -f build_web_assets=false
 gh workflow run "iOS Flutter Build" -f build_web_assets=false
-.\.venv\Scripts\python.exe tools\release\download_action_artifacts.py --run-id <run-id>
+gh workflow run "Windows Release Build" -f products=all -f cli_arches=all
+gh workflow run "Linux Release Build" -f products=all -f cli_arches=all
+gh workflow run "Android Flutter Build"
+.\.venv\Scripts\python.exe tools\release\download_action_artifacts.py --run-id <apple-run-id> --run-id <windows-run-id> --run-id <linux-run-id> --run-id <android-run-id>
 ```
+
+`download_action_artifacts.py` verifies that every requested run completed with
+the `success` conclusion before copying release assets into `tools/release/dist`.
+Publish the collected files through `publish_dist.py` when the release set is
+complete.
 
 Collaborators can build the current host locally with one Python entrypoint. On
 macOS, `--include-ios` also builds the unsigned iOS archive when the iOS Xcode
@@ -227,6 +269,19 @@ GITHUB_TOKEN
 GITHUB_API_URL
 ```
 
+Publishing existing build outputs is handled by:
+
+```text
+tools/release/publish_dist.py
+```
+
+It uploads the files already staged in `tools/release/dist` without rebuilding:
+
+```powershell
+.\.venv\Scripts\python.exe tools\release\publish_dist.py
+.\.venv\Scripts\python.exe tools\release\publish_dist.py --check-only
+```
+
 The default release repository is:
 
 ```text
@@ -235,7 +290,7 @@ AAswordman/Operit2
 
 Use `--repo owner/name` to publish another repository.
 
-It must enforce these rules:
+The build and publish scripts must enforce these rules:
 
 - Read Cargo package versions with TOML parsing.
 - Read Flutter platform build metadata from `pubspec.yaml`.
@@ -244,10 +299,10 @@ It must enforce these rules:
 - Reject Flutter platform versions whose `major.minor.patch` differs from the Cargo release version.
 - Reject a `--tag` value that differs from the Cargo release version.
 - Derive the GitHub prerelease flag from the release version.
-- Build and upload only the selected `--scope` assets.
+- Build only the selected `--scope` assets.
 - Increment Flutter `buildNumber` by 1 after successful App/full asset builds.
-- Publish releases through the GitHub REST API with `GITHUB_TOKEN`.
-- Check an existing GitHub release's prerelease flag before uploading assets.
+- Publish staged files through the GitHub REST API with `GITHUB_TOKEN`.
+- Check an existing GitHub release's prerelease flag before uploading staged files.
 
 For the first public preview:
 

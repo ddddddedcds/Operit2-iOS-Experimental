@@ -8,8 +8,9 @@ import 'package:flutter/widgets.dart';
 
 import '../bridge/ProxyCoreRuntimeBridge.dart';
 import '../host/RuntimeHostInteractionSubscriber.dart';
-import '../link_host/LinkHostServer.dart';
+import '../link_access/LinkAccessHost.dart';
 import '../logging/ClientLogger.dart';
+import '../notifications/AppNotificationService.dart';
 import '../proxy/generated/CoreProxyClients.g.dart';
 import '../proxy/generated/CoreProxyModels.g.dart';
 import '../runtime/RuntimeAutoSyncManager.dart';
@@ -140,7 +141,7 @@ class CoreApplicationService with WidgetsBindingObserver {
   /// Starts Core services when runtime configuration becomes usable.
   void _handleRuntimeConnectionChanged() {
     ClientLogger.i(
-      'runtime connection changed mode=${_runtimeManager.config.mode.name} configured=${_runtimeManager.runtimeConfigured}',
+      'runtime connection changed configured=${_runtimeManager.runtimeConfigured}',
       tag: _logTag,
     );
     unawaited(_startRuntimeServices());
@@ -175,11 +176,12 @@ class CoreApplicationService with WidgetsBindingObserver {
     }
     try {
       ClientLogger.i(
-        'runtime services start mode=${_runtimeManager.config.mode.name} localConfirmed=${_runtimeManager.config.localStorage.confirmed}',
+        'runtime services start localConfirmed=${_runtimeManager.config.localStorage.confirmed}',
         tag: _logTag,
       );
       await _startLocalBackgroundService();
       await _syncHostSubscriber();
+      AppNotificationService.instance.initialize();
       if (!_runtimeManager.config.localStorage.confirmed) {
         ClientLogger.i(
           'runtime services start done localStorageConfirmed=false elapsedMs=${stopwatch.elapsedMilliseconds}',
@@ -188,6 +190,7 @@ class CoreApplicationService with WidgetsBindingObserver {
         return;
       }
       await _ensureLinkHostStarted();
+      await _coreClients.runtimeRemoteLinkService.startAutoSync();
       await _autoSyncManager.initialize();
       ClientLogger.i(
         'runtime services start done elapsedMs=${stopwatch.elapsedMilliseconds}',
@@ -220,7 +223,7 @@ class CoreApplicationService with WidgetsBindingObserver {
     _linkHostStartAttempted = true;
     final linkHostStopwatch = Stopwatch()..start();
     ClientLogger.i('link host initialize start', tag: _logTag);
-    await LinkHostServer.instance.initializeFromConfig();
+    await LinkAccessHost.instance.initializeFromConfig();
     ClientLogger.i(
       'link host initialize done elapsedMs=${linkHostStopwatch.elapsedMilliseconds}',
       tag: _logTag,
@@ -231,10 +234,9 @@ class CoreApplicationService with WidgetsBindingObserver {
   Future<void> _startLocalBackgroundService() async {
     if (_localBackgroundServiceStartAttempted ||
         kIsWeb ||
-        defaultTargetPlatform != TargetPlatform.android ||
-        _runtimeManager.config.mode != RuntimeConnectionMode.local) {
+        defaultTargetPlatform != TargetPlatform.android) {
       ClientLogger.d(
-        'local background service not started attempted=$_localBackgroundServiceStartAttempted isWeb=$kIsWeb platform=$defaultTargetPlatform mode=${_runtimeManager.config.mode.name}',
+        'local background service not started attempted=$_localBackgroundServiceStartAttempted isWeb=$kIsWeb platform=$defaultTargetPlatform',
         tag: _logTag,
       );
       return;
@@ -277,7 +279,6 @@ class CoreApplicationService with WidgetsBindingObserver {
 
   /// Returns whether this process owns native host interaction handling.
   bool get _ownsHostInteractions {
-    return !kIsWeb &&
-        _runtimeManager.config.mode == RuntimeConnectionMode.local;
+    return !kIsWeb;
   }
 }

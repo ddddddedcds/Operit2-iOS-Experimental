@@ -1,56 +1,38 @@
-use std::fs;
 use std::io::Cursor;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::javascript::JsExecutionEngine;
-use crate::package::ToolPackage;
 use crate::toolpkg::ToolPkgParser::{
     ToolPkgArchiveParser, ToolPkgLoadResult, ToolPkgMainRegistrationParseResult, ToolPkgSourceType,
 };
 use crate::JsPackageLoader::JsPackageLoader;
+use operit_host_api::FileSystemHost;
 
 /// Loads ToolPkg archives and executes their main registration scripts.
 pub struct ToolPkgLoader;
 
 impl ToolPkgLoader {
-    /// Loads a ToolPkg archive from an external file.
+    /// Loads a ToolPkg archive through the supplied file-system host.
     #[allow(non_snake_case)]
     pub fn loadToolPkgFromExternalFile<FReportPackageLoadError>(
-        file: &Path,
+        fileSystemHost: &dyn FileSystemHost,
+        sourcePath: &str,
         jsEngine: &dyn JsExecutionEngine,
         reportPackageLoadError: FReportPackageLoadError,
     ) -> Result<ToolPkgLoadResult, String>
     where
         FReportPackageLoadError: Fn(&str, &str),
     {
-        let zipFile = fs::File::open(file).map_err(|error| error.to_string())?;
-        let mut archive = zip::ZipArchive::new(zipFile).map_err(|error| error.to_string())?;
-        let entryIndex = ToolPkgArchiveParser::buildZipEntryIndex(&mut archive);
-        let textResources = Arc::new(readToolPkgTextResources(&mut archive, &entryIndex));
-        ToolPkgArchiveParser::parseToolPkgFromIndexedEntries(
-            &entryIndex,
-            |entryName| readIndexedTextResource(&textResources, &entryIndex, entryName),
+        let archiveBytes = fileSystemHost
+            .readFileBytes(sourcePath)
+            .map_err(|error| error.to_string())?;
+        Self::loadToolPkgFromArchiveBytes(
+            &archiveBytes,
             ToolPkgSourceType::EXTERNAL,
-            &file.to_string_lossy(),
+            sourcePath,
             false,
-            |jsContent, reportPackageLoadError| match JsPackageLoader::parse(jsContent) {
-                Ok(package) => Some(package),
-                Err(error) => {
-                    reportPackageLoadError(String::new(), error);
-                    None
-                }
-            },
-            |mainScriptText, toolPkgId, mainScriptPath| {
-                parseMainRegistration(
-                    mainScriptText,
-                    toolPkgId,
-                    mainScriptPath,
-                    jsEngine,
-                    textResources.clone(),
-                )
-            },
-            |packageName, error| reportPackageLoadError(&packageName, &error),
+            jsEngine,
+            reportPackageLoadError,
         )
     }
 
@@ -65,16 +47,71 @@ impl ToolPkgLoader {
     where
         FReportPackageLoadError: Fn(&str, &str),
     {
-        let cursor = Cursor::new(bytes);
+        Self::loadToolPkgFromArchiveBytes(
+            bytes,
+            ToolPkgSourceType::ASSET,
+            assetName,
+            true,
+            jsEngine,
+            reportPackageLoadError,
+        )
+    }
+
+    /// Loads a raw protected ToolPkg ZIP after its local market installation seal has verified.
+    #[allow(non_snake_case)]
+    pub fn loadToolPkgFromMarketFile<FReportPackageLoadError>(
+        fileSystemHost: &dyn FileSystemHost,
+        sourcePath: &str,
+        jsEngine: &dyn JsExecutionEngine,
+        reportPackageLoadError: FReportPackageLoadError,
+    ) -> Result<ToolPkgLoadResult, String>
+    where
+        FReportPackageLoadError: Fn(&str, &str),
+    {
+        let archiveBytes = fileSystemHost
+            .readFileBytes(sourcePath)
+            .map_err(|error| error.to_string())?;
+        Self::loadToolPkgFromArchiveBytes(
+            &archiveBytes,
+            ToolPkgSourceType::MARKET,
+            sourcePath,
+            false,
+            jsEngine,
+            reportPackageLoadError,
+        )
+    }
+
+    /// Parses one already-unwrapped ToolPkg ZIP using its trusted source classification.
+    #[allow(non_snake_case)]
+    fn loadToolPkgFromArchiveBytes<FReportPackageLoadError>(
+        archiveBytes: &[u8],
+        sourceType: ToolPkgSourceType,
+        sourcePath: &str,
+        isBuiltIn: bool,
+        jsEngine: &dyn JsExecutionEngine,
+        reportPackageLoadError: FReportPackageLoadError,
+    ) -> Result<ToolPkgLoadResult, String>
+    where
+        FReportPackageLoadError: Fn(&str, &str),
+    {
+        let cursor = Cursor::new(archiveBytes);
         let mut archive = zip::ZipArchive::new(cursor).map_err(|error| error.to_string())?;
         let entryIndex = ToolPkgArchiveParser::buildZipEntryIndex(&mut archive);
         let textResources = Arc::new(readToolPkgTextResources(&mut archive, &entryIndex));
         ToolPkgArchiveParser::parseToolPkgFromIndexedEntries(
             &entryIndex,
             |entryName| readIndexedTextResource(&textResources, &entryIndex, entryName),
-            ToolPkgSourceType::ASSET,
-            assetName,
-            true,
+            |entryName| {
+                ToolPkgArchiveParser::readZipEntryPrefix(
+                    &mut archive,
+                    &entryIndex,
+                    entryName,
+                    crate::toolpkg::ToolPkgProtection::MARKET_ONLY_PROTECTION_HEADER_SIZE,
+                )
+            },
+            sourceType,
+            sourcePath,
+            isBuiltIn,
             |jsContent, reportPackageLoadError| match JsPackageLoader::parse(jsContent) {
                 Ok(package) => Some(package),
                 Err(error) => {

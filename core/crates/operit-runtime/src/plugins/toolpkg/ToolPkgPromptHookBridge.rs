@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::Value;
 
 use crate::plugins::toolpkg::ToolPkgHookBridgeSupport::ToolPkgBridgeRuntime;
+use crate::plugins::toolpkg::ToolPkgPreHookTimeout::ToolPkgPreHookTimeout;
 use operit_model::PromptTurn::{PromptTurn, PromptTurnKind};
 use operit_plugin_sdk::toolpkg::ToolPkgCommonPluginConstants::{
     TOOLPKG_EVENT_PROMPT_ESTIMATE_FINALIZE, TOOLPKG_EVENT_PROMPT_ESTIMATE_HISTORY,
@@ -150,6 +151,13 @@ fn registrations(
         .collect()
 }
 
+/// Reports a timed-out ToolPkg prompt hook through the active send turn's Toast callback.
+fn report_prompt_hook_timeout(context: &PromptHookContext, hook: &ToolPkgPromptHookRegistration) {
+    if let Some(callback) = context.on_hook_timeout.as_ref() {
+        callback(format!("{}:{}", hook.containerPackageName, hook.hookId));
+    }
+}
+
 struct PromptInputBridge {
     runtime: ToolPkgBridgeRuntime,
 }
@@ -264,7 +272,21 @@ fn dispatch_prompt_hooks(
     let mut mutation = PromptHookMutation::default();
     let mut changed = false;
     let package_manager = runtime.package_manager();
+    let budget = ToolPkgPreHookTimeout::fromPreferences();
     for hook in snapshot {
+        let Some(timeoutMillis) = budget.remainingTimeoutMillis() else {
+            report_prompt_hook_timeout(&current, &hook);
+            ChainLogger::error(
+                PLUGIN_CHAIN,
+                "plugin.toolpkg.prompt.timeout",
+                &[
+                    ("event", event.to_string()),
+                    ("stage", current.stage.clone()),
+                    ("phase", "before_hook".to_string()),
+                ],
+            );
+            break;
+        };
         ChainLogger::info(
             PLUGIN_CHAIN,
             "plugin.toolpkg.prompt.run.start",
@@ -276,7 +298,7 @@ fn dispatch_prompt_hooks(
                 ("function", hook.functionName.clone()),
             ],
         );
-        let result = match package_manager.runToolPkgMainHook(
+        let raw = package_manager.runToolPkgMainHookWithTimeoutMillis(
             &hook.containerPackageName,
             &hook.functionName,
             event,
@@ -287,7 +309,28 @@ fn dispatch_prompt_hooks(
             None,
             None,
             None,
-        ) {
+            timeoutMillis,
+        );
+        let hookTimedOut = raw
+            .as_ref()
+            .err()
+            .map(|error| ToolPkgPreHookTimeout::isTimeoutError(error))
+            .unwrap_or(false);
+        if hookTimedOut || budget.hasExpired() {
+            report_prompt_hook_timeout(&current, &hook);
+            ChainLogger::error(
+                PLUGIN_CHAIN,
+                "plugin.toolpkg.prompt.timeout",
+                &[
+                    ("event", event.to_string()),
+                    ("stage", current.stage.clone()),
+                    ("package", hook.containerPackageName.clone()),
+                    ("hookId", hook.hookId.clone()),
+                ],
+            );
+            break;
+        }
+        let result = match raw {
             Ok(raw) => decodeToolPkgHookResult(raw),
             Err(error) => {
                 ChainLogger::error(

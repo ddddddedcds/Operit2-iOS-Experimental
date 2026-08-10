@@ -126,10 +126,17 @@ operit2 cli mcp local-set <id> [--disabled true|false] [--env KEY=VALUE] [--appr
 
 ```powershell
 .\.venv\Scripts\python.exe tools\release\release_interactive.py
-.\.venv\Scripts\python.exe tools\release\release.py
-.\.venv\Scripts\python.exe tools\release\release.py --scope cli
-.\.venv\Scripts\python.exe tools\release\release.py --scope app
+.\.venv\Scripts\python.exe tools\release\build_release.py
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope cli
+.\.venv\Scripts\python.exe tools\release\build_release.py --scope app
+.\.venv\Scripts\python.exe tools\release\publish_dist.py
 ```
+
+`build_release.py` stages local assets in `tools/release/dist`; it does not
+publish them. GitHub Actions platform builds can be downloaded into the same
+directory with `tools/release/download_action_artifacts.py`, then published with
+`publish_dist.py`. See [BUILDING.md](BUILDING.md) for workflow inputs and Android
+signing secrets.
 
 ```powershell
 operit2 cli market stats <skill|mcp|package|script>

@@ -10,6 +10,8 @@ use crate::runtime::callRuntime;
 const PYTHON_TERMINAL_TYPE: &str = "python";
 const NODE_TERMINAL_TYPE: &str = "node";
 const TOYBOX_TERMINAL_TYPE: &str = "toybox";
+const EMBEDDED_TERMINAL: &str = "embedded";
+const IOS_PLATFORM: &str = "ios-native";
 
 /// Hosts the native Toybox, Python, and Node interactive terminals embedded in the iOS application.
 #[derive(Clone, Default)]
@@ -26,22 +28,26 @@ impl TerminalHost for IosTerminalHost {
     /// Describes the embedded terminal types available on iOS.
     fn terminalInfo(&self) -> HostResult<TerminalInfo> {
         Ok(TerminalInfo {
-            platform: "ios-native".to_string(),
-            defaultType: TOYBOX_TERMINAL_TYPE.to_string(),
+            platform: IOS_PLATFORM.to_string(),
+            terminal: EMBEDDED_TERMINAL.to_string(),
+            terminalType: TOYBOX_TERMINAL_TYPE.to_string(),
             types: vec![
                 TerminalTypeInfo {
+                    terminal: EMBEDDED_TERMINAL.to_string(),
                     terminalType: TOYBOX_TERMINAL_TYPE.to_string(),
                     available: true,
                     description: "Embedded Toybox terminal with common Unix command applets"
                         .to_string(),
                 },
                 TerminalTypeInfo {
+                    terminal: EMBEDDED_TERMINAL.to_string(),
                     terminalType: PYTHON_TERMINAL_TYPE.to_string(),
                     available: true,
                     description: "Embedded CPython terminal with bundled scientific packages"
                         .to_string(),
                 },
                 TerminalTypeInfo {
+                    terminal: EMBEDDED_TERMINAL.to_string(),
                     terminalType: NODE_TERMINAL_TYPE.to_string(),
                     available: true,
                     description: "Embedded Node.js terminal with bundled JavaScript packages"
@@ -55,11 +61,13 @@ impl TerminalHost for IosTerminalHost {
     fn startPtySession(
         &self,
         sessionName: &str,
+        terminal: &str,
         terminalType: &str,
         workingDir: &str,
         rows: u16,
         cols: u16,
     ) -> HostResult<String> {
+        let _ = terminalTypeName(terminal)?;
         let terminalType = terminalTypeName(terminalType)?;
         let response = callRuntime(
             "terminalStart",
@@ -147,21 +155,19 @@ impl TerminalHost for IosTerminalHost {
     }
 
     /// Reuses a named embedded terminal or creates one in the app workspace.
-    fn createOrGetSession(
-        &self,
-        sessionName: &str,
-        terminalType: &str,
-    ) -> HostResult<TerminalSessionInfo> {
+    fn createOrGetSession(&self, sessionName: &str) -> HostResult<TerminalSessionInfo> {
         let response = callRuntime(
             "terminalCreateOrGet",
             json!({
                 "sessionName": requiredText(sessionName, "session_name")?,
-                "terminalType": terminalTypeName(terminalType)?,
+                "terminalType": TOYBOX_TERMINAL_TYPE,
             }),
         )?;
         Ok(TerminalSessionInfo {
             sessionId: requiredString(&response, "sessionId")?,
             sessionName: requiredString(&response, "sessionName")?,
+            platform: IOS_PLATFORM.to_string(),
+            terminal: EMBEDDED_TERMINAL.to_string(),
             terminalType: terminalTypeName(&requiredString(&response, "terminalType")?)?,
             isNewSession: requiredBool(&response, "isNewSession")?,
         })
@@ -188,6 +194,8 @@ impl TerminalHost for IosTerminalHost {
             output: requiredString(&response, "output")?,
             exitCode: requiredI32(&response, "exitCode")?,
             sessionId: requiredString(&response, "sessionId")?,
+            platform: IOS_PLATFORM.to_string(),
+            terminal: EMBEDDED_TERMINAL.to_string(),
             terminalType: terminalTypeName(&requiredString(&response, "terminalType")?)?,
             timedOut: requiredBool(&response, "timedOut")?,
         })
@@ -197,18 +205,19 @@ impl TerminalHost for IosTerminalHost {
     fn executeHiddenCommand(
         &self,
         command: &str,
-        terminalType: &str,
         executorKey: &str,
         timeoutMs: u64,
     ) -> HostResult<HiddenTerminalCommandOutput> {
         let executorKey = requiredText(executorKey, "executor_key")?;
-        let session = self.createOrGetSession(&format!("hidden:{executorKey}"), terminalType)?;
+        let session = self.createOrGetSession(&format!("hidden:{executorKey}"))?;
         let result = self.executeInSession(&session.sessionId, command, timeoutMs)?;
         Ok(HiddenTerminalCommandOutput {
             command: result.command,
             output: result.output,
             exitCode: result.exitCode,
             executorKey,
+            platform: IOS_PLATFORM.to_string(),
+            terminal: EMBEDDED_TERMINAL.to_string(),
             terminalType: result.terminalType,
             timedOut: result.timedOut,
         })
@@ -261,6 +270,8 @@ impl TerminalHost for IosTerminalHost {
         )?;
         Ok(TerminalScreenOutput {
             sessionId: requiredString(&response, "sessionId")?,
+            platform: IOS_PLATFORM.to_string(),
+            terminal: EMBEDDED_TERMINAL.to_string(),
             terminalType: terminalTypeName(&requiredString(&response, "terminalType")?)?,
             rows: requiredUsize(&response, "rows")?,
             cols: requiredUsize(&response, "cols")?,
@@ -275,6 +286,8 @@ fn sessionEntry(value: &Value) -> HostResult<TerminalSessionListEntry> {
     Ok(TerminalSessionListEntry {
         sessionId: requiredString(value, "sessionId")?,
         sessionName: requiredString(value, "sessionName")?,
+        platform: IOS_PLATFORM.to_string(),
+        terminal: EMBEDDED_TERMINAL.to_string(),
         terminalType: terminalTypeName(&requiredString(value, "terminalType")?)?,
         sessionKind: requiredString(value, "sessionKind")?,
         workingDir: requiredString(value, "workingDir")?,

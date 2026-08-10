@@ -65,6 +65,16 @@ pub struct ToolPkgChatViewHookRegistration {
     pub functionSource: Option<String>,
 }
 
+/// Registration for one chat-message persistence hook.
+#[derive(Clone, Debug)]
+#[allow(non_snake_case)]
+pub struct ToolPkgChatMessageHookRegistration {
+    pub containerPackageName: String,
+    pub hookId: String,
+    pub functionName: String,
+    pub functionSource: Option<String>,
+}
+
 /// Registration for one tool lifecycle hook.
 #[derive(Clone, Debug)]
 #[allow(non_snake_case)]
@@ -131,7 +141,7 @@ pub struct ToolPkgHookInvocation {
     pub runtimeKind: Option<String>,
     pub envOverrides: BTreeMap<String, String>,
     pub timestampMs: i64,
-    pub timeoutSec: u64,
+    pub timeoutMillis: u64,
     pub dispatchIntermediateOnMain: bool,
     pub onIntermediateResult: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }

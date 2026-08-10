@@ -1,15 +1,20 @@
 #![allow(non_snake_case)]
 
+use core::time::Duration;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use operit_host_api::HostManager::HostManager;
-use operit_util::stream::Stream::Stream;
+use operit_host_api::HostManager::{defaultHostRuntimeTaskSchedulerHost, HostManager};
+use operit_host_api::TimeUtils::tryCurrentTimeMillisU128;
+use operit_host_api::{
+    SystemNotificationActivation, SystemNotificationRequest, SystemOperationHost,
+};
+use operit_util::stream::Stream::{CollectFuture, Stream};
+use tokio::sync::{oneshot, Notify};
 
 tokio::task_local! {
     static RUNTIME_HOST_INTERACTION_ORIGIN: RuntimeHostInteractionRequestOrigin;
@@ -26,6 +31,8 @@ pub enum RuntimeHostInteractionKind {
     WebVisit,
     #[serde(rename = "compose_webview_controller")]
     ComposeWebViewController,
+    #[serde(rename = "compose_file_picker")]
+    ComposeFilePicker,
     #[serde(rename = "system_capture_screenshot")]
     SystemCaptureScreenshot,
     #[serde(rename = "system_language_code")]
@@ -52,6 +59,10 @@ pub enum RuntimeHostInteractionKind {
     LocalInference,
     #[serde(rename = "tool_permission")]
     ToolPermission,
+    #[serde(rename = "web_access_pairing")]
+    WebAccessPairing,
+    #[serde(rename = "app_notification")]
+    AppNotification,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -63,6 +74,7 @@ pub struct RuntimeHostInteractionRequest {
     pub browserSession: Option<RuntimeHostInteractionBrowserSessionPayload>,
     pub webVisit: Option<RuntimeHostInteractionWebVisitPayload>,
     pub composeWebViewController: Option<RuntimeHostInteractionComposeWebViewControllerPayload>,
+    pub composeFilePicker: Option<RuntimeHostInteractionComposeFilePickerPayload>,
     pub systemCaptureScreenshot: Option<RuntimeHostInteractionSystemCaptureScreenshotPayload>,
     pub systemLanguageCode: Option<RuntimeHostInteractionSystemLanguageCodePayload>,
     pub systemRecognizeText: Option<RuntimeHostInteractionSystemRecognizeTextPayload>,
@@ -76,6 +88,8 @@ pub struct RuntimeHostInteractionRequest {
     pub ttsPlayback: Option<RuntimeHostInteractionTtsPlaybackPayload>,
     pub localInference: Option<RuntimeHostInteractionLocalInferencePayload>,
     pub toolPermission: Option<RuntimeHostInteractionToolPermissionPayload>,
+    pub webAccessPairing: Option<RuntimeHostInteractionWebAccessPairingPayload>,
+    pub appNotification: Option<RuntimeHostInteractionAppNotificationPayload>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +110,7 @@ struct RuntimeHostInteractionPending {
     target: RuntimeHostInteractionTarget,
     request: RuntimeHostInteractionRequest,
     sequence: u64,
+    awaitsResponse: bool,
 }
 
 impl RuntimeHostInteractionRequest {
@@ -122,6 +137,13 @@ impl RuntimeHostInteractionRequest {
     ) -> Self {
         let mut request = Self::empty(RuntimeHostInteractionKind::ComposeWebViewController);
         request.composeWebViewController = Some(payload);
+        request
+    }
+
+    /// Builds a request for one Compose DSL file-picker interaction.
+    fn composeFilePicker(payload: RuntimeHostInteractionComposeFilePickerPayload) -> Self {
+        let mut request = Self::empty(RuntimeHostInteractionKind::ComposeFilePicker);
+        request.composeFilePicker = Some(payload);
         request
     }
 
@@ -207,6 +229,20 @@ impl RuntimeHostInteractionRequest {
         request
     }
 
+    /// Builds a non-blocking notification for one browser Web Access pairing request.
+    fn webAccessPairing(payload: RuntimeHostInteractionWebAccessPairingPayload) -> Self {
+        let mut request = Self::empty(RuntimeHostInteractionKind::WebAccessPairing);
+        request.webAccessPairing = Some(payload);
+        request
+    }
+
+    /// Builds a non-blocking notification for one application-level event.
+    fn appNotification(payload: RuntimeHostInteractionAppNotificationPayload) -> Self {
+        let mut request = Self::empty(RuntimeHostInteractionKind::AppNotification);
+        request.appNotification = Some(payload);
+        request
+    }
+
     fn empty(kind: RuntimeHostInteractionKind) -> Self {
         Self {
             requestId: Uuid::new_v4().to_string(),
@@ -215,6 +251,7 @@ impl RuntimeHostInteractionRequest {
             browserSession: None,
             webVisit: None,
             composeWebViewController: None,
+            composeFilePicker: None,
             systemCaptureScreenshot: None,
             systemLanguageCode: None,
             systemRecognizeText: None,
@@ -228,6 +265,8 @@ impl RuntimeHostInteractionRequest {
             ttsPlayback: None,
             localInference: None,
             toolPermission: None,
+            webAccessPairing: None,
+            appNotification: None,
         }
     }
 }
@@ -269,6 +308,12 @@ pub struct RuntimeHostInteractionWebVisitPayload {
 /// Compose WebView controller command payload.
 pub struct RuntimeHostInteractionComposeWebViewControllerPayload {
     pub commandJson: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Compose DSL file-picker request payload.
+pub struct RuntimeHostInteractionComposeFilePickerPayload {
+    pub requestJson: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -416,6 +461,7 @@ pub struct RuntimeHostInteractionResponse {
     pub browserSession: Option<RuntimeHostInteractionBrowserSessionResponse>,
     pub webVisit: Option<RuntimeHostInteractionWebVisitResponse>,
     pub composeWebViewController: Option<RuntimeHostInteractionComposeWebViewControllerResponse>,
+    pub composeFilePicker: Option<RuntimeHostInteractionComposeFilePickerResponse>,
     pub systemCaptureScreenshot: Option<RuntimeHostInteractionSystemCaptureScreenshotResponse>,
     pub systemLanguageCode: Option<RuntimeHostInteractionSystemLanguageCodeResponse>,
     pub systemRecognizeText: Option<RuntimeHostInteractionSystemRecognizeTextResponse>,
@@ -459,6 +505,13 @@ impl RuntimeHostInteractionResponse {
     ) -> Self {
         let mut value = Self::empty();
         value.composeWebViewController = Some(response);
+        value
+    }
+
+    /// Builds a Compose DSL file-picker response envelope.
+    pub fn composeFilePicker(response: RuntimeHostInteractionComposeFilePickerResponse) -> Self {
+        let mut value = Self::empty();
+        value.composeFilePicker = Some(response);
         value
     }
 
@@ -564,6 +617,7 @@ impl RuntimeHostInteractionResponse {
             browserSession: None,
             webVisit: None,
             composeWebViewController: None,
+            composeFilePicker: None,
             systemCaptureScreenshot: None,
             systemLanguageCode: None,
             systemRecognizeText: None,
@@ -637,6 +691,12 @@ pub struct RuntimeHostInteractionComposeWebViewControllerResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Compose DSL file-picker response payload.
+pub struct RuntimeHostInteractionComposeFilePickerResponse {
+    pub resultJson: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 /// Screenshot capture response payload.
 pub struct RuntimeHostInteractionSystemCaptureScreenshotResponse {
     pub path: String,
@@ -703,6 +763,27 @@ pub struct RuntimeHostInteractionToolPermissionResponse {
     pub result: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Browser identity and code for one Web Access pairing request.
+pub struct RuntimeHostInteractionWebAccessPairingPayload {
+    pub pairingId: String,
+    pub clientDeviceId: String,
+    pub clientPlatform: String,
+    pub clientModel: String,
+    pub pairingCode: String,
+    pub createdAt: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Application event that the owning Flutter process may surface as a system notification.
+pub struct RuntimeHostInteractionAppNotificationPayload {
+    pub notificationType: String,
+    pub title: String,
+    pub message: String,
+    pub chatId: Option<String>,
+    pub messageTimestamp: Option<i64>,
+}
+
 #[derive(Debug, Default)]
 struct RuntimeHostInteractionState {
     pending: BTreeMap<String, RuntimeHostInteractionPending>,
@@ -714,6 +795,7 @@ struct RuntimeHostInteractionState {
 struct RuntimeHostInteractionBroker {
     state: Mutex<RuntimeHostInteractionState>,
     changed: Condvar,
+    asyncChanged: Notify,
 }
 
 impl Default for RuntimeHostInteractionBroker {
@@ -721,6 +803,7 @@ impl Default for RuntimeHostInteractionBroker {
         Self {
             state: Mutex::new(RuntimeHostInteractionState::default()),
             changed: Condvar::new(),
+            asyncChanged: Notify::new(),
         }
     }
 }
@@ -728,7 +811,9 @@ impl Default for RuntimeHostInteractionBroker {
 static RUNTIME_HOST_INTERACTIONS: OnceLock<RuntimeHostInteractionBroker> = OnceLock::new();
 
 /// Service facade for publishing and responding to host interaction requests.
-pub struct RuntimeHostInteractionService;
+pub struct RuntimeHostInteractionService {
+    systemOperationHost: Option<Arc<dyn SystemOperationHost>>,
+}
 
 #[derive(Clone, Debug)]
 /// Blocking stream of pending host interaction requests for selected kinds.
@@ -741,44 +826,65 @@ impl Stream for RuntimeHostInteractionEventStream {
     type Item = RuntimeHostInteractionRequest;
 
     /// Collects matching pending interactions in broker insertion order.
-    fn collect(&mut self, collector: &mut dyn FnMut(Self::Item)) {
-        let broker = runtimeHostInteractionBroker();
-        let mut delivered = BTreeSet::<String>::new();
-        let mut state = broker
-            .state
-            .lock()
-            .expect("host interaction mutex poisoned");
-        loop {
-            let next = state
-                .pending
-                .values()
-                .filter(|pending| {
-                    !delivered.contains(&pending.request.requestId) && self.matchesPending(pending)
-                })
-                .min_by_key(|pending| pending.sequence)
-                .map(|pending| pending.request.clone());
-            if let Some(request) = next {
-                delivered.insert(request.requestId.clone());
-                drop(state);
-                collector(request);
-                state = broker
+    fn collect<'a>(&'a mut self, collector: &'a mut dyn FnMut(Self::Item)) -> CollectFuture<'a> {
+        Box::pin(async move {
+            let broker = runtimeHostInteractionBroker();
+            let mut delivered = BTreeSet::<String>::new();
+            loop {
+                let changed = broker.asyncChanged.notified();
+                let next = broker
                     .state
                     .lock()
-                    .expect("host interaction mutex poisoned");
-                continue;
+                    .expect("host interaction mutex poisoned")
+                    .pending
+                    .values()
+                    .filter(|pending| {
+                        !delivered.contains(&pending.request.requestId)
+                            && self.matchesPending(pending)
+                    })
+                    .min_by_key(|pending| pending.sequence)
+                    .map(|pending| pending.request.clone());
+                match next {
+                    Some(request) => {
+                        delivered.insert(request.requestId.clone());
+                        collector(request);
+                    }
+                    None => changed.await,
+                }
             }
-            state = broker
-                .changed
-                .wait(state)
-                .expect("host interaction mutex poisoned");
-        }
+        })
     }
 }
 
 impl RuntimeHostInteractionService {
     /// Creates the host interaction service facade.
-    pub fn getInstance(_context: &HostManager) -> Self {
-        Self
+    pub fn getInstance(context: &HostManager) -> Self {
+        Self {
+            systemOperationHost: context.systemOperationHost.clone(),
+        }
+    }
+
+    /// Sends one application notification through the active system-operation host.
+    pub fn sendSystemNotification(
+        &self,
+        title: String,
+        message: String,
+        chatId: Option<String>,
+    ) -> Result<(), String> {
+        let host = self
+            .systemOperationHost
+            .as_deref()
+            .ok_or_else(|| "SystemOperationHost is not registered for this runtime".to_string())?;
+        let activation = match chatId {
+            Some(chatId) => SystemNotificationActivation::OpenChat { chatId },
+            None => SystemNotificationActivation::OpenApplication,
+        };
+        host.sendNotification(&SystemNotificationRequest {
+            title,
+            message,
+            activation,
+        })
+            .map_err(|error| error.message)
     }
 
     /// Responds to a pending owner-host interaction request.
@@ -788,6 +894,11 @@ impl RuntimeHostInteractionService {
         response: RuntimeHostInteractionResponse,
     ) -> Result<(), String> {
         runtimeHostInteractionBroker().respond(&requestId, response)
+    }
+
+    /// Acknowledges a non-blocking owner-host notification after it is consumed.
+    pub fn acknowledgeOwnerHostInteraction(&self, requestId: String) -> Result<(), String> {
+        runtimeHostInteractionBroker().acknowledge(&requestId)
     }
 
     /// Creates an event stream for owner-host interaction requests of selected kinds.
@@ -860,6 +971,21 @@ pub fn requestOwnerComposeWebViewController(
     response
         .composeWebViewController
         .ok_or_else(|| "compose webview response payload is missing".to_string())
+}
+
+/// Requests one Compose DSL file-picker interaction from the owner host.
+pub fn requestOwnerComposeFilePicker(
+    payload: RuntimeHostInteractionComposeFilePickerPayload,
+    timeout: Duration,
+) -> Result<RuntimeHostInteractionComposeFilePickerResponse, String> {
+    let response = runtimeHostInteractionBroker().request(
+        RuntimeHostInteractionTarget::OwnerHost,
+        RuntimeHostInteractionRequest::composeFilePicker(payload),
+        timeout,
+    )?;
+    response
+        .composeFilePicker
+        .ok_or_else(|| "compose file picker response payload is missing".to_string())
 }
 
 /// Requests a screenshot capture from the owner host.
@@ -1040,19 +1166,37 @@ pub fn requestOwnerLocalInference(
         .ok_or_else(|| "local inference response payload is missing".to_string())
 }
 
-/// Requests a tool permission decision from the active controller.
-pub fn requestOwnerToolPermission(
+/// Requests a tool permission decision without blocking the active runtime task.
+pub async fn requestOwnerToolPermissionAsync(
     payload: RuntimeHostInteractionToolPermissionPayload,
     timeout: Duration,
 ) -> Result<RuntimeHostInteractionToolPermissionResponse, String> {
-    let response = runtimeHostInteractionBroker().request(
-        RuntimeHostInteractionTarget::Controller(currentRuntimeHostInteractionOrigin()),
-        RuntimeHostInteractionRequest::toolPermission(payload),
-        timeout,
-    )?;
+    let response = runtimeHostInteractionBroker()
+        .requestAsync(
+            RuntimeHostInteractionTarget::Controller(currentRuntimeHostInteractionOrigin()),
+            RuntimeHostInteractionRequest::toolPermission(payload),
+            timeout,
+        )
+        .await?;
     response
         .toolPermission
         .ok_or_else(|| "tool permission response payload is missing".to_string())
+}
+
+/// Publishes one browser Web Access pairing request to the owner host.
+pub fn publishOwnerWebAccessPairing(payload: RuntimeHostInteractionWebAccessPairingPayload) {
+    runtimeHostInteractionBroker().publish(
+        RuntimeHostInteractionTarget::OwnerHost,
+        RuntimeHostInteractionRequest::webAccessPairing(payload),
+    );
+}
+
+/// Publishes one application notification event to the owner host.
+pub fn publishOwnerAppNotification(payload: RuntimeHostInteractionAppNotificationPayload) {
+    runtimeHostInteractionBroker().publish(
+        RuntimeHostInteractionTarget::OwnerHost,
+        RuntimeHostInteractionRequest::appNotification(payload),
+    );
 }
 
 /// Runs a future with a task-local host interaction origin.
@@ -1093,6 +1237,12 @@ impl RuntimeHostInteractionEventStream {
 }
 
 impl RuntimeHostInteractionBroker {
+    /// Wakes synchronous and asynchronous observers after broker state changes.
+    fn notifyChanged(&self) {
+        self.changed.notify_all();
+        self.asyncChanged.notify_waiters();
+    }
+
     /// Enqueues one interaction and waits for its response or timeout.
     fn request(
         &self,
@@ -1101,7 +1251,7 @@ impl RuntimeHostInteractionBroker {
         timeout: Duration,
     ) -> Result<RuntimeHostInteractionResponse, String> {
         let requestId = request.requestId.clone();
-        let startedAt = Instant::now();
+        let startedAt = tryCurrentTimeMillisU128()?;
         let mut state = self
             .state
             .lock()
@@ -1114,22 +1264,27 @@ impl RuntimeHostInteractionBroker {
                 target,
                 request,
                 sequence,
+                awaitsResponse: true,
             },
         );
-        self.changed.notify_all();
+        self.notifyChanged();
         loop {
             if let Some(response) = state.responses.remove(&requestId) {
                 state.pending.remove(&requestId);
-                self.changed.notify_all();
+                self.notifyChanged();
                 if let Some(error) = response.error.as_ref() {
                     return Err(error.clone());
                 }
                 return Ok(response);
             }
-            let elapsed = startedAt.elapsed();
+            let elapsedMillis = tryCurrentTimeMillisU128()?.saturating_sub(startedAt);
+            let elapsed = Duration::from_millis(
+                u64::try_from(elapsedMillis)
+                    .map_err(|_| "host interaction elapsed time exceeds u64 milliseconds")?,
+            );
             if elapsed >= timeout {
                 state.pending.remove(&requestId);
-                self.changed.notify_all();
+                self.notifyChanged();
                 return Err(format!("host interaction timed out: {requestId}"));
             }
             let wait = timeout.saturating_sub(elapsed);
@@ -1138,6 +1293,87 @@ impl RuntimeHostInteractionBroker {
                 .wait_timeout(state, wait)
                 .map_err(|error| format!("host interaction mutex poisoned: {error}"))?;
             state = nextState;
+        }
+    }
+
+    /// Enqueues one interaction and asynchronously waits for its response or timeout.
+    async fn requestAsync(
+        &self,
+        target: RuntimeHostInteractionTarget,
+        request: RuntimeHostInteractionRequest,
+        timeout: Duration,
+    ) -> Result<RuntimeHostInteractionResponse, String> {
+        let requestId = request.requestId.clone();
+        {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|error| format!("host interaction mutex poisoned: {error}"))?;
+            let sequence = state.nextSequence;
+            state.nextSequence = state.nextSequence.wrapping_add(1);
+            state.pending.insert(
+                requestId.clone(),
+                RuntimeHostInteractionPending {
+                    target,
+                    request,
+                    sequence,
+                    awaitsResponse: true,
+                },
+            );
+        }
+        self.notifyChanged();
+
+        let timeoutMillis = u64::try_from(timeout.as_millis())
+            .map_err(|_| "host interaction timeout exceeds u64 milliseconds")?;
+        let (timeoutSender, mut timeoutReceiver) = oneshot::channel();
+        defaultHostRuntimeTaskSchedulerHost()
+            .scheduleDelayedHostRuntimeTask(
+                "runtime-host-interaction-timeout",
+                timeoutMillis,
+                Box::new(move || {
+                    let _ = timeoutSender.send(());
+                }),
+            )
+            .map_err(|error| error.message)?;
+
+        loop {
+            let changed = self.asyncChanged.notified();
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|error| format!("host interaction mutex poisoned: {error}"))?;
+                if let Some(response) = state.responses.remove(&requestId) {
+                    state.pending.remove(&requestId);
+                    self.notifyChanged();
+                    if let Some(error) = response.error.as_ref() {
+                        return Err(error.clone());
+                    }
+                    return Ok(response);
+                }
+            }
+
+            tokio::select! {
+                _ = changed => {}
+                timeout = &mut timeoutReceiver => {
+                    timeout.map_err(|_| "host interaction timeout task was cancelled".to_string())?;
+                    let mut state = self
+                        .state
+                        .lock()
+                        .map_err(|error| format!("host interaction mutex poisoned: {error}"))?;
+                    if let Some(response) = state.responses.remove(&requestId) {
+                        state.pending.remove(&requestId);
+                        self.notifyChanged();
+                        if let Some(error) = response.error.as_ref() {
+                            return Err(error.clone());
+                        }
+                        return Ok(response);
+                    }
+                    state.pending.remove(&requestId);
+                    self.notifyChanged();
+                    return Err(format!("host interaction timed out: {requestId}"));
+                }
+            }
         }
     }
 
@@ -1150,11 +1386,55 @@ impl RuntimeHostInteractionBroker {
             .state
             .lock()
             .map_err(|error| format!("host interaction mutex poisoned: {error}"))?;
-        if !state.pending.contains_key(requestId) {
+        let Some(pending) = state.pending.get(requestId) else {
             return Err(format!("host interaction request not found: {requestId}"));
+        };
+        if !pending.awaitsResponse {
+            return Err(format!(
+                "host interaction notification must be acknowledged: {requestId}"
+            ));
         }
         state.responses.insert(requestId.to_string(), response);
-        self.changed.notify_all();
+        self.notifyChanged();
+        Ok(())
+    }
+
+    /// Enqueues one non-blocking notification until the owner host acknowledges it.
+    fn publish(
+        &self,
+        target: RuntimeHostInteractionTarget,
+        request: RuntimeHostInteractionRequest,
+    ) {
+        let requestId = request.requestId.clone();
+        let mut state = self.state.lock().expect("host interaction mutex poisoned");
+        let sequence = state.nextSequence;
+        state.nextSequence = state.nextSequence.wrapping_add(1);
+        state.pending.insert(
+            requestId,
+            RuntimeHostInteractionPending {
+                target,
+                request,
+                sequence,
+                awaitsResponse: false,
+            },
+        );
+        self.notifyChanged();
+    }
+
+    /// Removes one non-blocking notification after the owner host consumes it.
+    fn acknowledge(&self, requestId: &str) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| format!("host interaction mutex poisoned: {error}"))?;
+        let Some(pending) = state.pending.get(requestId) else {
+            return Err(format!("host interaction request not found: {requestId}"));
+        };
+        if pending.awaitsResponse {
+            return Err(format!("host interaction requires a response: {requestId}"));
+        }
+        state.pending.remove(requestId);
+        self.notifyChanged();
         Ok(())
     }
 }
@@ -1162,6 +1442,43 @@ impl RuntimeHostInteractionBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verifies non-blocking owner notifications remain pending until acknowledged.
+    #[test]
+    fn brokerRemovesPublishedNotificationAfterAcknowledgement() {
+        let broker = RuntimeHostInteractionBroker::default();
+        let request = RuntimeHostInteractionRequest::webAccessPairing(
+            RuntimeHostInteractionWebAccessPairingPayload {
+                pairingId: "pairing-1".to_string(),
+                clientDeviceId: "browser-1".to_string(),
+                clientPlatform: "web".to_string(),
+                clientModel: "browser".to_string(),
+                pairingCode: "123456".to_string(),
+                createdAt: 1,
+            },
+        );
+        let requestId = request.requestId.clone();
+
+        broker.publish(RuntimeHostInteractionTarget::OwnerHost, request);
+
+        assert!(broker
+            .state
+            .lock()
+            .expect("host interaction mutex poisoned")
+            .pending
+            .contains_key(&requestId));
+
+        broker
+            .acknowledge(&requestId)
+            .expect("notification acknowledgement must succeed");
+
+        assert!(!broker
+            .state
+            .lock()
+            .expect("host interaction mutex poisoned")
+            .pending
+            .contains_key(&requestId));
+    }
 
     /// Verifies that a structured owner error returns without waiting for timeout.
     #[test]

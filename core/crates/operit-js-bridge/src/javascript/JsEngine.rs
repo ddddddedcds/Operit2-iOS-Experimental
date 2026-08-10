@@ -40,12 +40,15 @@ use operit_plugin_sdk::execution_result::{
 };
 use operit_plugin_sdk::javascript::{
     JsExecutionEngine, JsExecutionHost, JsToolNameResolutionRequest, JsToolPkgIpcRequest,
-    JsToolPkgResourceRequest, ToolPkgMainRegistrationCapture,
+    JsToolPkgResourceRequest, JsToolPkgWasmArg, JsToolPkgWasmRequest,
+    ToolPkgMainRegistrationCapture,
 };
 use operit_plugin_sdk::toolpkg::ToolPkgComposeDslRuntimeScript::buildComposeDslRuntimeWrappedScript;
 use operit_plugin_sdk::toolpkg::ToolPkgRegistrationBridge::buildToolPkgRegistrationBridgeScript;
-use operit_util::stream::Stream::Stream;
+use operit_util::stream::Stream::{CollectFuture, Stream};
 use operit_util::AppLogger::AppLogger;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::sync::mpsc as tokio_mpsc;
 
 const TAG: &str = "OperitQuickJsEngine";
 const TOOLPKG_SCRIPT_TIMEOUT_SECONDS: u64 = 60;
@@ -107,6 +110,8 @@ enum JsEngineRequest {
         script: String,
         functionName: String,
         params: BTreeMap<String, Value>,
+        textResources: Option<Arc<ToolPkgTextResources>>,
+        useComposeDslTextResources: bool,
         envOverrides: BTreeMap<String, String>,
         on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
         dispatchIntermediateOnMain: bool,
@@ -125,6 +130,23 @@ enum JsEngineRequest {
         response: mpsc::Sender<JsExecutionResult<ToolPkgMainRegistrationCapture>>,
     },
     Shutdown,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl JsEngineRequest {
+    /// Responds to a queued request after its JavaScript worker was destroyed.
+    fn respondWorkerDestroyed(self) {
+        let reason = "JS execution worker was destroyed";
+        match self {
+            Self::ExecuteScript { response, .. } => {
+                let _ = response.send(Err(JsExecutionError::worker_unavailable(reason)));
+            }
+            Self::ExecuteToolPkgMainRegistration { response, .. } => {
+                let _ = response.send(Err(JsExecutionError::worker_unavailable(reason)));
+            }
+            Self::Shutdown => {}
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -239,6 +261,7 @@ struct JsEngineState {
     #[cfg(target_arch = "wasm32")]
     context: WasmQuickJsContext,
     executionHost: Option<Arc<dyn JsExecutionHost>>,
+    composeDslTextResources: Option<Arc<ToolPkgTextResources>>,
     jsEnvironmentInitialized: bool,
 }
 
@@ -272,6 +295,73 @@ impl JsEngine {
         executionListener: Option<JsExecutionListenerRef>,
     ) -> JsExecutionResult<Option<String>> {
         let safeTimeoutSec = timeoutSec.max(1);
+        self.execute_script_function_with_timeout(
+            script,
+            functionName,
+            params,
+            envOverrides,
+            on_intermediate_result,
+            dispatchIntermediateOnMain,
+            Duration::from_secs(safeTimeoutSec),
+            safeTimeoutSec,
+            executionListener,
+            None,
+            false,
+        )
+    }
+
+    /// Executes a named JavaScript function with an exact millisecond deadline.
+    #[allow(non_snake_case)]
+    pub fn execute_script_function_with_timeout_millis(
+        &self,
+        script: &str,
+        functionName: &str,
+        params: &BTreeMap<String, Value>,
+        envOverrides: &BTreeMap<String, String>,
+        on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
+        dispatchIntermediateOnMain: bool,
+        timeoutMillis: u64,
+        executionListener: Option<JsExecutionListenerRef>,
+    ) -> JsExecutionResult<Option<String>> {
+        if timeoutMillis == 0 {
+            let reason = "Script execution timed out after 0 milliseconds";
+            if let Some(listener) = executionListener.as_ref() {
+                listener.on_failed("", reason);
+            }
+            return Err(JsExecutionError::timeout(reason));
+        }
+        let timeoutSec = (timeoutMillis - 1) / 1_000 + 1;
+        self.execute_script_function_with_timeout(
+            script,
+            functionName,
+            params,
+            envOverrides,
+            on_intermediate_result,
+            dispatchIntermediateOnMain,
+            Duration::from_millis(timeoutMillis),
+            timeoutSec,
+            executionListener,
+            None,
+            false,
+        )
+    }
+
+    /// Executes JavaScript with the supplied native deadline and whole-second script metadata.
+    #[allow(non_snake_case)]
+    fn execute_script_function_with_timeout(
+        &self,
+        script: &str,
+        functionName: &str,
+        params: &BTreeMap<String, Value>,
+        envOverrides: &BTreeMap<String, String>,
+        on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
+        dispatchIntermediateOnMain: bool,
+        timeout: Duration,
+        timeoutSec: u64,
+        executionListener: Option<JsExecutionListenerRef>,
+        textResources: Option<Arc<ToolPkgTextResources>>,
+        useComposeDslTextResources: bool,
+    ) -> JsExecutionResult<Option<String>> {
         #[cfg(target_arch = "wasm32")]
         {
             return self.worker.execute_script_function(
@@ -281,8 +371,10 @@ impl JsEngine {
                 envOverrides,
                 on_intermediate_result,
                 dispatchIntermediateOnMain,
-                safeTimeoutSec,
+                timeoutSec,
                 executionListener,
+                textResources,
+                useComposeDslTextResources,
             );
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -295,17 +387,18 @@ impl JsEngine {
                 return Err(JsExecutionError::worker_unavailable(reason));
             }
             let (response, receiver) = mpsc::channel();
-            let timeout = Duration::from_secs(safeTimeoutSec);
             let interrupt = Arc::new(JsExecutionInterrupt::new(timeout));
             let request = JsEngineRequest::ExecuteScript {
                 script: script.to_string(),
                 functionName: functionName.to_string(),
                 params: params.clone(),
+                textResources,
+                useComposeDslTextResources,
                 envOverrides: envOverrides.clone(),
                 on_intermediate_result,
                 dispatchIntermediateOnMain,
                 executionListener: executionListener.clone(),
-                timeoutSec: safeTimeoutSec,
+                timeoutSec,
                 interrupt: interrupt.clone(),
                 response,
             };
@@ -329,8 +422,10 @@ impl JsEngine {
                 Ok(value) => value,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     interrupt.interrupt();
-                    let reason =
-                        format!("Script execution timed out after {safeTimeoutSec} seconds");
+                    let reason = format!(
+                        "Script execution timed out after {} milliseconds",
+                        timeout.as_millis()
+                    );
                     if let Some(listener) = executionListener.as_ref() {
                         listener.on_failed("", &reason);
                     }
@@ -476,16 +571,15 @@ impl JsEngine {
         script: &str,
         runtimeOptions: &BTreeMap<String, Value>,
         envOverrides: &BTreeMap<String, String>,
+        textResources: Arc<ToolPkgTextResources>,
     ) -> JsExecutionResult<Option<String>> {
-        self.execute_script_function(
+        self.executeComposeDslFunction(
             &buildComposeDslRuntimeWrappedScript(script),
             "__operit_render_compose_dsl",
             runtimeOptions,
             envOverrides,
             None,
-            true,
-            TOOLPKG_SCRIPT_TIMEOUT_SECONDS,
-            None,
+            Some(textResources),
         )
     }
 
@@ -512,14 +606,12 @@ impl JsEngine {
         if let Some(payload) = payload {
             params.insert("__action_payload".to_string(), payload);
         }
-        self.execute_script_function(
+        self.executeComposeDslFunction(
             "",
             "__operit_dispatch_compose_dsl_action",
             &params,
             envOverrides,
             on_intermediate_result,
-            true,
-            TOOLPKG_SCRIPT_TIMEOUT_SECONDS,
             None,
         )
     }
@@ -530,15 +622,39 @@ impl JsEngine {
         runtimeOptions: &BTreeMap<String, Value>,
         envOverrides: &BTreeMap<String, String>,
     ) -> JsExecutionResult<Option<String>> {
-        self.execute_script_function(
+        self.executeComposeDslFunction(
             "",
             "__operit_rerender_compose_dsl",
             runtimeOptions,
             envOverrides,
             None,
+            None,
+        )
+    }
+
+    /// Executes a Compose DSL operation with the resource snapshot owned by its page runtime.
+    #[allow(non_snake_case)]
+    fn executeComposeDslFunction(
+        &self,
+        script: &str,
+        functionName: &str,
+        params: &BTreeMap<String, Value>,
+        envOverrides: &BTreeMap<String, String>,
+        onIntermediateResult: Option<Arc<dyn Fn(String) + Send + Sync>>,
+        textResources: Option<Arc<ToolPkgTextResources>>,
+    ) -> JsExecutionResult<Option<String>> {
+        self.execute_script_function_with_timeout(
+            script,
+            functionName,
+            params,
+            envOverrides,
+            onIntermediateResult,
             true,
+            Duration::from_secs(TOOLPKG_SCRIPT_TIMEOUT_SECONDS),
             TOOLPKG_SCRIPT_TIMEOUT_SECONDS,
             None,
+            textResources,
+            true,
         )
     }
 
@@ -563,17 +679,48 @@ impl JsEngine {
 impl Stream for JsComposeDslActionEventStream {
     type Item = String;
 
-    fn collect(&mut self, collector: &mut dyn FnMut(Self::Item)) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let engine = self.engine.clone();
-            let actionId = self.actionId.clone();
-            let payload = self.payload.clone();
-            let runtimeOptions = self.runtimeOptions.clone();
-            let envOverrides = self.envOverrides.clone();
-            let (sender, receiver) = mpsc::channel::<String>();
-            std::thread::spawn(move || {
-                let intermediateSender = sender.clone();
+    /// Collects Compose DSL action events without blocking the collector task.
+    fn collect<'a>(&'a mut self, collector: &'a mut dyn FnMut(Self::Item)) -> CollectFuture<'a> {
+        Box::pin(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let engine = self.engine.clone();
+                let actionId = self.actionId.clone();
+                let payload = self.payload.clone();
+                let runtimeOptions = self.runtimeOptions.clone();
+                let envOverrides = self.envOverrides.clone();
+                let (sender, mut receiver) = tokio_mpsc::unbounded_channel::<String>();
+                std::thread::spawn(move || {
+                    let intermediateSender = sender.clone();
+                    runComposeDslActionDispatch(
+                        engine,
+                        actionId,
+                        payload,
+                        runtimeOptions,
+                        envOverrides,
+                        Arc::new(move |event| {
+                            let _ = intermediateSender.send(event);
+                        }),
+                        move |event| {
+                            let _ = sender.send(event);
+                        },
+                    );
+                });
+                while let Some(event) = receiver.recv().await {
+                    collector(event);
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let engine = self.engine.clone();
+                let actionId = self.actionId.clone();
+                let payload = self.payload.clone();
+                let runtimeOptions = self.runtimeOptions.clone();
+                let envOverrides = self.envOverrides.clone();
+                let intermediateEvents = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+                let intermediateEventsForCallback = intermediateEvents.clone();
+                let flushedIntermediateEvents = Arc::new(std::sync::Mutex::new(false));
+                let flushedIntermediateEventsForEmit = flushedIntermediateEvents.clone();
                 runComposeDslActionDispatch(
                     engine,
                     actionId,
@@ -581,54 +728,26 @@ impl Stream for JsComposeDslActionEventStream {
                     runtimeOptions,
                     envOverrides,
                     Arc::new(move |event| {
-                        let _ = intermediateSender.send(event);
+                        if let Ok(mut values) = intermediateEventsForCallback.lock() {
+                            values.push(event);
+                        }
                     }),
-                    move |event| {
-                        let _ = sender.send(event);
+                    |event| {
+                        if let Ok(mut flushed) = flushedIntermediateEventsForEmit.lock() {
+                            if !*flushed {
+                                if let Ok(values) = intermediateEvents.lock() {
+                                    for intermediate in values.iter() {
+                                        collector(intermediate.clone());
+                                    }
+                                }
+                                *flushed = true;
+                            }
+                        }
+                        collector(event);
                     },
                 );
-            });
-            for event in receiver {
-                collector(event);
             }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let engine = self.engine.clone();
-            let actionId = self.actionId.clone();
-            let payload = self.payload.clone();
-            let runtimeOptions = self.runtimeOptions.clone();
-            let envOverrides = self.envOverrides.clone();
-            let intermediateEvents = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-            let intermediateEventsForCallback = intermediateEvents.clone();
-            let flushedIntermediateEvents = Arc::new(std::sync::Mutex::new(false));
-            let flushedIntermediateEventsForEmit = flushedIntermediateEvents.clone();
-            runComposeDslActionDispatch(
-                engine,
-                actionId,
-                payload,
-                runtimeOptions,
-                envOverrides,
-                Arc::new(move |event| {
-                    if let Ok(mut values) = intermediateEventsForCallback.lock() {
-                        values.push(event);
-                    }
-                }),
-                |event| {
-                    if let Ok(mut flushed) = flushedIntermediateEventsForEmit.lock() {
-                        if !*flushed {
-                            if let Ok(values) = intermediateEvents.lock() {
-                                for intermediate in values.iter() {
-                                    collector(intermediate.clone());
-                                }
-                            }
-                            *flushed = true;
-                        }
-                    }
-                    collector(event);
-                },
-            );
-        }
+        })
     }
 }
 
@@ -700,13 +819,19 @@ impl JsEngineWorker {
                 let mut state = JsEngineState::new(executionHost);
                 for request in receiver {
                     if workerControl.isDestroyed() {
-                        break;
+                        match request {
+                            JsEngineRequest::Shutdown => break,
+                            request => request.respondWorkerDestroyed(),
+                        }
+                        continue;
                     }
                     match request {
                         JsEngineRequest::ExecuteScript {
                             script,
                             functionName,
                             params,
+                            textResources,
+                            useComposeDslTextResources,
                             envOverrides,
                             on_intermediate_result,
                             dispatchIntermediateOnMain,
@@ -715,6 +840,24 @@ impl JsEngineWorker {
                             interrupt,
                             response,
                         } => {
+                            let composeResourceCount = match textResources.as_ref() {
+                                Some(resources) => resources.len(),
+                                None => state
+                                    .composeDslTextResources
+                                    .as_ref()
+                                    .map(|resources| resources.len())
+                                    .unwrap_or(0),
+                            };
+                            let executionStarted = Instant::now();
+                            if useComposeDslTextResources {
+                                AppLogger::d(
+                                    TAG,
+                                    &format!(
+                                        "compose-request-start function={} resourceEntries={}",
+                                        functionName, composeResourceCount
+                                    ),
+                                );
+                            }
                             let output = executeWithInterrupt(
                                 &mut state,
                                 &workerControl,
@@ -722,7 +865,7 @@ impl JsEngineWorker {
                                 timeoutSec,
                                 "Script execution",
                                 |state| {
-                                    state.execute_script_function_on_current_thread(
+                                    state.executeScriptFunctionForRequest(
                                         &script,
                                         &functionName,
                                         &params,
@@ -731,9 +874,23 @@ impl JsEngineWorker {
                                         dispatchIntermediateOnMain,
                                         timeoutSec,
                                         executionListener,
+                                        textResources,
+                                        useComposeDslTextResources,
                                     )
                                 },
                             );
+                            if useComposeDslTextResources {
+                                AppLogger::d(
+                                    TAG,
+                                    &format!(
+                                        "compose-request-finish function={} resourceEntries={} elapsedMs={} success={}",
+                                        functionName,
+                                        composeResourceCount,
+                                        executionStarted.elapsed().as_millis(),
+                                        output.is_ok()
+                                    ),
+                                );
+                            }
                             if let Err(error) = response.send(output) {
                                 AppLogger::e(
                                     TAG,
@@ -836,22 +993,26 @@ impl JsEngineWorker {
         dispatchIntermediateOnMain: bool,
         timeoutSec: u64,
         executionListener: Option<JsExecutionListenerRef>,
+        textResources: Option<Arc<ToolPkgTextResources>>,
+        useComposeDslTextResources: bool,
     ) -> JsExecutionResult<Option<String>> {
         WASM_JS_ENGINE_STATES.with(|states| {
-            states
-                .borrow_mut()
+            let mut states = states.borrow_mut();
+            let state = states
                 .get_mut(&self.stateId)
-                .expect("wasm JsEngine state must exist")
-                .execute_script_function_on_current_thread(
-                    script,
-                    functionName,
-                    params,
-                    envOverrides,
-                    on_intermediate_result,
-                    dispatchIntermediateOnMain,
-                    timeoutSec,
-                    executionListener,
-                )
+                .expect("wasm JsEngine state must exist");
+            state.executeScriptFunctionForRequest(
+                script,
+                functionName,
+                params,
+                envOverrides,
+                on_intermediate_result,
+                dispatchIntermediateOnMain,
+                timeoutSec,
+                executionListener,
+                textResources,
+                useComposeDslTextResources,
+            )
         })
     }
 
@@ -890,6 +1051,7 @@ impl JsEngineState {
                 runtime,
                 context,
                 executionHost,
+                composeDslTextResources: None,
                 jsEnvironmentInitialized: false,
             };
             state
@@ -903,6 +1065,7 @@ impl JsEngineState {
             let mut state = Self {
                 context,
                 executionHost,
+                composeDslTextResources: None,
                 jsEnvironmentInitialized: false,
             };
             state
@@ -925,6 +1088,55 @@ impl JsEngineState {
     #[allow(non_snake_case)]
     fn clearExecutionInterrupt(&self) {
         self.runtime.set_interrupt_handler(None);
+    }
+
+    /// Runs one request with the page-owned Compose DSL resource snapshot when requested.
+    #[allow(non_snake_case)]
+    fn executeScriptFunctionForRequest(
+        &mut self,
+        script: &str,
+        functionName: &str,
+        params: &BTreeMap<String, Value>,
+        envOverrides: &BTreeMap<String, String>,
+        onIntermediateResult: Option<Arc<dyn Fn(String) + Send + Sync>>,
+        dispatchIntermediateOnMain: bool,
+        timeoutSec: u64,
+        executionListener: Option<JsExecutionListenerRef>,
+        textResources: Option<Arc<ToolPkgTextResources>>,
+        useComposeDslTextResources: bool,
+    ) -> JsExecutionResult<Option<String>> {
+        if !useComposeDslTextResources {
+            return self.execute_script_function_on_current_thread(
+                script,
+                functionName,
+                params,
+                envOverrides,
+                onIntermediateResult,
+                dispatchIntermediateOnMain,
+                timeoutSec,
+                executionListener,
+            );
+        }
+        if let Some(textResources) = textResources {
+            self.composeDslTextResources = Some(textResources);
+        }
+        let textResources = self.composeDslTextResources.clone().ok_or_else(|| {
+            JsExecutionError::invalid_request(
+                "Compose DSL action requires a rendered page resource snapshot",
+            )
+        })?;
+        executeWithToolPkgTextResources(textResources, || {
+            self.execute_script_function_on_current_thread(
+                script,
+                functionName,
+                params,
+                envOverrides,
+                onIntermediateResult,
+                dispatchIntermediateOnMain,
+                timeoutSec,
+                executionListener,
+            )
+        })
     }
 
     #[allow(non_snake_case)]
@@ -1039,70 +1251,73 @@ impl JsEngineState {
     ) -> JsExecutionResult<ToolPkgMainRegistrationCapture> {
         self.initJavaScriptEnvironment()
             .map_err(JsExecutionError::initialization)?;
-        let bridge = buildToolPkgRegistrationBridgeScript();
+        let bridge = buildToolPkgRegistrationBridgeScript(true);
         self.evalJavaScriptVoid(&bridge)
             .map_err(JsExecutionError::runtime)?;
         CURRENT_TOOLPKG_TEXT_RESOURCES.with(|resources| {
             *resources.borrow_mut() = textResources;
         });
-
-        let mut registrationParams = params.clone();
-        registrationParams.insert("__operit_registration_mode".to_string(), Value::Bool(true));
-        let explicitLanguage = registrationParams
-            .get("__operit_package_lang")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if explicitLanguage.is_empty() {
-            let language = self
-                .resolveCurrentPackageLanguage()
+        let registrationResult = (|| {
+            let mut registrationParams = params.clone();
+            registrationParams.insert("__operit_registration_mode".to_string(), Value::Bool(true));
+            let explicitLanguage = registrationParams
+                .get("__operit_package_lang")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if explicitLanguage.is_empty() {
+                let language = self
+                    .resolveCurrentPackageLanguage()
+                    .map_err(JsExecutionError::runtime)?;
+                registrationParams
+                    .insert("__operit_package_lang".to_string(), Value::String(language));
+            }
+            let paramsJson = serde_json::to_string(&registrationParams)
+                .map_err(|error| JsExecutionError::serialization(error.to_string()))?;
+            let scriptJson = serde_json::to_string(script)
+                .map_err(|error| JsExecutionError::serialization(error.to_string()))?;
+            let functionNameJson = serde_json::to_string(functionName)
+                .map_err(|error| JsExecutionError::serialization(error.to_string()))?;
+            let callId = format!(
+                "operit_registration_{}",
+                Uuid::new_v4().to_string().replace('-', "")
+            );
+            let callIdJson = serde_json::to_string(&callId)
+                .map_err(|error| JsExecutionError::serialization(error.to_string()))?;
+            clearNativeExecutionSession(&callId);
+            let executionScript = format!(
+                "__operitExecuteScriptFunction({callIdJson}, {paramsJson}, {scriptJson}, {functionNameJson}, 60, 10000);"
+            );
+            self.evalJavaScriptVoid(&executionScript)
                 .map_err(JsExecutionError::runtime)?;
-            registrationParams.insert("__operit_package_lang".to_string(), Value::String(language));
-        }
-        let paramsJson = serde_json::to_string(&registrationParams)
-            .map_err(|error| JsExecutionError::serialization(error.to_string()))?;
-        let scriptJson = serde_json::to_string(script)
-            .map_err(|error| JsExecutionError::serialization(error.to_string()))?;
-        let functionNameJson = serde_json::to_string(functionName)
-            .map_err(|error| JsExecutionError::serialization(error.to_string()))?;
-        let callId = format!(
-            "operit_registration_{}",
-            Uuid::new_v4().to_string().replace('-', "")
-        );
-        let callIdJson = serde_json::to_string(&callId)
-            .map_err(|error| JsExecutionError::serialization(error.to_string()))?;
-        clearNativeExecutionSession(&callId);
-        let executionScript = format!(
-            "__operitExecuteScriptFunction({callIdJson}, {paramsJson}, {scriptJson}, {functionNameJson}, 60, 10000);"
-        );
-        if let Err(error) = self.evalJavaScriptVoid(&executionScript) {
-            CURRENT_TOOLPKG_TEXT_RESOURCES.with(|resources| {
-                *resources.borrow_mut() = None;
-            });
-            return Err(JsExecutionError::runtime(error));
-        }
-        self.runJavaScriptJobs();
-        let output = readNativeExecutionSession(&callId).ok_or_else(|| {
-            JsExecutionError::runtime("ToolPkg registration JavaScript did not complete")
-        });
+            self.runJavaScriptJobs();
+            let output = readNativeExecutionSession(&callId).ok_or_else(|| {
+                JsExecutionError::runtime("ToolPkg registration JavaScript did not complete")
+            })?;
+            clearNativeExecutionSession(&callId);
+            ensureRegistrationExecutionSucceeded(&output).map_err(JsExecutionError::runtime)?;
+
+            let captureScript = r#"
+            (function() {
+                return JSON.stringify(globalThis.__operitToolPkgRegistrationCapture);
+            })()
+            "#;
+            let captureJson = self
+                .evalJavaScriptString(captureScript)
+                .map_err(JsExecutionError::runtime)?;
+            serde_json::from_str::<ToolPkgMainRegistrationCapture>(&captureJson)
+                .map_err(|error| JsExecutionError::protocol(error.to_string()))
+        })();
         CURRENT_TOOLPKG_TEXT_RESOURCES.with(|resources| {
             *resources.borrow_mut() = None;
         });
-        let output = output?;
-        clearNativeExecutionSession(&callId);
-        ensureRegistrationExecutionSucceeded(&output).map_err(JsExecutionError::runtime)?;
-
-        let captureScript = r#"
-        (function() {
-            return JSON.stringify(globalThis.__operitToolPkgRegistrationCapture);
-        })()
-        "#;
-        let captureJson = self
-            .evalJavaScriptString(captureScript)
+        // Registration temporarily installs a restricted bridge. Restore the runtime bridge
+        // before any hook can evaluate a package main module again.
+        let runtimeBridge = buildToolPkgRegistrationBridgeScript(false);
+        self.evalJavaScriptVoid(&runtimeBridge)
             .map_err(JsExecutionError::runtime)?;
-        serde_json::from_str::<ToolPkgMainRegistrationCapture>(&captureJson)
-            .map_err(|error| JsExecutionError::protocol(error.to_string()))
+        registrationResult
     }
 
     #[allow(non_snake_case)]
@@ -1232,6 +1447,20 @@ impl JsEngineState {
                     .set("__operitNativeReadToolPkgResource", readToolPkgResource)
                     .map_err(|error| error.to_string())?;
 
+                let callToolPkgWasm = QuickJsFunction::new(
+                    ctx.clone(),
+                    |packageTarget: String,
+                     moduleId: String,
+                     exportName: String,
+                     argsJson: String| {
+                        nativeCallToolPkgWasmStrings(packageTarget, moduleId, exportName, argsJson)
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+                globals
+                    .set("__operitNativeCallToolPkgWasm", callToolPkgWasm)
+                    .map_err(|error| error.to_string())?;
+
                 let composeWebViewControllerCommand =
                     QuickJsFunction::new(ctx.clone(), |payloadJson: String| {
                         nativeComposeWebViewControllerCommandString(payloadJson)
@@ -1241,6 +1470,18 @@ impl JsEngineState {
                     .set(
                         "__operitNativeComposeWebViewControllerCommand",
                         composeWebViewControllerCommand,
+                    )
+                    .map_err(|error| error.to_string())?;
+
+                let composeFilePickerCommand =
+                    QuickJsFunction::new(ctx.clone(), |payloadJson: String| {
+                        nativeComposeFilePickerCommandString(payloadJson)
+                    })
+                    .map_err(|error| error.to_string())?;
+                globals
+                    .set(
+                        "__operitNativeComposeFilePickerCommand",
+                        composeFilePickerCommand,
                     )
                     .map_err(|error| error.to_string())?;
 
@@ -1529,6 +1770,21 @@ impl JsEngineState {
                 .set_property("__operitNativeReadToolPkgResource", readToolPkgResource)
                 .map_err(|error| error.to_string())?;
 
+            let callToolPkgWasm = self
+                .context
+                .wrap_callback(|_, _, args| {
+                    Ok(WasmQuickJsValue::String(nativeCallToolPkgWasmStrings(
+                        wasmQuickJsArgString(args, 0),
+                        wasmQuickJsArgString(args, 1),
+                        wasmQuickJsArgString(args, 2),
+                        wasmQuickJsArgString(args, 3),
+                    )))
+                })
+                .map_err(|error| error.to_string())?;
+            globals
+                .set_property("__operitNativeCallToolPkgWasm", callToolPkgWasm)
+                .map_err(|error| error.to_string())?;
+
             let composeWebViewControllerCommand = self
                 .context
                 .wrap_callback(|_, _, args| {
@@ -1541,6 +1797,21 @@ impl JsEngineState {
                 .set_property(
                     "__operitNativeComposeWebViewControllerCommand",
                     composeWebViewControllerCommand,
+                )
+                .map_err(|error| error.to_string())?;
+
+            let composeFilePickerCommand = self
+                .context
+                .wrap_callback(|_, _, args| {
+                    Ok(WasmQuickJsValue::String(nativeComposeFilePickerCommandString(
+                        wasmQuickJsArgString(args, 0),
+                    )))
+                })
+                .map_err(|error| error.to_string())?;
+            globals
+                .set_property(
+                    "__operitNativeComposeFilePickerCommand",
+                    composeFilePickerCommand,
                 )
                 .map_err(|error| error.to_string())?;
 
@@ -1844,6 +2115,21 @@ fn clearThreadLocalCallState() {
     });
 }
 
+/// Executes one operation while exposing its immutable ToolPkg text resources to native module reads.
+#[allow(non_snake_case)]
+fn executeWithToolPkgTextResources<T>(
+    textResources: Arc<ToolPkgTextResources>,
+    operation: impl FnOnce() -> JsExecutionResult<T>,
+) -> JsExecutionResult<T> {
+    let previousResources =
+        CURRENT_TOOLPKG_TEXT_RESOURCES.with(|resources| resources.replace(Some(textResources)));
+    let output = operation();
+    CURRENT_TOOLPKG_TEXT_RESOURCES.with(|resources| {
+        *resources.borrow_mut() = previousResources;
+    });
+    output
+}
+
 #[allow(non_snake_case)]
 fn hashText(value: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -1969,6 +2255,31 @@ impl JsExecutionEngine for JsEngine {
         )
     }
 
+    /// Executes a named JavaScript function through this engine with an exact millisecond deadline.
+    #[allow(non_snake_case)]
+    fn execute_script_function_with_timeout_millis(
+        &self,
+        script: &str,
+        functionName: &str,
+        params: &BTreeMap<String, Value>,
+        envOverrides: &BTreeMap<String, String>,
+        on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
+        dispatchIntermediateOnMain: bool,
+        timeoutMillis: u64,
+    ) -> JsExecutionResult<Option<String>> {
+        JsEngine::execute_script_function_with_timeout_millis(
+            self,
+            script,
+            functionName,
+            params,
+            envOverrides,
+            on_intermediate_result,
+            dispatchIntermediateOnMain,
+            timeoutMillis,
+            None,
+        )
+    }
+
     /// Executes a ToolPkg registration function through this engine.
     #[allow(non_snake_case)]
     fn execute_toolpkg_main_registration_function_with_text_resources(
@@ -1994,8 +2305,15 @@ impl JsExecutionEngine for JsEngine {
         script: &str,
         runtimeOptions: &BTreeMap<String, Value>,
         envOverrides: &BTreeMap<String, String>,
+        textResources: Arc<BTreeMap<String, String>>,
     ) -> JsExecutionResult<Option<String>> {
-        JsEngine::execute_compose_dsl_script(self, script, runtimeOptions, envOverrides)
+        JsEngine::execute_compose_dsl_script(
+            self,
+            script,
+            runtimeOptions,
+            envOverrides,
+            textResources,
+        )
     }
 
     /// Dispatches one Compose DSL action through this engine.
@@ -2093,9 +2411,76 @@ fn nativeReadToolPkgResourceStrings(
 }
 
 #[allow(non_snake_case)]
+/// Builds the stable failure envelope for ToolPkg WASM calls.
+fn buildToolPkgWasmFailure(message: &str) -> String {
+    serde_json::json!({
+        "success": false,
+        "message": message.trim()
+    })
+    .to_string()
+}
+
+#[allow(non_snake_case)]
+/// Calls one ToolPkg WASM export through the current execution host.
+fn nativeCallToolPkgWasmStrings(
+    packageTarget: String,
+    moduleId: String,
+    exportName: String,
+    argsJson: String,
+) -> String {
+    let normalizedTarget = packageTarget.trim().to_string();
+    if normalizedTarget.is_empty() {
+        return buildToolPkgWasmFailure("ToolPkg.wasm package target is empty");
+    }
+    let normalizedModuleId = moduleId.trim().to_string();
+    if normalizedModuleId.is_empty() {
+        return buildToolPkgWasmFailure("ToolPkg.wasm module id is required");
+    }
+    let normalizedExportName = exportName.trim().to_string();
+    if normalizedExportName.is_empty() {
+        return buildToolPkgWasmFailure("ToolPkg.wasm export name is required");
+    }
+    let args = if argsJson.trim().is_empty() {
+        Vec::new()
+    } else {
+        match serde_json::from_str::<Vec<JsToolPkgWasmArg>>(argsJson.trim()) {
+            Ok(value) => value,
+            Err(error) => {
+                return buildToolPkgWasmFailure(&format!(
+                    "ToolPkg.wasm args JSON is invalid: {error}"
+                ))
+            }
+        }
+    };
+    let request = JsToolPkgWasmRequest {
+        package_target: normalizedTarget,
+        module_id: normalizedModuleId,
+        export_name: normalizedExportName,
+        args,
+    };
+    match currentExecutionHost().and_then(|host| host.call_toolpkg_wasm(request)) {
+        Ok(result) => serde_json::json!({
+            "success": true,
+            "valueType": result.value_type,
+            "value": result.value
+        })
+        .to_string(),
+        Err(error) => buildToolPkgWasmFailure(&error),
+    }
+}
+
+#[allow(non_snake_case)]
 fn nativeComposeWebViewControllerCommandString(payloadJson: String) -> String {
     currentExecutionHost()
         .and_then(|host| host.handle_compose_webview_controller_command(&payloadJson))
+        .unwrap_or_else(|error| buildJsExecutionErrorPayload(&error))
+}
+
+/// Runs one Compose DSL file-picker request through the current execution host.
+#[allow(non_snake_case)]
+fn nativeComposeFilePickerCommandString(payloadJson: String) -> String {
+    currentExecutionHost()
+        .and_then(|host| host.open_compose_file_picker(&payloadJson))
         .unwrap_or_else(|error| buildJsExecutionErrorPayload(&error))
 }
 

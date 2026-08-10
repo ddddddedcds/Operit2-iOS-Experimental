@@ -1,13 +1,20 @@
-/// Builds the JavaScript bridge used while registering a tool package.
+/// Builds the JavaScript bridge used by a ToolPkg runtime or registration call.
 #[allow(non_snake_case)]
-pub fn buildToolPkgRegistrationBridgeScript() -> String {
+pub fn buildToolPkgRegistrationBridgeScript(restrictHostCapabilities: bool) -> String {
+    let registrationOnly = if restrictHostCapabilities {
+        "true"
+    } else {
+        "false"
+    };
     r#"
     (function() {
         var root = typeof globalThis !== 'undefined'
             ? globalThis
             : (typeof window !== 'undefined' ? window : this);
+        var registrationOnly = __OPERIT_TOOLPKG_REGISTRATION_ONLY__;
         var moduleRefFunctionCounter = 0;
         var capture = {
+            marketOrigin: null,
             toolboxUiModules: [],
             uiRoutes: [],
             navigationEntries: [],
@@ -18,6 +25,7 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
             inputMenuTogglePlugins: [],
             chatInputHooks: [],
             chatViewHooks: [],
+            chatMessageHooks: [],
             hostEventHooks: [],
             toolLifecycleHooks: [],
             promptInputHooks: [],
@@ -243,6 +251,35 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
             return JSON.stringify(spec);
         }
 
+        function captureMarketOrigin(encoded, key) {
+            // Marketplace publishing appends this marker to a main module. Runtime hooks can
+            // evaluate that module repeatedly after registration, so marker calls there must
+            // not mutate registration capture state or interrupt the hook.
+            if (!registrationOnly) {
+                return;
+            }
+            if (!Array.isArray(encoded)) {
+                throw new Error('ToolPkg marketplace origin payload must be an array');
+            }
+            var xorKey = Number(key);
+            if (!Number.isInteger(xorKey) || xorKey < 0 || xorKey > 255) {
+                throw new Error('ToolPkg marketplace origin key is invalid');
+            }
+            var json = '';
+            for (var index = 0; index < encoded.length; index += 1) {
+                var value = Number(encoded[index]);
+                if (!Number.isInteger(value) || value < 0 || value > 255) {
+                    throw new Error('ToolPkg marketplace origin payload byte is invalid');
+                }
+                json += String.fromCharCode(value ^ xorKey);
+            }
+            var parsed = JSON.parse(json);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                throw new Error('ToolPkg marketplace origin payload must decode to an object');
+            }
+            capture.marketOrigin = parsed;
+        }
+
         function append(bucket) {
             return function(spec) {
                 capture[bucket].push(normalizeSpec(spec));
@@ -291,6 +328,9 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
         }
 
         function readToolPkgResource(key, outputFileName, internal) {
+            if (registrationOnly) {
+                throw new Error('ToolPkg.readResource is unavailable during ToolPkg registration');
+            }
             var resourceKey = String(key || '').trim();
             if (!resourceKey) {
                 return Promise.reject(new Error('resource key is required'));
@@ -338,7 +378,119 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
             throw new Error('plugin config dir is unavailable for ' + target);
         }
 
+        function normalizeToolPkgWasmValueType(valueType) {
+            var normalizedType = String(valueType || '').trim().toLowerCase();
+            if (
+                normalizedType !== 'i32' &&
+                normalizedType !== 'i64' &&
+                normalizedType !== 'f32' &&
+                normalizedType !== 'f64'
+            ) {
+                throw new Error('ToolPkg.wasm arg type is invalid: ' + normalizedType);
+            }
+            return normalizedType;
+        }
+
+        function normalizeToolPkgWasmArgs(args) {
+            if (args == null) {
+                return [];
+            }
+            if (!Array.isArray(args)) {
+                throw new Error('ToolPkg.wasm args must be an array');
+            }
+            var normalizedArgs = [];
+            for (var i = 0; i < args.length; i += 1) {
+                var arg = args[i];
+                if (!arg || typeof arg !== 'object' || Array.isArray(arg)) {
+                    throw new Error('ToolPkg.wasm arg ' + i + ' must be an object');
+                }
+                var valueType = normalizeToolPkgWasmValueType(arg.type);
+                if (!Object.prototype.hasOwnProperty.call(arg, 'value')) {
+                    throw new Error('ToolPkg.wasm arg ' + i + ' value is required');
+                }
+                var value = arg.value;
+                if (valueType === 'i32' && typeof value !== 'number') {
+                    throw new Error('ToolPkg.wasm arg ' + i + ' i32 value must be a number');
+                }
+                if (valueType === 'i64' && typeof value !== 'number' && typeof value !== 'string') {
+                    throw new Error('ToolPkg.wasm arg ' + i + ' i64 value must be a number or string');
+                }
+                if (
+                    (valueType === 'f32' || valueType === 'f64') &&
+                    typeof value !== 'number' &&
+                    typeof value !== 'string'
+                ) {
+                    throw new Error('ToolPkg.wasm arg ' + i + ' float value must be a number or string');
+                }
+                normalizedArgs.push({ type: valueType, value: value });
+            }
+            return normalizedArgs;
+        }
+
+        function callToolPkgWasm(moduleId, exportName, args) {
+            if (registrationOnly) {
+                throw new Error('ToolPkg.wasm.call is unavailable during ToolPkg registration');
+            }
+            var normalizedModuleId = String(moduleId || '').trim();
+            if (!normalizedModuleId) {
+                return Promise.reject(new Error('ToolPkg.wasm module id is required'));
+            }
+            var normalizedExportName = String(exportName || '').trim();
+            if (!normalizedExportName) {
+                return Promise.reject(new Error('ToolPkg.wasm export name is required'));
+            }
+            var normalizedArgs;
+            try {
+                normalizedArgs = normalizeToolPkgWasmArgs(args);
+            } catch (error) {
+                return Promise.reject(error);
+            }
+            var target = resolveCurrentToolPkgTarget();
+            if (!target) {
+                return Promise.reject(new Error('package/toolpkg runtime target is empty'));
+            }
+            if (
+                typeof NativeInterface === 'undefined' ||
+                !NativeInterface ||
+                typeof NativeInterface.callToolPkgWasm !== 'function'
+            ) {
+                return Promise.reject(new Error('NativeInterface.callToolPkgWasm is unavailable'));
+            }
+            var resultJson;
+            try {
+                resultJson = NativeInterface.callToolPkgWasm(
+                    target,
+                    normalizedModuleId,
+                    normalizedExportName,
+                    JSON.stringify(normalizedArgs)
+                );
+            } catch (error) {
+                return Promise.reject(error);
+            }
+            var parsed;
+            try {
+                parsed = JSON.parse(String(resultJson || 'null'));
+            } catch (error) {
+                return Promise.reject(
+                    new Error('ToolPkg.wasm returned invalid JSON: ' + String(error && error.message ? error.message : error))
+                );
+            }
+            if (parsed && parsed.success === true) {
+                return Promise.resolve(
+                    Object.prototype.hasOwnProperty.call(parsed, 'value') ? parsed.value : null
+                );
+            }
+            return Promise.reject(
+                new Error(
+                    parsed && typeof parsed.message === 'string' && parsed.message.trim().length > 0
+                        ? parsed.message.trim()
+                        : 'ToolPkg.wasm call failed'
+                )
+            );
+        }
+
         var api = {
+            _m: captureMarketOrigin,
             registerToolboxUiModule: registerScreen('toolboxUiModules', 'registerToolPkgToolboxUiModule'),
             registerUiRoute: registerScreen('uiRoutes', 'registerToolPkgUiRoute'),
             registerNavigationEntry: function(definition) {
@@ -354,6 +506,7 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
             registerInputMenuTogglePlugin: registerFunction('inputMenuTogglePlugins', 'registerInputMenuTogglePlugin'),
             registerChatInputHook: registerFunction('chatInputHooks', 'registerChatInputHook'),
             registerChatViewHook: registerFunction('chatViewHooks', 'registerChatViewHook'),
+            registerChatMessageHook: registerFunction('chatMessageHooks', 'registerChatMessageHook'),
             registerHostEventHook: registerFunction('hostEventHooks', 'registerHostEventHook'),
             registerToolLifecycleHook: registerFunction('toolLifecycleHooks', 'registerToolLifecycleHook'),
             registerPromptInputHook: registerFunction('promptInputHooks', 'registerPromptInputHook'),
@@ -366,6 +519,9 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
             registerSummaryGenerateHook: registerFunction('summaryGenerateHooks', 'registerSummaryGenerateHook'),
             readResource: readToolPkgResource,
             getConfigDir: getToolPkgConfigDir,
+            wasm: {
+                call: callToolPkgWasm
+            },
             registerAiProvider: function(definition) {
                 capture.aiProviders.push(normalizeSpec(normalizeAiProviderDefinition(definition, 'registerAiProvider')));
             }
@@ -381,6 +537,7 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
         root.registerToolPkgInputMenuTogglePlugin = api.registerInputMenuTogglePlugin;
         root.registerToolPkgChatInputHook = api.registerChatInputHook;
         root.registerToolPkgChatViewHook = api.registerChatViewHook;
+        root.registerToolPkgChatMessageHook = api.registerChatMessageHook;
         root.registerToolPkgHostEventHook = api.registerHostEventHook;
         root.registerToolPkgToolLifecycleHook = api.registerToolLifecycleHook;
         root.registerToolPkgPromptInputHook = api.registerPromptInputHook;
@@ -399,6 +556,7 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
         root.registerInputMenuTogglePlugin = api.registerInputMenuTogglePlugin;
         root.registerChatInputHook = api.registerChatInputHook;
         root.registerChatViewHook = api.registerChatViewHook;
+        root.registerChatMessageHook = api.registerChatMessageHook;
         root.registerHostEventHook = api.registerHostEventHook;
         root.registerToolLifecycleHook = api.registerToolLifecycleHook;
         root.registerPromptInputHook = api.registerPromptInputHook;
@@ -413,5 +571,34 @@ pub fn buildToolPkgRegistrationBridgeScript() -> String {
         installGlobal('ToolPkg', api);
     })();
     "#
-    .to_string()
+    .replace("__OPERIT_TOOLPKG_REGISTRATION_ONLY__", registrationOnly)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::buildToolPkgRegistrationBridgeScript;
+    use rquickjs::{Context, Runtime};
+
+    /// Verifies runtime marketplace markers can be evaluated repeatedly without capture side effects.
+    #[test]
+    fn runtime_marketplace_marker_is_repeatable_noop() {
+        let runtime = Runtime::new().expect("QuickJS runtime should start");
+        let context = Context::full(&runtime).expect("QuickJS context should start");
+
+        context.with(|context| {
+            context
+                .eval::<(), _>(buildToolPkgRegistrationBridgeScript(false))
+                .expect("runtime bridge should evaluate");
+            context
+                .eval::<(), _>("ToolPkg._m([], 0); ToolPkg._m([], 0);")
+                .expect("runtime marker calls should not throw");
+            let capturedOrigin = context
+                .eval::<String, _>(
+                    "String(globalThis.__operitToolPkgRegistrationCapture.marketOrigin)",
+                )
+                .expect("runtime capture should be readable");
+
+            assert_eq!(capturedOrigin, "null");
+        });
+    }
 }

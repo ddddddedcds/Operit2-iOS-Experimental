@@ -370,7 +370,83 @@ class _WorkspacePanelState extends State<WorkspacePanel> {
     );
   }
 
-  Future<String> _manualTerminalWorkingDirectory() async {
+  /// Prompts the user to choose one terminal implementation exposed by the active host.
+  Future<core_proxy.RuntimeTerminalTypeInfo?> _selectTerminalType(
+    core_proxy.RuntimeTerminalInfo terminalInfo,
+  ) {
+    return showDialog<core_proxy.RuntimeTerminalTypeInfo>(
+      context: context,
+      builder: (context) {
+        final theme = Theme.of(context);
+        final availableTypes = terminalInfo.types
+            .where((item) => item.available)
+            .toList(growable: false);
+        return AlertDialog(
+          title: const Text('选择终端类型'),
+          content: SizedBox(
+            width: 460,
+            child: availableTypes.isEmpty
+                ? Text(
+                    '当前平台没有可用的终端类型。',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  )
+                : RadioGroup<String>(
+                    groupValue:
+                        '${terminalInfo.terminal}\u0000${terminalInfo.terminalType}',
+                    onChanged: (value) {
+                      final selected = availableTypes.firstWhere(
+                        (item) =>
+                            '${item.terminal}\u0000${item.terminalType}' ==
+                            value,
+                      );
+                      Navigator.of(context).pop(selected);
+                    },
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: terminalInfo.types.length,
+                      separatorBuilder: (context, index) =>
+                          const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final item = terminalInfo.types[index];
+                        return ListTile(
+                          enabled: item.available,
+                          leading: Radio<String>(
+                            value: '${item.terminal}\u0000${item.terminalType}',
+                            enabled: item.available,
+                          ),
+                          title: Text(
+                            '${item.terminal} / ${item.terminalType}',
+                          ),
+                          subtitle: Text(item.description),
+                          onTap: item.available
+                              ? () => Navigator.of(context).pop(item)
+                              : null,
+                        );
+                      },
+                    ),
+                  ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Resolves the initial directory supported by the selected terminal host.
+  Future<String> _manualTerminalWorkingDirectory(
+    String terminal,
+    String terminalType,
+  ) async {
+    if (terminal == 'v86') {
+      return '/';
+    }
     if (!widget.hasBoundWorkspace) {
       // Land in an isolated playground dir under HOME so a careless `rm -rf`
       // only wipes this sandbox, not the whole device. The Rust PTY host

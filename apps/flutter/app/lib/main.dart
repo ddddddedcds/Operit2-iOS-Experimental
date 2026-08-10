@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
@@ -9,6 +9,7 @@ import 'core/ai/ExternalAiBridge.dart';
 import 'core/application/CoreApplicationService.dart';
 import 'core/errors/UnhandledErrorReporter.dart';
 import 'core/logging/ClientLogger.dart';
+import 'core/notifications/NotificationActivationService.dart';
 import 'core/runtime/RuntimeConnectionManager.dart';
 import 'ui/main/OperitApp.dart';
 import 'ui/window/DetachedChatWindowApp.dart';
@@ -67,10 +68,12 @@ void _writeLaunchLog(String message) {
 }
 
 /// Runs the application startup sequence with structured diagnostics.
-void main(List<String> _) async {
+void main(List<String> arguments) async {
+  late Zone startupZone;
   await runZonedGuarded(
     () async {
-      _writeLaunchLog('DART_MAIN_START');
+        _writeLaunchLog('DART_MAIN_START');
+        startupZone = Zone.current;
       final startupStopwatch = Stopwatch()..start();
       final bindingStopwatch = Stopwatch()..start();
       WidgetsFlutterBinding.ensureInitialized();
@@ -100,21 +103,23 @@ void main(List<String> _) async {
         'client log hooks installed elapsedMs=${hooksStopwatch.elapsedMilliseconds}',
         tag: _appStartupLogTag,
       );
-      // Every await below used to be able to abort startup before runApp(),
-      // which shows up as a pure white screen with no visible error. Each step
-      // is now individually guarded: a failure is recorded in the launch/trace
-      // log and startup continues, so the UI always comes up.
-      final runtimeStopwatch = Stopwatch()..start();
-      try {
-        await RuntimeConnectionManager.instance.initialize();
-        ClientLogger.i(
-          'runtime connection initialized elapsedMs=${runtimeStopwatch.elapsedMilliseconds}',
-          tag: _appStartupLogTag,
-        );
-        _writeLaunchLog('RUNTIME_INIT_OK');
-      } catch (e, st) {
-        _writeLaunchLog('RUNTIME_INIT_FAILED: $e\n$st');
-      }
+        // Every await below used to be able to abort startup before runApp(),
+        // which shows up as a pure white screen with no visible error. Each step
+        // is now individually guarded: a failure is recorded in the launch/trace
+        // log and startup continues, so the UI always comes up.
+        NotificationActivationService.instance.initialize(arguments);
+        final runtimeStopwatch = Stopwatch()..start();
+        try {
+          await RuntimeConnectionManager.instance.initialize();
+          ClientLogger.attachPersistentStorage();
+          ClientLogger.i(
+            'runtime connection initialized elapsedMs=${runtimeStopwatch.elapsedMilliseconds}',
+            tag: _appStartupLogTag,
+          );
+          _writeLaunchLog('RUNTIME_INIT_OK');
+        } catch (e, st) {
+          _writeLaunchLog('RUNTIME_INIT_FAILED: $e\n$st');
+        }
       final glassStopwatch = Stopwatch()..start();
       try {
         await LiquidGlassWidgets.initialize();
@@ -165,19 +170,22 @@ void main(List<String> _) async {
     },
     (error, stackTrace) {
       _writeLaunchLog('ZONE_ERROR: $error\n$stackTrace');
-      if (ClientLogger.isInitialized) {
-        ClientLogger.e(
-          'Uncaught zone error',
-          tag: _appStartupLogTag,
+      startupZone.runGuarded(() {
+        if (ClientLogger.isInitialized) {
+          ClientLogger.e(
+            'Uncaught zone error',
+            tag: _appStartupLogTag,
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
+        UnhandledErrorReporter.report(
+          source: 'Zone',
           error: error,
           stackTrace: stackTrace,
         );
-      }
-      UnhandledErrorReporter.report(
-        source: 'Zone',
-        error: error,
-        stackTrace: stackTrace,
-      );
+        runApp(const FatalErrorApplication());
+      });
     },
   );
 }
@@ -197,7 +205,7 @@ void _runMainWindow() {
           thickness: 36,
           quality: GlassQuality.standard,
         ),
-        child: const OperitApp(),
+        child: const FatalErrorHost(child: OperitApp()),
       ),
     );
     _writeLaunchLog('AFTER_RUN_APP main');
@@ -221,7 +229,7 @@ void _runDetachedChatWindow(DetachedChatWindowArguments arguments) {
         thickness: 36,
         quality: GlassQuality.standard,
       ),
-      child: DetachedChatWindowApp(arguments: arguments),
+      child: FatalErrorHost(child: DetachedChatWindowApp(arguments: arguments)),
     ),
   );
 }
@@ -240,11 +248,6 @@ void _installClientLogHooks() {
     ClientLogger.e(
       details.exceptionAsString(),
       tag: 'FlutterFramework',
-      error: details.exception,
-      stackTrace: details.stack,
-    );
-    UnhandledErrorReporter.report(
-      source: 'Flutter framework',
       error: details.exception,
       stackTrace: details.stack,
     );

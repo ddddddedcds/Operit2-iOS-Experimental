@@ -37,6 +37,8 @@ windows_control.toolpkg (ZIP 压缩包)
 ├── ui/                                    # UI 模块目录
 │   └── windows_setup/
 │       └── index.ui.js                    # UI 模块脚本
+├── modules/                               # WASM 模块目录（可选）
+│   └── core.wasm                          # 核心算法模块
 ├── resources/                             # 资源文件目录
 │   └── pc_agent/
 │       └── operit-pc-agent/              # 目录资源（readResource 时自动导出为 zip）
@@ -53,6 +55,7 @@ windows_control.toolpkg (ZIP 压缩包)
 
 - **packages/**：存放子包的 JavaScript 脚本文件
 - **ui/**：存放 UI 模块的脚本文件
+- **modules/**：存放 WASM 核心算法模块
 - **resources/**：存放任意资源文件（图片、压缩包、配置文件等）
 - **i18n/**：存放国际化相关文件
 
@@ -102,6 +105,15 @@ windows_control.toolpkg (ZIP 压缩包)
       "mime": "application/zip"
     }
   ],
+  "wasm_modules": [
+    {
+      "id": "core",
+      "path": "modules/core.wasm",
+      "exports": ["isPrime", "nthPrime"],
+      "source_language": "assemblyscript",
+      "abi": "scalar"
+    }
+  ],
   "workflow_templates": [
     {
       "id": "quick_chat_workflow",
@@ -149,6 +161,7 @@ windows_control.toolpkg (ZIP 压缩包)
 | `description` | LocalizedText | 否 | 包的描述信息，支持多语言 |
 | `subpackages` | array | 否 | 子包列表，每个子包是一个独立的工具集 |
 | `resources` | array | 否 | 资源文件列表，可以是任意类型的文件 |
+| `wasm_modules` | array | 否 | WASM 核心算法模块列表 |
 | `workflow_templates` | array | 否 | 注册到宿主“工作流”入口的工作流模板列表 |
 | `workspace_templates` | array | 否 | 注册到宿主“工作区创建”入口的工作区模板列表 |
 
@@ -211,7 +224,96 @@ windows_control.toolpkg (ZIP 压缩包)
 - 必须包含 `METADATA` 注释块（参考 [SCRIPT_DEV_GUIDE.md](./SCRIPT_DEV_GUIDE.md)）
 - 脚本中定义的工具会被注册为 `<subpackage_id>:<tool_name>` 格式
 
-#### 3.2.4 Main 脚本注册
+#### 3.2.4 WASM 模块
+
+`wasm_modules` 用于声明插件内的核心算法模块。推荐由 AssemblyScript 编译得到 `.wasm`，插件作者入口写 `src/main.ts`，再通过同目录内的 typed facade 调用 WASM；打包阶段生成宿主执行用的 `main.js`。
+
+```json
+{
+  "id": "core",
+  "path": "modules/core.wasm",
+  "exports": ["isPrime", "nthPrime"],
+  "source_language": "assemblyscript",
+  "abi": "scalar"
+}
+```
+
+| 字段 | 类型 | 必需 | 说明 |
+|------|------|------|------|
+| `id` | string | 是 | 模块 ID，在容器内必须唯一 |
+| `path` | string | 是 | `.wasm` 文件路径（相对于 manifest 所在目录） |
+| `exports` | string[] | 是 | 暴露给 JS 桥的导出函数名 |
+| `source_language` | string | 是 | 源语言标记，AssemblyScript 模块写 `assemblyscript` |
+| `abi` | string | 是 | 调用约定标记，当前写 `scalar` |
+
+推荐结构：
+
+```text
+my_toolpkg/
+├── manifest.json
+├── package.json
+├── src/
+│   ├── main.ts
+│   └── wasm/
+│       ├── core.ts
+│       └── core.as.ts
+├── build/
+│   └── main.js
+└── modules/
+    └── core.wasm
+```
+
+AssemblyScript 核心模块示例 `src/wasm/core.as.ts`：
+
+```ts
+export function isPrime(n: i32): i32 {
+  if (n < 2) return 0;
+  if (n === 2) return 1;
+  if (n % 2 === 0) return 0;
+  for (let divisor: i32 = 3; divisor <= n / divisor; divisor += 2) {
+    if (n % divisor === 0) return 0;
+  }
+  return 1;
+}
+```
+
+编译示例：
+
+```bash
+npx asc src/wasm/core.as.ts --outFile modules/core.wasm --optimize
+```
+
+当前接入范围：
+
+- `manifest` 会校验模块 ID、`.wasm` 路径、导出名、`source_language` 和 `abi`。
+- 发布保护时，除 manifest 以外的包内 entry 都会进入保护格式，包括 `main.js`、子包脚本、assets/resources 和 `.wasm`。
+- JS 运行时仍以 `main.js` 和已有 `exports` 为插件对外接口；`main.js` 可以由 TS 构建生成。
+- `ToolPkg.wasm.call(moduleId, exportName, args)` 已接入 native WASM runtime，当前 ABI 支持 `i32`、`i64`、`f32`、`f64` 标量参数和返回值。
+- `i64` 结果以字符串返回；JS 传入 `i64` 时建议使用字符串，避免超过 JS safe integer 后丢精度。
+
+TS facade 示例 `src/wasm/core.ts`：
+
+```ts
+export async function isPrime(n: number): Promise<boolean> {
+  const result = await ToolPkg.wasm.call("core", "isPrime", [{ type: "i32", value: n }]);
+  if (typeof result !== "number") {
+    throw new Error("core.isPrime returned a non-number result");
+  }
+  return result === 1;
+}
+```
+
+主入口示例 `src/main.ts`：
+
+```ts
+import { isPrime } from "./wasm/core";
+
+export async function run(params: { n: number }) {
+  return { is_prime: await isPrime(params.n) };
+}
+```
+
+#### 3.2.5 Main 脚本注册
 
 ToolPkg 的 UI 模块和生命周期钩子不再写在 `manifest` 里，而是由 `main` 脚本通过注册函数声明。
 
@@ -251,6 +353,17 @@ function registerToolPkg() {
       zh: "Windows 面板",
       en: "Windows Dashboard"
     }
+  });
+
+  ToolPkg.registerNavigationEntry({
+    id: "windows_refresh_action",
+    surface: "app_bar",
+    icon: "Refresh",
+    title: {
+      zh: "刷新 Windows 信息",
+      en: "Refresh Windows information"
+    },
+    action: refreshWindowsDashboard
   });
 
   ToolPkg.registerDesktopWidget({
@@ -333,7 +446,7 @@ exports.onXmlRender = onXmlRender;
 exports.onInputMenuToggle = onInputMenuToggle;
 ```
 
-每个 ToolPkg 的 `registerToolPkg()` 会在独立的临时 JavaScript engine 中执行，注册状态不会跨包共享。主脚本注册必须在 60 秒内完成；同步死循环和超过时限的异步注册都会被终止，并将加载错误归属到当前包，扫描随后继续处理其他包。
+每个 ToolPkg 的 `registerToolPkg()` 会在独立的临时 JavaScript engine 中执行，注册状态不会跨包共享。主脚本注册必须在 60 秒内完成；同步死循环和超过时限的异步注册都会被终止，并将加载错误归属到当前包，扫描随后继续处理其他包。注册期间禁止调用 `ToolPkg.readResource(...)` 和 `ToolPkg.wasm.call(...)`，调用会立即抛出异常；模块加载仍可使用 `require/import`。
 
 注册项字段：
 
@@ -351,8 +464,8 @@ exports.onInputMenuToggle = onInputMenuToggle;
 | `ToolPkg.registerUiRoute` | `params` | 否 | UI 模块初始化参数对象 |
 | `ToolPkg.registerUiRoute` | `title` | 否 | 路由标题（支持 `LocalizedText`） |
 | `ToolPkg.registerNavigationEntry` | `id` | 是 | 导航入口唯一标识 |
-| `ToolPkg.registerNavigationEntry` | `route` | 是 | 已注册路由 ID |
-| `ToolPkg.registerNavigationEntry` | `surface` | 是 | 挂载面，当前支持 `toolbox`、`main_sidebar_plugins` |
+| `ToolPkg.registerNavigationEntry` | `route` | 与 `action` 至少填写一项 | 已注册路由 ID |
+| `ToolPkg.registerNavigationEntry` | `surface` | 是 | 挂载面，当前支持 `toolbox`、`main_sidebar_plugins`、`app_bar` |
 | `ToolPkg.registerNavigationEntry` | `title` | 否 | 导航入口标题（支持 `LocalizedText`） |
 | `ToolPkg.registerNavigationEntry` | `icon` | 否 | 图标名 |
 | `ToolPkg.registerNavigationEntry` | `order` | 否 | 同一 surface 内排序值，越小越靠前 |
@@ -396,7 +509,7 @@ exports.onInputMenuToggle = onInputMenuToggle;
 - 支持状态管理和事件处理
 - 可以调用工具和访问资源
 
-#### 3.2.5 执行上下文、模块实例与 IPC
+#### 3.2.6 执行上下文、模块实例与 IPC
 
 ToolPkg 运行时按执行来源分为四类上下文：
 
@@ -500,7 +613,7 @@ await ToolPkg.ipc.call(
 - 需要共享的内存态、缓存、当前会话状态、后台任务句柄：放在 ToolPkg main 逻辑里，通过 `ToolPkg.ipc` 访问。
 - UI state 只服务当前界面展示：放在 `ctx.useState` / `ctx.useMemo`。
 
-#### 3.2.6 Resources（资源文件）
+#### 3.2.7 Resources（资源文件）
 
 资源文件可以是任意类型的文件，如图片、压缩包、配置文件等。
 
@@ -536,7 +649,7 @@ await ToolPkg.ipc.call(
 - 当 `mime` 是目录类型（如 `inode/directory`、`vnd.android.document/directory`）时，`ToolPkg.readResource(key)` 会先将该目录压缩成 zip，再返回这个 zip 的临时文件路径。
 - 如果没有显式传 `outputFileName`，目录资源默认会自动补上 `.zip` 后缀。
 
-#### 3.2.7 Workflow Templates（工作流模板）
+#### 3.2.8 Workflow Templates（工作流模板）
 
 ToolPkg 现在可以通过 `manifest` 直接注册工作流模板。注册后，模板会出现在宿主当前的“工作流 -> 从模板新建”入口里，也会显示在包管理的详情弹窗中。
 
@@ -580,7 +693,7 @@ ToolPkg 现在可以通过 `manifest` 直接注册工作流模板。注册后，
 - 执行统计字段会被重置
 - 导入成功后会落库成正式 `Workflow`
 
-#### 3.2.8 Workspace Templates（工作区模板）
+#### 3.2.9 Workspace Templates（工作区模板）
 
 ToolPkg 也可以通过 `manifest` 注册工作区模板。注册后，模板会出现在宿主当前的“工作区 -> 创建默认”入口里，也会显示在包管理的详情弹窗中。
 
@@ -949,6 +1062,30 @@ exports.default = Screen;
 - `Checkbox`：复选框
 - `Card`：卡片
 - `Icon`：图标
+- `AiChat`：不含工作区的可嵌入 AI 聊天控件
+- `AdaptiveSidePanel`：宽屏可拖拽分栏、手机覆盖层的自适应侧边控件
+
+#### 宿主挂载与嵌入
+
+`surface: "app_bar"` 会将导航入口渲染为宿主顶部栏的图标按钮。入口可声明 `action` 执行主脚本函数，也可声明 `route` 打开已注册页面。
+
+`AdaptiveSidePanel` 使用 `content` 作为主内容、`side` 作为侧栏内容；`open` 与 `onOpenChanged` 由插件状态管理。`AiChat` 提供当前主聊天运行时的消息列表和输入区，不包含工作区。
+
+```javascript
+function Screen(ctx) {
+    const [sideOpen, setSideOpen] = ctx.useState('sideOpen', true);
+
+    return ctx.UI.AdaptiveSidePanel({
+        open: sideOpen,
+        onOpenChanged: setSideOpen,
+        side: ctx.UI.Column({ padding: 16 }, [
+            ctx.UI.Text({ text: 'Plugin side panel' })
+        ])
+    }, ctx.UI.AiChat());
+}
+
+exports.default = Screen;
+```
 
 #### 进度组件
 - `LinearProgressIndicator`：线性进度条
@@ -1013,6 +1150,22 @@ ctx.reportError(error);
 `ctx.listRoutes()` 会返回当前可导航路由列表（包含 `routeId`、`runtime` 等字段）。
 `ctx.getHostRoutes()` 只返回宿主 Native 路由，便于插件显式发现可用原生页面。
 Native 路由 ID 命名规则：`native.<Screen对象名的snake_case>`，例如 `Screen.Toolbox -> native.toolbox`。
+
+#### 文件选择
+
+`ctx.openFilePicker(options?)` 仅使用 `picker` 指定选择来源。未传入 `picker` 时打开文档选择器。
+
+```javascript
+const images = await ctx.openFilePicker({
+    picker: 'photo',
+    allowMultiple: true
+});
+```
+
+- `document`：接受任意文件，支持 `allowMultiple`。
+- `photo`、`video`、`media`：分别限制为图片、视频、图片与视频，支持 `allowMultiple`。
+
+该 API 通过 Flutter `file_selector` 在 Android、iOS、Linux、macOS、Windows、Web 和 OpenHarmony 使用各平台的文件选择器。不适用于该 `picker` 的选项会直接报错。结果提供平台文件路径或浏览器对象 URL。
 
 兼容说明：
 
@@ -1124,7 +1277,7 @@ my_toolpkg/
 
 - 所有面向用户的文本都应提供多语言版本
 - 至少提供中文（`zh`）和英文（`en`）
-- 使用 `default` 键作为回退
+- 使用 `default` 键作为默认文本
 
 ### 9.4 资源优化
 

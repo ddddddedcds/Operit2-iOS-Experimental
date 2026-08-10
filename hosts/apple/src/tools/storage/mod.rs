@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -51,9 +52,9 @@ impl AppleRuntimeStorageHost {
         match segments.as_slice() {
             ["runtime", rest @ ..] => Ok(joinSegments(&self.runtimeRoot, rest)),
             ["workspaces", rest @ ..] => Ok(joinSegments(&self.workspaceRoot, rest)),
-            ["secure", rest @ ..] => Ok(joinSegments(&self.runtimeRoot.join("secure"), rest)),
+            ["secure", rest @ ..] => legacySecurePath(&self.runtimeRoot, rest),
             _ => Err(HostError::new(format!(
-                "Runtime storage path must start with runtime/ or workspaces/: {path}"
+                "Runtime storage path must start with runtime/, workspaces/, or secure/: {path}"
             ))),
         }
     }
@@ -68,11 +69,30 @@ impl AppleRuntimeStorageHost {
         if let Ok(relative) = path.strip_prefix(&self.workspaceRoot) {
             return Ok(prefixedPath("workspaces", relative));
         }
+        let secureRoot = legacySecurePath(&self.runtimeRoot, &[])?;
+        if let Ok(relative) = path.strip_prefix(&secureRoot) {
+            return Ok(prefixedPath("secure", relative));
+        }
         Err(HostError::new(format!(
             "Physical path is outside configured runtime and workspace roots: {}",
             path.display()
         )))
     }
+}
+
+/// Resolves the legacy secure storage namespace beside the runtime root.
+fn legacySecurePath(runtimeRoot: &Path, segments: &[&str]) -> HostResult<PathBuf> {
+    let mut resolved = runtimeRoot.parent().map(Path::to_path_buf).ok_or_else(|| {
+        HostError::new(format!(
+            "Runtime root has no parent for secure storage: {}",
+            runtimeRoot.display()
+        ))
+    })?;
+    resolved.push("secure");
+    for segment in segments {
+        resolved.push(segment);
+    }
+    Ok(resolved)
 }
 
 impl RuntimeStorageHost for AppleRuntimeStorageHost {
@@ -92,6 +112,16 @@ impl RuntimeStorageHost for AppleRuntimeStorageHost {
     #[allow(non_snake_case)]
     fn readBytes(&self, path: &str) -> HostResult<Vec<u8>> {
         Ok(fs::read(self.resolve(path)?)?)
+    }
+
+    /// Reads one bounded byte range from Apple runtime storage.
+    fn readBytesRange(&self, path: &str, offset: u64, length: usize) -> HostResult<Vec<u8>> {
+        let mut file = fs::File::open(self.resolve(path)?)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; length];
+        let count = file.read(&mut bytes)?;
+        bytes.truncate(count);
+        Ok(bytes)
     }
 
     /// Writes bytes into Apple runtime storage.

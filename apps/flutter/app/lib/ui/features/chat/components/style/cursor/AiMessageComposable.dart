@@ -1,14 +1,13 @@
 // ignore_for_file: file_names
 
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
-import '../../../../../common/markdown/StreamMarkdownRenderer.dart';
 import '../../../../../common/markdown/StreamMarkdownRendererState.dart';
 import '../../../../../../data/preferences/UserPreferencesManager.dart';
 import '../../../../../theme/OperitTheme.dart';
+import '../../../../../theme/OperitThemeAssets.dart';
 import '../bubble/BubbleSurface.dart';
+import '../../part/StructuredMessagePartRenderer.dart';
 import '../../part/ThinkToolsXmlNodeGrouper.dart';
 import '../../../viewmodel/ChatViewModel.dart';
 
@@ -34,6 +33,7 @@ class _AiMessageComposableState extends State<AiMessageComposable> {
   late StreamMarkdownRendererState _rendererState;
   late int _messageTimestamp;
 
+  /// Creates persistent Markdown renderer state for this message widget.
   @override
   void initState() {
     super.initState();
@@ -41,6 +41,7 @@ class _AiMessageComposableState extends State<AiMessageComposable> {
     _rendererState = StreamMarkdownRendererState();
   }
 
+  /// Resets renderer state when the widget is reused for another message.
   @override
   void didUpdateWidget(covariant AiMessageComposable oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -50,6 +51,7 @@ class _AiMessageComposableState extends State<AiMessageComposable> {
     }
   }
 
+  /// Builds either the live event renderer or the persisted part renderer.
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -127,14 +129,14 @@ class _AiMessageComposableState extends State<AiMessageComposable> {
         ),
         child: KeyedSubtree(
           key: ValueKey<int>(widget.message.timestamp),
-          child: StreamMarkdownRenderer(
-            content: widget.message.content,
+          child: StreamingStructuredMessageRenderer(
+            parts: widget.message.parts,
             contentStream: widget.message.contentStream,
             isStreaming: widget.isStreaming,
             textColor: aiTextColor,
             backgroundColor: useCardStyle ? aiBubbleColor : colorScheme.surface,
             nodeGrouper: nodeGrouper,
-            state: _rendererState,
+            streamState: _rendererState,
             showThinkingProcess: themePreferenceSnapshot.showThinkingProcess,
           ),
         ),
@@ -230,6 +232,7 @@ Color? _optionalColor(int? value) {
 }
 
 class _MessageAvatar extends StatelessWidget {
+  /// Creates a cursor-style AI avatar from an imported theme asset.
   const _MessageAvatar({
     required this.imagePath,
     required this.backgroundColor,
@@ -259,7 +262,7 @@ class _MessageAvatar extends StatelessWidget {
         ),
         clipBehavior: Clip.antiAlias,
         child: avatarImagePath != null && avatarImagePath.isNotEmpty
-            ? Image.file(File(avatarImagePath), fit: BoxFit.cover)
+            ? ThemeAssetImage(storagePath: avatarImagePath, fit: BoxFit.cover)
             : Image.asset(_operitAvatarAsset, fit: BoxFit.cover),
       ),
     );

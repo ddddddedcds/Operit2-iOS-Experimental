@@ -1,17 +1,22 @@
-use std::fs;
-use std::path::Path;
-
 use crate::package::{
     EnvVar, LocalizedText, PackageTool, PackageToolParameter, ToolPackage, ToolPackageState,
 };
+use crate::toolpkg::ToolPkgProtection;
+use operit_host_api::FileSystemHost;
 
 /// Loads and parses standalone JavaScript plugin packages.
 pub struct JsPackageLoader;
 
 impl JsPackageLoader {
-    /// Loads a JavaScript package from a source file.
-    pub fn load_from_file(file: &Path) -> Result<ToolPackage, String> {
-        let js_content = fs::read_to_string(file).map_err(|error| error.to_string())?;
+    /// Loads a JavaScript package through the supplied file-system host.
+    pub fn load_from_file(
+        fileSystemHost: &dyn FileSystemHost,
+        sourcePath: &str,
+    ) -> Result<ToolPackage, String> {
+        let source_bytes = fileSystemHost
+            .readFileBytes(sourcePath)
+            .map_err(|error| error.to_string())?;
+        let js_content = ToolPkgProtection::decodeUtf8(&source_bytes)?;
         Self::parse(&js_content)
     }
 
@@ -51,14 +56,9 @@ impl JsPackageLoader {
 
     /// Parses package metadata represented as JSON, JSON5, or the supported HJSON-like form.
     pub fn parse_metadata(metadata_string: &str, script: &str) -> Result<ToolPackage, String> {
-        let normalized = normalize_hjson_like_metadata(metadata_string);
-        let value: serde_json::Value =
-            json5::from_str(&normalized).map_err(|error| error.to_string())?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| "Package metadata must be an object".to_string())?;
+        let object = Self::parse_metadata_object(metadata_string)?;
 
-        let name = string_field(object, "name");
+        let name = string_field(&object, "name");
         if name.is_empty() {
             return Err("Package metadata must have a name".to_string());
         }
@@ -93,17 +93,30 @@ impl JsPackageLoader {
             tools,
             states,
             env,
-            is_built_in: bool_field(object, "isBuiltIn") || bool_field(object, "is_built_in"),
-            enabled_by_default: bool_field(object, "enabledByDefault")
-                || bool_field(object, "enabled_by_default"),
+            is_built_in: bool_field(&object, "isBuiltIn") || bool_field(&object, "is_built_in"),
+            enabled_by_default: bool_field(&object, "enabledByDefault")
+                || bool_field(&object, "enabled_by_default"),
             display_name: localized_text_field(
                 object
                     .get("display_name")
                     .or_else(|| object.get("displayName")),
             ),
-            category: non_empty_or(string_field(object, "category"), "Other"),
+            category: non_empty_or(string_field(&object, "category"), "Other"),
             author: string_list_field(object.get("author")),
         })
+    }
+
+    /// Parses standalone package metadata into its structured JSON object representation.
+    pub fn parse_metadata_object(
+        metadata_string: &str,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let normalized = normalize_hjson_like_metadata(metadata_string);
+        let value: serde_json::Value =
+            json5::from_str(&normalized).map_err(|error| error.to_string())?;
+        value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "Package metadata must be an object".to_string())
     }
 
     /// Extracts the `METADATA` block embedded in a JavaScript package.
@@ -459,6 +472,38 @@ mod tests {
         assert!(package.enabled_by_default);
         assert_eq!(package.tools.len(), 1);
         assert_eq!(package.tools[0].name, "echo");
+        assert_eq!(package.tools[0].script, source);
+    }
+
+    /// Verifies package metadata still parses when the executable body is minified.
+    #[test]
+    fn parses_metadata_from_minified_package_body() {
+        let source = r#"/* METADATA
+{
+  name: minified_package
+  displayName: Minified Package
+  enabledByDefault: true
+  tools: [
+    {
+      name: echo
+      description: Echo text
+      parameters: [
+        { name: text, description: Text to echo, type: string, required: true }
+      ]
+    }
+  ]
+}
+*/"use strict";Object.defineProperty(exports,"__esModule",{value:!0});exports.echo=function(t){return t.text};"#;
+
+        let package = JsPackageLoader::parse(source).expect("package metadata should parse");
+
+        assert_eq!(package.name, "minified_package");
+        assert_eq!(package.display_name.resolve(true), "Minified Package");
+        assert!(package.enabled_by_default);
+        assert_eq!(package.tools.len(), 1);
+        assert_eq!(package.tools[0].name, "echo");
+        assert_eq!(package.tools[0].parameters.len(), 1);
+        assert_eq!(package.tools[0].parameters[0].name, "text");
         assert_eq!(package.tools[0].script, source);
     }
 }

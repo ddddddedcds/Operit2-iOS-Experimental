@@ -506,6 +506,7 @@ pub enum ToolPkgHookEventName {
     Variant4(ToolPkgHookEventNameVariant4),
     Variant5(ToolPkgChatInputEventName),
     Variant6(ToolPkgChatViewEventName),
+    Variant16(ToolPkgChatMessageEventName),
     Variant7(ToolPkgHookEventNameVariant7),
     Variant8(ToolPkgToolLifecycleEventName),
     Variant9(ToolPkgPromptInputEventName),
@@ -642,6 +643,12 @@ pub enum ToolPkgChatViewEventName {
     ViewUpdated,
     #[serde(rename = "view_closed")]
     ViewClosed,
+}
+/// Names chat message persistence notifications.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum ToolPkgChatMessageEventName {
+    #[serde(rename = "message_persisted")]
+    MessagePersisted,
 }
 /// Controls chat input handling and optionally supplies replacement text or metadata.
 pub struct ToolPkgChatInputHookObjectResult {
@@ -958,9 +965,22 @@ pub struct ToolPkgSummaryGenerateEventPayload {
     pub metadata: Option<ToolPkgHookMetadata>,
 }
 /// Enumerates immediate and asynchronous results accepted from a tool lifecycle hook.
+pub struct ToolPkgToolLifecycleHookObjectResult {
+    /// Selects whether the intercepted tool call may continue.
+    pub action: Option<String>,
+    /// Explains why the intercepted tool call was blocked.
+    pub reason: Option<String>,
+}
+/// Enumerates immediate and asynchronous results accepted from a tool lifecycle hook.
 pub enum ToolPkgToolLifecycleHookReturn {
-    Variant1(()),
-    Variant2(JsFuture<()>),
+    Variant1(ToolPkgToolLifecycleHookObjectResult),
+    Variant2(()),
+    Variant3(JsFuture<ToolPkgToolLifecycleHookReturnVariant3Output>),
+}
+/// Enumerates asynchronous results accepted from a tool lifecycle hook.
+pub enum ToolPkgToolLifecycleHookReturnVariant3Output {
+    Variant1(ToolPkgToolLifecycleHookObjectResult),
+    Variant2(()),
 }
 /// Enumerates immediate and asynchronous results accepted from a prompt input hook.
 pub enum ToolPkgPromptInputHookReturn {
@@ -1029,6 +1049,9 @@ pub type ToolPkgInputMenuToggleHookHandler =
 /// Callback invoked when a chat input event is dispatched.
 pub type ToolPkgChatInputHookHandler =
     Arc<dyn Fn(ToolPkgChatInputHookEvent) -> ToolPkgChatInputHookReturn + Send + Sync>;
+/// Callback invoked after a chat message is persisted.
+pub type ToolPkgChatMessageHookHandler =
+    Arc<dyn Fn(ToolPkgChatMessageHookEvent) -> ToolPkgHookReturn + Send + Sync>;
 /// Callback invoked when a navigation entry action event is dispatched.
 pub type ToolPkgNavigationEntryActionHookHandler =
     Arc<dyn Fn(ToolPkgNavigationEntryActionHookEvent) -> ToolPkgHookReturn + Send + Sync>;
@@ -1178,6 +1201,45 @@ pub struct ToolPkgChatViewEventPayload {
     /// Provides primary text displayed by the host UI.
     pub title: Option<String>,
 }
+/// Carries a persisted chat message supplied after storage succeeds.
+pub struct ToolPkgChatMessageEventPayload {
+    /// Preserves additional JSON properties supplied with this chat message event payload.
+    pub base_json_object: ToolPkgJsonObject,
+    /// Identifies the conversation associated with the event.
+    pub chatId: Option<String>,
+    /// Identifies the persisted message by its message timestamp.
+    pub timestamp: Option<f64>,
+    /// Identifies the message source stored by the host.
+    pub sender: Option<String>,
+    /// Provides the display role name associated with the message.
+    pub roleName: Option<String>,
+    /// Contains the persisted message content.
+    pub content: Option<String>,
+    /// Records when assistant generation completed, in epoch milliseconds.
+    pub completedAt: Option<f64>,
+    /// Identifies the provider used for the message when available.
+    pub provider: Option<String>,
+    /// Identifies the model used for the message when available.
+    pub modelName: Option<String>,
+    /// Stores prompt token usage associated with the message.
+    pub inputTokens: Option<i64>,
+    /// Stores completion token usage associated with the message.
+    pub outputTokens: Option<i64>,
+    /// Stores cached prompt token usage associated with the message.
+    pub cachedInputTokens: Option<i64>,
+    /// Records when the model request was sent, in epoch milliseconds.
+    pub sentAt: Option<f64>,
+    /// Records model output duration in milliseconds.
+    pub outputDurationMs: Option<f64>,
+    /// Records model wait duration in milliseconds.
+    pub waitDurationMs: Option<f64>,
+    /// Identifies how the message is displayed by the host.
+    pub displayMode: Option<String>,
+    /// Identifies the selected variant index for this timestamp.
+    pub selectedVariantIndex: Option<f64>,
+    /// Reports whether the user marked the message as favorite.
+    pub isFavorite: Option<bool>,
+}
 /// Carries navigation entry action data supplied when the event is dispatched.
 pub struct ToolPkgNavigationEntryActionEventPayload {
     /// Preserves additional JSON properties supplied with this navigation entry action event payload.
@@ -1232,6 +1294,12 @@ pub struct ToolPkgChatViewHookEvent {
     /// Carries shared dispatch metadata and the typed payload for this chat view hook event.
     pub base_hook_event_base:
         ToolPkgHookEventBase<ToolPkgChatViewEventName, ToolPkgChatViewEventPayload>,
+}
+/// Combines shared dispatch metadata with the typed payload for a chat message hook.
+pub struct ToolPkgChatMessageHookEvent {
+    /// Carries shared dispatch metadata and the typed payload for this chat message hook event.
+    pub base_hook_event_base:
+        ToolPkgHookEventBase<ToolPkgChatMessageEventName, ToolPkgChatMessageEventPayload>,
 }
 /// Combines shared dispatch metadata with the typed payload for a navigation entry action hook.
 pub struct ToolPkgNavigationEntryActionHookEvent {
@@ -1553,6 +1621,9 @@ pub enum ToolPkgNavigationSurface {
     /// Places the entry in the main sidebar plugin section.
     #[serde(rename = "main_sidebar_plugins")]
     MainSidebarPlugins,
+    /// Places an icon button in the application top bar.
+    #[serde(rename = "app_bar")]
+    AppBar,
 }
 /// Describes a plugin action exposed through a host navigation surface.
 pub struct ToolPkgNavigationEntryRegistration {
@@ -1639,6 +1710,13 @@ pub struct ToolPkgChatViewHookRegistration {
     pub id: String,
     /// Provides the callback invoked for this chat view hook registration.
     pub function: ToolPkgHookHandler<ToolPkgChatViewHookEvent>,
+}
+/// Configures and identifies a chat message persistence hook registration.
+pub struct ToolPkgChatMessageHookRegistration {
+    /// Uniquely identifies this chat message hook registration within the package.
+    pub id: String,
+    /// Provides the callback invoked for this chat message hook registration.
+    pub function: ToolPkgChatMessageHookHandler,
 }
 /// Identifies a supported host event timer source.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -2251,6 +2329,35 @@ pub enum ToolPkgRuntimeKind {
     #[serde(rename = "provider")]
     Provider,
 }
+/// Identifies the scalar ABI value type used by ToolPkg WASM exports.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum ToolPkgWasmValueType {
+    /// Identifies a signed 32-bit integer value.
+    #[serde(rename = "i32")]
+    I32,
+    /// Identifies a signed 64-bit integer value.
+    #[serde(rename = "i64")]
+    I64,
+    /// Identifies a 32-bit floating-point value.
+    #[serde(rename = "f32")]
+    F32,
+    /// Identifies a 64-bit floating-point value.
+    #[serde(rename = "f64")]
+    F64,
+}
+/// Stores one scalar value passed into or returned from a ToolPkg WASM export.
+pub enum ToolPkgWasmScalarValue {
+    Variant1(f64),
+    Variant2(String),
+    Null,
+}
+/// Describes one scalar ABI argument for a ToolPkg WASM export.
+pub struct ToolPkgWasmArg {
+    /// Identifies the scalar ABI type.
+    pub r#type: ToolPkgWasmValueType,
+    /// Stores the scalar argument value.
+    pub value: ToolPkgWasmScalarValue,
+}
 ///Metadata passed to a handler registered with {@link IpcApi.on}.
 pub struct ToolPkgIpcMeta {
     ///Channel name used for this call.
@@ -2304,10 +2411,25 @@ pub trait ToolPkgIpcApiMethods: Send + Sync {
         options: Option<ToolPkgIpcCallOptions>,
     ) -> JsFuture<TResult>;
 }
+/// Represents the WASM API exposed on a ToolPkg registry.
+pub struct ToolPkgWasmApi;
+
+/// Calls scalar ToolPkg WASM exports declared by the current package manifest.
+pub trait ToolPkgWasmApiMethods: Send + Sync {
+    /// Calls one WASM export and resolves with its scalar result.
+    fn call(
+        &self,
+        moduleId: String,
+        exportName: String,
+        args: Option<Vec<ToolPkgWasmArg>>,
+    ) -> JsFuture<ToolPkgWasmScalarValue>;
+}
 /// Provides IPC and registration services for the current ToolPkg package.
 pub struct ToolPkgRegistry {
     /// Exposes inter-context messaging for this ToolPkg registry.
     pub ipc: ToolPkgIpcApi,
+    /// Exposes declared WASM exports for this ToolPkg registry.
+    pub wasm: ToolPkgWasmApi,
 }
 /// Requires the host to implement every registry methods operation.
 pub trait ToolPkgRegistryMethods: Send + Sync {
@@ -2337,6 +2459,8 @@ pub trait ToolPkgRegistryMethods: Send + Sync {
     fn registerChatInputHook(&self, definition: ToolPkgChatInputHookRegistration) -> ();
     /// Registers a callback for chat view lifecycle changes.
     fn registerChatViewHook(&self, definition: ToolPkgChatViewHookRegistration) -> ();
+    /// Registers a callback for persisted chat message notifications.
+    fn registerChatMessageHook(&self, definition: ToolPkgChatMessageHookRegistration) -> ();
     /// Registers a typed timer, interval, or broadcast hook.
     fn registerHostEventHook_overload_1<TPayload>(
         &self,
@@ -2426,6 +2550,8 @@ pub trait GlobalHost: Send + Sync {
     fn registerToolPkgChatInputHook(&self, definition: ToolPkgChatInputHookRegistration) -> ();
     /// Registers a callback for chat view lifecycle changes. The global binding delegates to the active ToolPkg registry.
     fn registerToolPkgChatViewHook(&self, definition: ToolPkgChatViewHookRegistration) -> ();
+    /// Registers a callback for persisted chat message notifications. The global binding delegates to the active ToolPkg registry.
+    fn registerToolPkgChatMessageHook(&self, definition: ToolPkgChatMessageHookRegistration) -> ();
     /// Registers a typed timer, interval, or broadcast hook. The global binding delegates to the active ToolPkg registry.
     fn registerToolPkgHostEventHook_overload_1<TPayload>(
         &self,

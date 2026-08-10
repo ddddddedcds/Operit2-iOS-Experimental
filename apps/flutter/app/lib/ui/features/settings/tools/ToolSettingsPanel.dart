@@ -44,6 +44,8 @@ class _ToolSettingsPanelState extends State<ToolSettingsPanel> {
       ),
       mcpStartupTimeoutSeconds: await widget.clients.preferencesApiPreferences
           .getMcpStartupTimeoutSeconds(),
+      toolPkgPreHookTimeoutSeconds: await widget.clients.preferencesApiPreferences
+          .getToolPkgPreHookTimeoutSeconds(),
     );
   }
 
@@ -80,6 +82,23 @@ class _ToolSettingsPanelState extends State<ToolSettingsPanel> {
     await widget.clients.preferencesApiPreferences.saveMcpStartupTimeoutSeconds(
       seconds: seconds,
     );
+    _reload();
+  }
+
+  /// Edits the total deadline shared by one ToolPkg pre-hook chain.
+  Future<void> _editToolPkgPreHookTimeout(_ToolSettingsData data) async {
+    final l10n = AppLocalizations.of(context)!;
+    final seconds = await _NumberInputDialog.show(
+      context: context,
+      title: l10n.settingsToolsToolPkgPreHookTimeout,
+      label: l10n.settingsToolsToolPkgPreHookTimeoutSeconds,
+      initialValue: data.toolPkgPreHookTimeoutSeconds,
+    );
+    if (seconds == null) {
+      return;
+    }
+    await widget.clients.preferencesApiPreferences
+        .saveToolPkgPreHookTimeoutSeconds(seconds: seconds);
     _reload();
   }
 
@@ -148,6 +167,22 @@ class _ToolSettingsPanelState extends State<ToolSettingsPanel> {
                     child: Text(l10n.edit),
                   ),
                 ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  visualDensity: VisualDensity.compact,
+                  leading: const Icon(Icons.timer_outlined),
+                  title: Text(l10n.settingsToolsToolPkgPreHookTimeout),
+                  subtitle: Text(
+                    l10n.settingsToolsToolPkgPreHookDescription(
+                      data.toolPkgPreHookTimeoutSeconds,
+                    ),
+                  ),
+                  trailing: TextButton(
+                    onPressed: () => _editToolPkgPreHookTimeout(data),
+                    child: Text(l10n.edit),
+                  ),
+                ),
                 const Divider(height: 24),
                 _AdvancedHostSummary(host: data.host),
               ],
@@ -165,12 +200,14 @@ class _ToolSettingsData {
     required this.host,
     required this.hostRequirements,
     required this.mcpStartupTimeoutSeconds,
+    required this.toolPkgPreHookTimeoutSeconds,
   });
 
   final core_proxy.AiPermissionMode permissionMode;
   final core_proxy.RuntimeHostDescriptor host;
   final List<_HostRequirement> hostRequirements;
   final int mcpStartupTimeoutSeconds;
+  final int toolPkgPreHookTimeoutSeconds;
 }
 
 enum _PermissionMode {
@@ -439,13 +476,16 @@ class _HostRequirement {
     required this.action,
   });
 
-  factory _HostRequirement.fromJson(Map<Object?, Object?> json) {
+  /// Creates a display requirement from the generated runtime host descriptor.
+  factory _HostRequirement.fromHostRequirement(
+    core_proxy.HostOnboardingRequirement requirement,
+  ) {
     return _HostRequirement(
-      id: json['id'] as String,
-      title: json['title'] as String,
-      description: json['description'] as String,
-      status: json['status'] as String,
-      action: json['action'] as String,
+      id: requirement.id,
+      title: requirement.title,
+      description: requirement.description,
+      status: requirement.status.value,
+      action: requirement.action.value,
     );
   }
 
@@ -629,13 +669,13 @@ class _HostAuthorizationBridge {
       return const <_HostRequirement>[];
     }
     final statusById = await _requirementStatus(host.id);
-    return host.onboardingRequirements.map((item) {
-      final requirement = _HostRequirement.fromJson(
-        Map<Object?, Object?>.from(item as Map),
-      );
-      final status = statusById[requirement.id] as String;
-      return requirement.withStatus(status);
-    }).toList(growable: false);
+    return host.onboardingRequirements
+        .map((item) {
+          final requirement = _HostRequirement.fromHostRequirement(item);
+          final status = statusById[requirement.id] as String;
+          return requirement.withStatus(status);
+        })
+        .toList(growable: false);
   }
 
   static Future<void> request(String hostId, String requirementId) {

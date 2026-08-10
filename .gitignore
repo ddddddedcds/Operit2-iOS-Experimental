@@ -89,6 +89,8 @@ DerivedData/
 apps/flutter/app/apple/Frameworks/
 apps/flutter/app/apple/downloads/
 apps/flutter/app/apple/.sherpa-staging/
+apps/flutter/app/apple/.ios-native-runtime-staging/
+apps/flutter/app/ios/Runner/python/
 
 # Rust
 target/
@@ -101,6 +103,23 @@ apps/flutter/app/lib/core/proxy/generated/
 apps/flutter/app/assets/web_access/
 apps/flutter/app/build/web
 apps/flutter/app/build/web/
+apps/web_access/web/operit_flutter_bridge.js
+apps/web_access/web/operit_flutter_bridge_bg.wasm
+apps/web_access/web/operit_flutter_bridge_worker.js
+apps/web_access/web/operit_messagepack.js
+apps/web_access/web/operit_runtime_bridge.js
+apps/web_access/web/operit_runtime_worker.js
+apps/web_access/web/operit_model_install_worker.js
+apps/web_access/web/v86_runtime_worker.js
+apps/web_access/web/operit_flutter_bridge*.d
+apps/web_access/web/operit_flutter_bridge*.d.ts
+apps/web_access/build/bundle/operit_flutter_bridge*.d
+apps/web_access/build/bundle/operit_flutter_bridge*.d.ts
+apps/web_access/web/sql-wasm.js
+apps/web_access/web/sql-wasm.wasm
+apps/web_access/web/v86/
+apps/web_access/v86/runtime/
+tools/web-runtime/.wrangler/
 
 # Local dependency extraction/package scratch
 package/
@@ -149,6 +168,23 @@ tools/android-runtime/*
 tools/android-runtime/build/
 tools/android-runtime/downloads/
 tools/android-runtime/sources/
+tools/ohos-runtime/build/
+tools/ohos-runtime/downloads/
+tools/ohos-runtime/sources/
+tools/ios-runtime/ish/*
+!tools/ios-runtime/ish/
+!tools/ios-runtime/ish/*.md
+!tools/ios-runtime/ish/*.py
+!tools/ios-runtime/ish/*.sh
+!tools/ios-runtime/ish/patches/
+!tools/ios-runtime/ish/patches/*.patch
+tools/ios-runtime/ish/build/
+tools/ios-runtime/ish/downloads/
+tools/ios-runtime/ish/sources/
+apps/flutter/app/apple/ish-build/
+apps/flutter/app/ios/Runner/ish-root.tar.gz
+apps/flutter/app/ohos/entry/hnp/
+apps/flutter/app/ohos/entry/src/main/resources/rawfile/ohos-vroot/
 
 # Plugin packaging outputs
 plugins/**/*.toolpkg
@@ -183,3 +219,4 @@ hosts/ios/deb/files/usr/bin/
 hosts/ios/deb/files/Library/MobileSubstrate/DynamicLibraries/*.dylib
 apps/flutter/app/ios/ScreenTimeMonitor/out/
 apps/flutter/app/ios/LiveActivityWidget/out/
+tools/ios-runtime/native/sources

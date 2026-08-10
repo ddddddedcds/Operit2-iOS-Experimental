@@ -319,8 +319,6 @@ pub enum TerminalType {
     Powershell,
     #[serde(rename = "bash")]
     Bash,
-    #[serde(rename = "linux")]
-    Linux,
     #[serde(rename = "shell")]
     Shell,
     #[serde(rename = "posix")]
@@ -332,7 +330,6 @@ impl TerminalType {
         match self {
             Self::Powershell => "powershell",
             Self::Bash => "bash",
-            Self::Linux => "linux",
             Self::Shell => "shell",
             Self::Posix => "posix",
         }
@@ -351,14 +348,69 @@ impl TryFrom<&str> for TerminalType {
         match value {
             "powershell" => Ok(Self::Powershell),
             "bash" => Ok(Self::Bash),
-            "linux" => Ok(Self::Linux),
             "shell" => Ok(Self::Shell),
             _ => Err(format!("invalid terminal type: {value}")),
         }
     }
 }
-/// Selects the command interpreter requested when creating a terminal session.
-pub type TerminalCreateType = TerminalType;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Identifies the concrete terminal implementation selected by a host.
+pub enum TerminalImplementation {
+    #[serde(rename = "native")]
+    Native,
+    #[serde(rename = "proot")]
+    Proot,
+    #[serde(rename = "android-system")]
+    AndroidSystem,
+    #[serde(rename = "adb")]
+    Adb,
+    #[serde(rename = "shell")]
+    Shell,
+    #[serde(rename = "ish")]
+    Ish,
+    #[serde(rename = "qemu-vroot")]
+    QemuVroot,
+    #[serde(rename = "v86")]
+    V86,
+}
+impl TerminalImplementation {
+    /// Returns the JavaScript terminal implementation literal.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Proot => "proot",
+            Self::AndroidSystem => "android-system",
+            Self::Adb => "adb",
+            Self::Shell => "shell",
+            Self::Ish => "ish",
+            Self::QemuVroot => "qemu-vroot",
+            Self::V86 => "v86",
+        }
+    }
+}
+impl std::fmt::Display for TerminalImplementation {
+    /// Writes the JavaScript terminal implementation literal.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+impl TryFrom<&str> for TerminalImplementation {
+    type Error = String;
+    /// Parses a JavaScript terminal implementation literal.
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "native" => Ok(Self::Native),
+            "proot" => Ok(Self::Proot),
+            "android-system" => Ok(Self::AndroidSystem),
+            "adb" => Ok(Self::Adb),
+            "shell" => Ok(Self::Shell),
+            "ish" => Ok(Self::Ish),
+            "qemu-vroot" => Ok(Self::QemuVroot),
+            "v86" => Ok(Self::V86),
+            _ => Err(format!("invalid terminal implementation: {value}")),
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 /// Reports the start or an incremental chunk of a streamed chat-message response.
 pub struct MessageSendStreamEventData {
@@ -824,10 +876,10 @@ pub struct ChatInfo {
     pub isCurrent: bool,
     ///Total input tokens used
     #[serde(rename = "inputTokens")]
-    pub inputTokens: i32,
+    pub inputTokens: i64,
     ///Total output tokens used
     #[serde(rename = "outputTokens")]
-    pub outputTokens: i32,
+    pub outputTokens: i64,
     #[serde(default, skip_serializing_if = "JsOptional::is_undefined")]
     ///Bound character card name (if any)
     #[serde(rename = "characterCardName")]
@@ -986,21 +1038,27 @@ pub struct CharacterCardListResultData {
     pub cards: Vec<CharacterCardInfo>,
 }
 #[derive(Clone, Serialize, Deserialize)]
-/// Reports the runtime platform, default terminal type, and available interpreters.
+/// Reports the primary terminal identity and available terminal implementations.
 pub struct TerminalInfoResultData {
     ///Current runtime platform, such as windows, linux, or android
     #[serde(rename = "platform")]
     pub platform: String,
-    ///Default terminal type for this platform
-    #[serde(rename = "defaultType")]
-    pub defaultType: TerminalType,
+    ///Primary terminal implementation selected by the host
+    #[serde(rename = "terminal")]
+    pub terminal: TerminalImplementation,
+    ///Primary shell semantics selected by the host
+    #[serde(rename = "terminalType")]
+    pub terminalType: TerminalType,
     ///Terminal types known to this host
     #[serde(rename = "types")]
     pub types: Vec<TerminalTypeInfoData>,
 }
 #[derive(Clone, Serialize, Deserialize)]
-/// Reports whether one terminal interpreter is available and describes its purpose.
+/// Reports one available terminal implementation and its shell semantics.
 pub struct TerminalTypeInfoData {
+    ///Terminal implementation id supported by a terminal host
+    #[serde(rename = "terminal")]
+    pub terminal: TerminalImplementation,
     ///Terminal type id supported by a terminal host
     #[serde(rename = "terminalType")]
     pub terminalType: TerminalType,
@@ -1026,6 +1084,12 @@ pub struct TerminalCommandResultData {
     ///ID of the terminal session used for execution
     #[serde(rename = "sessionId")]
     pub sessionId: String,
+    ///Host platform that executed the command
+    #[serde(rename = "platform")]
+    pub platform: String,
+    ///Terminal implementation that executed the command
+    #[serde(rename = "terminal")]
+    pub terminal: TerminalImplementation,
     ///Actual terminal type used for execution
     #[serde(rename = "terminalType")]
     pub terminalType: TerminalType,
@@ -1045,6 +1109,15 @@ pub struct TerminalStreamEventData {
     ///ID of the terminal session used for execution
     #[serde(rename = "sessionId")]
     pub sessionId: String,
+    ///Host platform that owns the terminal session
+    #[serde(rename = "platform")]
+    pub platform: String,
+    ///Terminal implementation that owns the terminal session
+    #[serde(rename = "terminal")]
+    pub terminal: TerminalImplementation,
+    ///Shell semantics used by the terminal session
+    #[serde(rename = "terminalType")]
+    pub terminalType: TerminalType,
     #[serde(default, skip_serializing_if = "JsOptional::is_undefined")]
     ///Incremental output chunk for "chunk" events
     #[serde(rename = "chunk")]
@@ -1073,6 +1146,12 @@ pub struct HiddenTerminalCommandResultData {
     ///Hidden executor key used for execution
     #[serde(rename = "executorKey")]
     pub executorKey: String,
+    ///Host platform that executed the command
+    #[serde(rename = "platform")]
+    pub platform: String,
+    ///Terminal implementation that executed the command
+    #[serde(rename = "terminal")]
+    pub terminal: TerminalImplementation,
     ///Actual terminal type used for execution
     #[serde(rename = "terminalType")]
     pub terminalType: TerminalType,
@@ -1089,6 +1168,12 @@ pub struct TerminalSessionCreationResultData {
     ///Name of the session
     #[serde(rename = "sessionName")]
     pub sessionName: String,
+    ///Host platform that created the terminal session
+    #[serde(rename = "platform")]
+    pub platform: String,
+    ///Terminal implementation that created the terminal session
+    #[serde(rename = "terminal")]
+    pub terminal: TerminalImplementation,
     ///Actual terminal type for the session
     #[serde(rename = "terminalType")]
     pub terminalType: TerminalType,
@@ -1115,6 +1200,12 @@ pub struct TerminalSessionScreenResultData {
     ///ID of the session
     #[serde(rename = "sessionId")]
     pub sessionId: String,
+    ///Host platform that owns the terminal session
+    #[serde(rename = "platform")]
+    pub platform: String,
+    ///Terminal implementation that owns the terminal session
+    #[serde(rename = "terminal")]
+    pub terminal: TerminalImplementation,
     ///Actual terminal type for the session
     #[serde(rename = "terminalType")]
     pub terminalType: TerminalType,
@@ -2000,18 +2091,22 @@ impl CharacterCardListResultData {
 }
 impl TerminalInfoResultData {
     #[allow(non_snake_case)]
-    /// Formats the platform, default terminal, and availability of each known terminal type.
+    /// Formats the primary terminal identity and availability of each known terminal implementation.
     pub fn toString(&self) -> String {
         let mut sb = String::new();
         sb.push_str("Terminal Info:\n");
         sb.push_str(&format!("Platform: {}\n", self.platform));
-        sb.push_str(&format!("Default Type: {}\n", self.defaultType));
+        sb.push_str(&format!("Terminal: {}\n", self.terminal));
+        sb.push_str(&format!("Terminal Type: {}\n", self.terminalType));
         if !self.types.is_empty() {
             sb.push_str("Types:\n");
             for terminalType in &self.types {
                 sb.push_str(&format!(
-                    "- {}: available={} ({})\n",
-                    terminalType.terminalType, terminalType.available, terminalType.description
+                    "- {}/{}: available={} ({})\n",
+                    terminalType.terminal,
+                    terminalType.terminalType,
+                    terminalType.available,
+                    terminalType.description
                 ));
             }
         }
@@ -2026,6 +2121,8 @@ impl TerminalCommandResultData {
         sb.push_str("Terminal Command Execution Result:\n");
         sb.push_str(&format!("Command: {}\n", self.command));
         sb.push_str(&format!("Session: {}\n", self.sessionId));
+        sb.push_str(&format!("Platform: {}\n", self.platform));
+        sb.push_str(&format!("Terminal: {}\n", self.terminal));
         sb.push_str(&format!("Terminal Type: {}\n", self.terminalType));
         sb.push_str(&format!("Exit Code: {}\n", self.exitCode));
         if self.timedOut {
@@ -2060,6 +2157,8 @@ impl HiddenTerminalCommandResultData {
         sb.push_str("Hidden Terminal Command Execution Result:\n");
         sb.push_str(&format!("Command: {}\n", self.command));
         sb.push_str(&format!("Executor Key: {}\n", self.executorKey));
+        sb.push_str(&format!("Platform: {}\n", self.platform));
+        sb.push_str(&format!("Terminal: {}\n", self.terminal));
         sb.push_str(&format!("Terminal Type: {}\n", self.terminalType));
         sb.push_str(&format!("Exit Code: {}\n", self.exitCode));
         if self.timedOut {
@@ -2077,13 +2176,13 @@ impl TerminalSessionCreationResultData {
     pub fn toString(&self) -> String {
         if self.isNewSession {
             format!(
-                "Successfully created new terminal session. Session Name: '{}', Session ID: {}",
-                self.sessionName, self.sessionId
+                "Successfully created new terminal session. Session Name: '{}', Session ID: {}, Terminal: {}/{}/{}",
+                self.sessionName, self.sessionId, self.platform, self.terminal, self.terminalType
             )
         } else {
             format!(
-                "Successfully retrieved existing terminal session. Session Name: '{}', Session ID: {}",
-                self.sessionName, self.sessionId
+                "Successfully retrieved existing terminal session. Session Name: '{}', Session ID: {}, Terminal: {}/{}/{}",
+                self.sessionName, self.sessionId, self.platform, self.terminal, self.terminalType
             )
         }
     }
@@ -2095,6 +2194,8 @@ impl TerminalSessionScreenResultData {
         let mut sb = String::new();
         sb.push_str("Terminal Session Screen Snapshot:\n");
         sb.push_str(&format!("Session: {}\n", self.sessionId));
+        sb.push_str(&format!("Platform: {}\n", self.platform));
+        sb.push_str(&format!("Terminal: {}\n", self.terminal));
         sb.push_str(&format!("Terminal Type: {}\n", self.terminalType));
         sb.push_str(&format!("Size: {}x{}\n", self.cols, self.rows));
         sb.push_str(&format!("Command Running: {}\n", self.commandRunning));

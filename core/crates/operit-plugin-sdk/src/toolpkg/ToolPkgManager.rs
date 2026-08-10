@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use operit_host_api::FileSystemHost;
 use serde_json::Value;
 
 use crate::javascript::JsExecutionEngine;
@@ -35,6 +34,7 @@ pub trait ToolPkgAssetSource: Send + Sync {
 struct ToolPkgExecutionEngineEntry {
     containerPackageName: String,
     engine: Arc<dyn JsExecutionEngine>,
+    activeLeases: usize,
 }
 
 /// Manages loaded ToolPkg runtimes, resources, listeners, and execution engines.
@@ -46,6 +46,7 @@ pub struct ToolPkgManager {
     toolPkgExecutionEngines: Arc<Mutex<BTreeMap<String, ToolPkgExecutionEngineEntry>>>,
     executionEngineFactory: Arc<dyn ToolPkgExecutionEngineFactory>,
     assetSource: Arc<dyn ToolPkgAssetSource>,
+    fileSystemHost: Arc<dyn FileSystemHost>,
 }
 
 impl ToolPkgManager {
@@ -53,6 +54,7 @@ impl ToolPkgManager {
     pub fn new(
         executionEngineFactory: Arc<dyn ToolPkgExecutionEngineFactory>,
         assetSource: Arc<dyn ToolPkgAssetSource>,
+        fileSystemHost: Arc<dyn FileSystemHost>,
     ) -> Self {
         Self {
             containers: BTreeMap::new(),
@@ -61,6 +63,7 @@ impl ToolPkgManager {
             toolPkgExecutionEngines: Arc::new(Mutex::new(BTreeMap::new())),
             executionEngineFactory,
             assetSource,
+            fileSystemHost,
         }
     }
 
@@ -330,9 +333,46 @@ impl ToolPkgManager {
             ToolPkgExecutionEngineEntry {
                 containerPackageName: normalizedContainer.to_string(),
                 engine: engine.clone(),
+                activeLeases: 0,
             },
         );
         engine
+    }
+
+    /// Acquires one counted lease for a ToolPkg JavaScript execution context.
+    #[allow(non_snake_case)]
+    pub fn acquireToolPkgExecutionEngine(&self, contextKey: &str, containerPackageName: &str) {
+        let normalizedKey = contextKey.trim();
+        let normalizedContainer = containerPackageName.trim();
+        assert!(
+            !normalizedKey.is_empty(),
+            "ToolPkg execution context key is required"
+        );
+        assert!(
+            !normalizedContainer.is_empty(),
+            "ToolPkg execution container is required"
+        );
+        let mut engines = self
+            .toolPkgExecutionEngines
+            .lock()
+            .expect("toolpkg execution engine mutex poisoned");
+        if let Some(entry) = engines.get_mut(normalizedKey) {
+            assert_eq!(
+                entry.containerPackageName, normalizedContainer,
+                "ToolPkg execution context belongs to a different container"
+            );
+            entry.activeLeases += 1;
+            return;
+        }
+        let engine = self.executionEngineFactory.createToolPkgExecutionEngine();
+        engines.insert(
+            normalizedKey.to_string(),
+            ToolPkgExecutionEngineEntry {
+                containerPackageName: normalizedContainer.to_string(),
+                engine,
+                activeLeases: 1,
+            },
+        );
     }
 
     /// Finds a cached ToolPkg execution engine without creating one.
@@ -359,7 +399,7 @@ impl ToolPkgManager {
         Some(entry.engine.clone())
     }
 
-    /// Releases a cached ToolPkg JavaScript execution engine.
+    /// Releases one counted lease for a ToolPkg JavaScript execution context.
     #[allow(non_snake_case)]
     pub fn releaseToolPkgExecutionEngine(&self, contextKey: &str, containerPackageName: &str) {
         let normalizedKey = contextKey.trim();
@@ -372,13 +412,23 @@ impl ToolPkgManager {
                 .toolPkgExecutionEngines
                 .lock()
                 .expect("toolpkg execution engine mutex poisoned");
-            if let Some(entry) = engines.get(normalizedKey) {
-                assert_eq!(
-                    entry.containerPackageName, normalizedContainer,
-                    "ToolPkg execution context belongs to a different container"
-                );
+            let Some(entry) = engines.get_mut(normalizedKey) else {
+                return;
+            };
+            assert_eq!(
+                entry.containerPackageName, normalizedContainer,
+                "ToolPkg execution context belongs to a different container"
+            );
+            assert!(
+                entry.activeLeases > 0,
+                "ToolPkg execution context has no active lease"
+            );
+            entry.activeLeases -= 1;
+            if entry.activeLeases == 0 {
+                engines.remove(normalizedKey)
+            } else {
+                None
             }
-            engines.remove(normalizedKey)
         };
         if let Some(entry) = removed {
             entry.engine.destroy();
@@ -452,20 +502,26 @@ impl ToolPkgManager {
     ) -> Option<Vec<u8>> {
         let normalizedResourcePath = normalizeToolPkgEntryPath(resourcePath)?;
         match runtime.sourceType {
-            ToolPkgSourceType::EXTERNAL => {
-                let sourcePath = PathBuf::from(&runtime.sourcePath);
-                if sourcePath.is_dir() {
-                    let bytes = fs::read(sourcePath.join(&normalizedResourcePath)).ok()?;
+            ToolPkgSourceType::EXTERNAL | ToolPkgSourceType::MARKET => {
+                let sourceInfo = self.fileSystemHost.fileExists(&runtime.sourcePath).ok()?;
+                if sourceInfo.isDirectory {
+                    let resourceFile =
+                        joinToolPkgSourcePath(&runtime.sourcePath, &normalizedResourcePath);
+                    let bytes = self.fileSystemHost.readFileBytes(&resourceFile).ok()?;
                     return crate::toolpkg::ToolPkgProtection::decryptIfNeeded(&bytes).ok();
                 }
-                if sourcePath.is_file()
-                    && sourcePath
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("toolpkg"))
+                if sourceInfo.exists
+                    && runtime
+                        .sourcePath
+                        .to_ascii_lowercase()
+                        .ends_with(".toolpkg")
                 {
-                    let file = fs::File::open(sourcePath).ok()?;
-                    let mut archive = zip::ZipArchive::new(file).ok()?;
+                    let archiveBytes = self
+                        .fileSystemHost
+                        .readFileBytes(&runtime.sourcePath)
+                        .ok()?;
+                    let mut archive =
+                        zip::ZipArchive::new(std::io::Cursor::new(archiveBytes)).ok()?;
                     let mut entry = archive.by_name(&normalizedResourcePath).ok()?;
                     let mut bytes = Vec::new();
                     entry.read_to_end(&mut bytes).ok()?;
@@ -484,6 +540,11 @@ impl ToolPkgManager {
             }
         }
     }
+}
+
+/// Joins a normalized ToolPkg entry beneath one host-owned source directory.
+fn joinToolPkgSourcePath(sourcePath: &str, entryPath: &str) -> String {
+    format!("{}/{}", sourcePath.trim_end_matches(['/', '\\']), entryPath)
 }
 
 impl ToolPkgHookDispatcher for ToolPkgManager {
@@ -607,14 +668,14 @@ impl ToolPkgHookDispatcher for ToolPkgManager {
         let contextKey = resolveToolPkgExecutionContextKey(&runtime.packageName, &params);
         let engine = self.getToolPkgExecutionEngine(&contextKey, &runtime.packageName);
         engine
-            .execute_script_function(
+            .execute_script_function_with_timeout_millis(
                 &script,
                 &invocation.functionName,
                 &params,
                 &invocation.envOverrides,
                 invocation.onIntermediateResult,
                 invocation.dispatchIntermediateOnMain,
-                invocation.timeoutSec,
+                invocation.timeoutMillis,
             )
             .map_err(|error| error.to_string())
     }
@@ -661,6 +722,127 @@ mod tests {
     use super::*;
     use crate::execution_result::JsExecutionResult;
     use crate::javascript::ToolPkgMainRegistrationCapture;
+    use operit_host_api::{
+        FileEntry, FileExistence, FileInfo, FindFilesRequest, GrepCodeRequest, GrepCodeResult,
+        HostEnvironmentDescriptor, HostError, HostResult,
+    };
+
+    /// Rejects filesystem operations because these engine lifecycle tests do not access files.
+    struct RejectingFileSystemHost;
+
+    impl RejectingFileSystemHost {
+        /// Returns the explicit error used for unsupported test filesystem operations.
+        fn unsupported<T>() -> HostResult<T> {
+            Err(HostError::new("filesystem access is not used by this test"))
+        }
+    }
+
+    impl FileSystemHost for RejectingFileSystemHost {
+        /// Returns the test host label.
+        fn envLabel(&self) -> &str {
+            "test"
+        }
+
+        /// Returns the test environment descriptor.
+        fn environmentDescriptor(&self) -> HostEnvironmentDescriptor {
+            HostEnvironmentDescriptor::linux()
+        }
+
+        /// Rejects path validation.
+        fn validatePath(&self, _path: &str, _paramName: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects directory listing.
+        fn listFiles(&self, _path: &str) -> HostResult<Vec<FileEntry>> {
+            Self::unsupported()
+        }
+
+        /// Rejects text reads.
+        fn readFile(&self, _path: &str) -> HostResult<String> {
+            Self::unsupported()
+        }
+
+        /// Rejects bounded text reads.
+        fn readFileWithLimit(&self, _path: &str, _maxBytes: usize) -> HostResult<String> {
+            Self::unsupported()
+        }
+
+        /// Rejects byte reads.
+        fn readFileBytes(&self, _path: &str) -> HostResult<Vec<u8>> {
+            Self::unsupported()
+        }
+
+        /// Rejects text writes.
+        fn writeFile(&self, _path: &str, _content: &str, _append: bool) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects byte writes.
+        fn writeFileBytes(&self, _path: &str, _content: &[u8]) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects deletion.
+        fn deleteFile(&self, _path: &str, _recursive: bool) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects file existence checks.
+        fn fileExists(&self, _path: &str) -> HostResult<FileExistence> {
+            Self::unsupported()
+        }
+
+        /// Rejects moves.
+        fn moveFile(&self, _source: &str, _destination: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects copies.
+        fn copyFile(&self, _source: &str, _destination: &str, _recursive: bool) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects directory creation.
+        fn makeDirectory(&self, _path: &str, _createParents: bool) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects file searching.
+        fn findFiles(&self, _request: FindFilesRequest) -> HostResult<Vec<String>> {
+            Self::unsupported()
+        }
+
+        /// Rejects file metadata reads.
+        fn fileInfo(&self, _path: &str) -> HostResult<FileInfo> {
+            Self::unsupported()
+        }
+
+        /// Rejects code searches.
+        fn grepCode(&self, _request: GrepCodeRequest) -> HostResult<GrepCodeResult> {
+            Self::unsupported()
+        }
+
+        /// Rejects archive creation.
+        fn zipFiles(&self, _source: &str, _destination: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects archive extraction.
+        fn unzipFiles(&self, _source: &str, _destination: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects host file opening.
+        fn openFile(&self, _path: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+
+        /// Rejects host file sharing.
+        fn shareFile(&self, _path: &str, _title: &str) -> HostResult<()> {
+            Self::unsupported()
+        }
+    }
 
     /// Records whether a test execution engine was destroyed.
     #[derive(Default)]
@@ -683,6 +865,20 @@ mod tests {
             Ok(None)
         }
 
+        /// Returns no script result for exact-deadline registry tests.
+        fn execute_script_function_with_timeout_millis(
+            &self,
+            _script: &str,
+            _function_name: &str,
+            _params: &BTreeMap<String, Value>,
+            _env_overrides: &BTreeMap<String, String>,
+            _on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
+            _dispatch_intermediate_on_main: bool,
+            _timeout_millis: u64,
+        ) -> JsExecutionResult<Option<String>> {
+            Ok(None)
+        }
+
         /// Returns an empty ToolPkg registration capture for registry tests.
         fn execute_toolpkg_main_registration_function_with_text_resources(
             &self,
@@ -700,6 +896,7 @@ mod tests {
             _script: &str,
             _runtime_options: &BTreeMap<String, Value>,
             _env_overrides: &BTreeMap<String, String>,
+            _text_resources: Arc<BTreeMap<String, String>>,
         ) -> JsExecutionResult<Option<String>> {
             Ok(None)
         }
@@ -755,7 +952,11 @@ mod tests {
     /// Creates one manager and its recording engine factory.
     fn recordingManager() -> (ToolPkgManager, Arc<RecordingExecutionEngineFactory>) {
         let factory = Arc::new(RecordingExecutionEngineFactory::default());
-        let manager = ToolPkgManager::new(factory.clone(), Arc::new(EmptyAssetSource));
+        let manager = ToolPkgManager::new(
+            factory.clone(),
+            Arc::new(EmptyAssetSource),
+            Arc::new(RejectingFileSystemHost),
+        );
         (manager, factory)
     }
 
@@ -766,6 +967,38 @@ mod tests {
         let (manager, _) = recordingManager();
         manager.getToolPkgExecutionEngine("opaque-main-context", "package_a");
         manager.getToolPkgExecutionEngine("opaque-main-context", "package_b");
+    }
+
+    /// Verifies each acquired context lease keeps the engine alive until released.
+    #[test]
+    fn retainsExecutionEngineUntilEveryLeaseIsReleased() {
+        let (manager, factory) = recordingManager();
+        manager.acquireToolPkgExecutionEngine("shared-ui-context", "package_a");
+        manager.acquireToolPkgExecutionEngine("shared-ui-context", "package_a");
+
+        manager.releaseToolPkgExecutionEngine("shared-ui-context", "package_a");
+
+        let engines = factory
+            .engines
+            .lock()
+            .expect("recording engine factory mutex poisoned");
+        assert_eq!(engines.len(), 1);
+        assert!(!engines[0].destroyed.load(Ordering::Acquire));
+        drop(engines);
+        assert!(manager
+            .findToolPkgExecutionEngine("shared-ui-context", "package_a")
+            .is_some());
+
+        manager.releaseToolPkgExecutionEngine("shared-ui-context", "package_a");
+
+        let engines = factory
+            .engines
+            .lock()
+            .expect("recording engine factory mutex poisoned");
+        assert!(engines[0].destroyed.load(Ordering::Acquire));
+        assert!(manager
+            .findToolPkgExecutionEngine("shared-ui-context", "package_a")
+            .is_none());
     }
 
     /// Verifies container cleanup covers main, provider, and UI execution contexts.

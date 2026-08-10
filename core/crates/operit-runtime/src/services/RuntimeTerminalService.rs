@@ -1,14 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
-use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use operit_host_api::{
-    HiddenTerminalCommandOutput, HostError, HostResult, TerminalCloseOutput, TerminalCommandOutput,
-    TerminalHost, TerminalInfo, TerminalInputOutput, TerminalScreenOutput, TerminalSessionInfo,
-    TerminalSessionListEntry,
+    HostRuntimeTaskSchedulerHost, TerminalHost, TerminalInfo, TerminalSessionListEntry,
+    TerminalTypeInfo,
 };
 use operit_store::{
     PreferencesDataStore::{mutableStateFlow, MutableStateFlow, StateFlow},
@@ -20,13 +17,15 @@ use operit_host_api::HostManager::HostManager;
 use operit_tools::files::PathMapper::PathMapper;
 use operit_tools::files::VisualFileSystem::VisualFileSystem;
 use operit_util::stream::HotStream::MutableSharedStreamImpl;
-use operit_util::stream::Stream::Stream;
+use operit_util::stream::Stream::{CollectFuture, Stream};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Published terminal session metadata for UI session lists.
 pub struct RuntimeTerminalSessionInfo {
     pub sessionId: String,
     pub sessionName: String,
+    pub platform: String,
+    pub terminal: String,
     pub terminalType: String,
     pub sessionKind: String,
     pub workingDir: String,
@@ -37,11 +36,31 @@ pub struct RuntimeTerminalSessionInfo {
 /// Current terminal screen snapshot returned by the host.
 pub struct RuntimeTerminalScreen {
     pub sessionId: String,
+    pub platform: String,
+    pub terminal: String,
     pub terminalType: String,
     pub rows: i32,
     pub cols: i32,
     pub content: String,
     pub commandRunning: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes one terminal type that may be created by the active host.
+pub struct RuntimeTerminalTypeInfo {
+    pub terminal: String,
+    pub terminalType: String,
+    pub available: bool,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Describes all terminal types exposed by the active host.
+pub struct RuntimeTerminalInfo {
+    pub platform: String,
+    pub terminal: String,
+    pub terminalType: String,
+    pub types: Vec<RuntimeTerminalTypeInfo>,
 }
 
 /// Facade over host terminal APIs and shared terminal output streams.
@@ -66,8 +85,9 @@ impl RuntimeTerminalPtyOutputStream {
 impl Stream for RuntimeTerminalPtyOutputStream {
     type Item = String;
 
-    fn collect(&mut self, collector: &mut dyn FnMut(Self::Item)) {
-        self.upstream.collect(collector);
+    /// Collects PTY output asynchronously until the host closes the stream.
+    fn collect<'a>(&'a mut self, collector: &'a mut dyn FnMut(Self::Item)) -> CollectFuture<'a> {
+        self.upstream.collect(collector)
     }
 }
 
@@ -93,10 +113,36 @@ fn runtime_terminal_session_info(session: TerminalSessionListEntry) -> RuntimeTe
     RuntimeTerminalSessionInfo {
         sessionId: session.sessionId,
         sessionName: session.sessionName,
+        platform: session.platform,
+        terminal: session.terminal,
         terminalType: session.terminalType,
         sessionKind: session.sessionKind,
         workingDir: session.workingDir,
         commandRunning: session.commandRunning,
+    }
+}
+
+/// Converts one host terminal type descriptor into the Core proxy model.
+fn runtime_terminal_type_info(terminal_type: TerminalTypeInfo) -> RuntimeTerminalTypeInfo {
+    RuntimeTerminalTypeInfo {
+        terminal: terminal_type.terminal,
+        terminalType: terminal_type.terminalType,
+        available: terminal_type.available,
+        description: terminal_type.description,
+    }
+}
+
+/// Converts one host terminal capability descriptor into the Core proxy model.
+fn runtime_terminal_info(info: TerminalInfo) -> RuntimeTerminalInfo {
+    RuntimeTerminalInfo {
+        platform: info.platform,
+        terminal: info.terminal,
+        terminalType: info.terminalType,
+        types: info
+            .types
+            .into_iter()
+            .map(runtime_terminal_type_info)
+            .collect(),
     }
 }
 
@@ -134,36 +180,65 @@ fn close_terminal_pty_output_stream(sessionId: &str) {
 
 fn start_terminal_pty_output_reader(
     terminalHost: Arc<dyn TerminalHost>,
+    taskScheduler: Arc<dyn HostRuntimeTaskSchedulerHost>,
     sessionId: String,
     stream: MutableSharedStreamImpl<String>,
 ) {
-    thread::spawn(move || loop {
-        match terminalHost.readPtySession(&sessionId) {
-            Ok(data) => {
-                if !data.is_empty() {
-                    stream.emit(STANDARD.encode(data));
-                }
-            }
-            Err(_) => {
-                close_terminal_pty_output_stream(&sessionId);
-                break;
-            }
-        }
+    let scheduledTaskScheduler = taskScheduler.clone();
+    taskScheduler
+        .scheduleHostRuntimeTask(
+            "operit-terminal-pty-output",
+            Box::new(move || {
+                poll_terminal_pty_output(terminalHost, scheduledTaskScheduler, sessionId, stream);
+            }),
+        )
+        .expect("terminal PTY output task must be scheduled");
+}
 
-        match terminalHost.pollPtyExitCode(&sessionId) {
-            Ok(Some(_)) => {
-                publish_terminal_sessions(&terminalHost)
-                    .expect("TerminalHost.listSessions must succeed after PTY exit");
-                close_terminal_pty_output_stream(&sessionId);
-                break;
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(40)),
-            Err(_) => {
-                close_terminal_pty_output_stream(&sessionId);
-                break;
-            }
+/// Reads one PTY output batch and schedules the next host-owned polling turn.
+fn poll_terminal_pty_output(
+    terminalHost: Arc<dyn TerminalHost>,
+    taskScheduler: Arc<dyn HostRuntimeTaskSchedulerHost>,
+    sessionId: String,
+    stream: MutableSharedStreamImpl<String>,
+) {
+    match terminalHost.readPtySession(&sessionId) {
+        Ok(data) if !data.is_empty() => stream.emit(STANDARD.encode(data)),
+        Ok(_) => {}
+        Err(_) => {
+            close_terminal_pty_output_stream(&sessionId);
+            return;
         }
-    });
+    }
+
+    match terminalHost.pollPtyExitCode(&sessionId) {
+        Ok(Some(_)) => {
+            publish_terminal_sessions(&terminalHost)
+                .expect("TerminalHost.listSessions must succeed after PTY exit");
+            close_terminal_pty_output_stream(&sessionId);
+        }
+        Ok(None) => {
+            let nextTerminalHost = terminalHost.clone();
+            let nextTaskScheduler = taskScheduler.clone();
+            let nextSessionId = sessionId.clone();
+            let nextStream = stream.clone();
+            taskScheduler
+                .scheduleDelayedHostRuntimeTask(
+                    "operit-terminal-pty-output",
+                    40,
+                    Box::new(move || {
+                        poll_terminal_pty_output(
+                            nextTerminalHost,
+                            nextTaskScheduler,
+                            nextSessionId,
+                            nextStream,
+                        );
+                    }),
+                )
+                .expect("terminal PTY output delay must be scheduled");
+        }
+        Err(_) => close_terminal_pty_output_stream(&sessionId),
+    }
 }
 
 impl RuntimeTerminalService {
@@ -174,7 +249,7 @@ impl RuntimeTerminalService {
             terminalHost: context
                 .terminalHost
                 .clone()
-                .unwrap_or_else(|| Arc::new(DisabledTerminalHost)),
+                .expect("TerminalHost must be configured for RuntimeTerminalService"),
             context: context.clone(),
         }
     }
@@ -199,7 +274,16 @@ impl RuntimeTerminalService {
     pub fn defaultTerminalType(&self) -> Result<String, String> {
         self.terminalHost
             .terminalInfo()
-            .map(|info| info.defaultType)
+            .map(|info| info.terminalType)
+            .map_err(|error| error.message)
+    }
+
+    #[allow(non_snake_case)]
+    /// Returns every terminal type that the active host exposes to users.
+    pub fn terminalInfo(&self) -> Result<RuntimeTerminalInfo, String> {
+        self.terminalHost
+            .terminalInfo()
+            .map(runtime_terminal_info)
             .map_err(|error| error.message)
     }
 
@@ -208,6 +292,7 @@ impl RuntimeTerminalService {
     pub fn startTerminalPty(
         &self,
         sessionName: String,
+        terminal: String,
         terminalType: String,
         workingDir: String,
         rows: i32,
@@ -218,6 +303,7 @@ impl RuntimeTerminalService {
             .terminalHost
             .startPtySession(
                 &sessionName,
+                &terminal,
                 &terminalType,
                 &resolvedWorkingDir,
                 rows as u16,
@@ -294,6 +380,8 @@ impl RuntimeTerminalService {
             .map_err(|error| error.message)
             .map(|screen| RuntimeTerminalScreen {
                 sessionId: screen.sessionId,
+                platform: screen.platform,
+                terminal: screen.terminal,
                 terminalType: screen.terminalType,
                 rows: screen.rows as i32,
                 cols: screen.cols as i32,
@@ -317,7 +405,17 @@ impl RuntimeTerminalService {
                 stream: stream.clone(),
             },
         );
-        start_terminal_pty_output_reader(self.terminalHost.clone(), sessionId, stream.clone());
+        let taskScheduler = self
+            .context
+            .hostRuntimeTaskSchedulerHost
+            .clone()
+            .expect("RuntimeTerminalService requires a HostRuntimeTaskSchedulerHost");
+        start_terminal_pty_output_reader(
+            self.terminalHost.clone(),
+            taskScheduler,
+            sessionId,
+            stream.clone(),
+        );
         stream
     }
 }
@@ -350,121 +448,4 @@ fn terminal_vfs(context: &HostManager) -> Result<VisualFileSystem, String> {
         })?,
         PathMapper::new(runtimeStoreRoot, workspaceCollectionRoot),
     ))
-}
-
-/// No-op terminal host used when no platform backend is configured (e.g. iOS).
-/// All operations fail gracefully instead of panicking on a missing host.
-struct DisabledTerminalHost;
-
-impl TerminalHost for DisabledTerminalHost {
-    fn terminalInfo(&self) -> HostResult<TerminalInfo> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn startPtySession(
-        &self,
-        _sessionName: &str,
-        _terminalType: &str,
-        _workingDir: &str,
-        _rows: u16,
-        _cols: u16,
-    ) -> HostResult<String> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn readPtySession(&self, _sessionId: &str) -> HostResult<Vec<u8>> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn writePtySession(&self, _sessionId: &str, _data: &[u8]) -> HostResult<usize> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn resizePtySession(&self, _sessionId: &str, _rows: u16, _cols: u16) -> HostResult<()> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn pollPtyExitCode(&self, _sessionId: &str) -> HostResult<Option<i32>> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn closePtySession(&self, _sessionId: &str) -> HostResult<()> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn listSessions(&self) -> HostResult<Vec<TerminalSessionListEntry>> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn createOrGetSession(
-        &self,
-        _sessionName: &str,
-        _terminalType: &str,
-    ) -> HostResult<TerminalSessionInfo> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn executeInSession(
-        &self,
-        _sessionId: &str,
-        _command: &str,
-        _timeoutMs: u64,
-    ) -> HostResult<TerminalCommandOutput> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn executeHiddenCommand(
-        &self,
-        _command: &str,
-        _terminalType: &str,
-        _executorKey: &str,
-        _timeoutMs: u64,
-    ) -> HostResult<HiddenTerminalCommandOutput> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn inputInSession(
-        &self,
-        _sessionId: &str,
-        _input: Option<&str>,
-        _control: Option<&str>,
-    ) -> HostResult<TerminalInputOutput> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn closeSession(&self, _sessionId: &str) -> HostResult<TerminalCloseOutput> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
-
-    fn getSessionScreen(&self, _sessionId: &str) -> HostResult<TerminalScreenOutput> {
-        Err(HostError::new(
-            "terminal sessions are not supported on this platform",
-        ))
-    }
 }

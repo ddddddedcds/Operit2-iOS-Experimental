@@ -19,7 +19,31 @@ on:
         default: "false"
         type: string
 jobs:
+  build-ish-rootfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build iSH Alpine rootfs
+        run: bash tools/ios-runtime/ish/build_alpine_rootfs_linux.sh
+
+      - name: Upload iSH Alpine rootfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: operit2-ios-ish-rootfs-${{ github.sha }}
+          path: apps/flutter/app/ios/Runner/ish-root.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   build-ios:
+    needs: build-ish-rootfs
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -40,6 +64,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download iSH Alpine rootfs
+        uses: actions/download-artifact@v4
+        with:
+          name: operit2-ios-ish-rootfs-${{ github.sha }}
+          path: apps/flutter/app/ios/Runner
 
       - name: Install bootstrap Flutter
         uses: subosito/flutter-action@v2
@@ -74,6 +104,12 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+
+      - name: Install iSH build tools
+        run: |
+          brew install llvm lld meson ninja
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
 
       - name: Check build environment
         run: python3 tools/build_scripts/check_environment.py --products app --include-ios --github-runner
@@ -146,7 +182,13 @@ jobs:
 
       - name: Build Web Access assets
         if: steps.web-build.outputs.needed == 'true'
-        run: python3 tools/build_scripts/build_flutter_web_access.py
+        run: python3 tools/build_scripts/build_flutter_web_access.py --base-href /
+
+      - name: Build iOS Toybox runtime
+        run: python3 tools/ios-runtime/toybox/build.py
+
+      - name: Build iOS scientific runtime
+        run: python3 tools/ios-runtime/native/build_scientific.py
 
       - name: Build and package unsigned iOS app
         run: python3 tools/build_scripts/build_flutter_ios.py
@@ -180,6 +222,16 @@ jobs:
             apps/web_access/build/bundle
             apps/flutter/app/assets/web_access
           key: ${{ steps.web-build-cache.outputs.cache-primary-key }}
+
+      - name: Build and package unsigned iOS app
+        run: python3 tools/build_scripts/build_flutter_ios.py
+
+      - name: Save TypeScript compiler
+        if: steps.typescript-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-tools/typescript
+          key: ${{ runner.os }}-typescript-${{ env.TYPESCRIPT_VERSION }}
 
       - name: Upload unsigned iOS app artifact
         uses: actions/upload-artifact@v4

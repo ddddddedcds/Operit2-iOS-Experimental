@@ -7,12 +7,13 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../../core/concurrency/AppWorkers.dart';
 import '../../../../core/proxy/generated/CoreProxyClients.g.dart';
 import '../../../../core/proxy/generated/CoreProxyModels.g.dart' as core_proxy;
+import '../../../common/components/AdaptiveSidePanel.dart';
 import '../../../common/components/M3LoadingIndicator.dart';
 import '../../../common/icons/MaterialIconNameResolver.dart';
 import '../../../common/markdown/StreamMarkdownRenderer.dart';
+import '../../chat/screens/AIChatScreen.dart';
 import '../utils/PackageDisplayUtils.dart';
 import 'ToolPkgComposeDslWebView.dart';
 
@@ -23,12 +24,18 @@ class ToolPkgUiLauncherScreen extends StatefulWidget {
     required this.plugin,
     this.initialRouteId,
     this.showLauncherChrome = true,
+    this.initialState = const <String, Object?>{},
+    this.initialMemo = const <String, Object?>{},
+    this.initialModuleSpec,
   });
 
   final GeneratedCoreProxyClients clients;
   final core_proxy.ToolPkgContainerRuntime plugin;
   final String? initialRouteId;
   final bool showLauncherChrome;
+  final Map<String, Object?> initialState;
+  final Map<String, Object?> initialMemo;
+  final Map<String, Object?>? initialModuleSpec;
 
   @override
   State<ToolPkgUiLauncherScreen> createState() =>
@@ -116,6 +123,13 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
       _loading = true;
       _error = null;
     });
+    final renderStopwatch = Stopwatch()..start();
+    debugPrint(
+      'ToolPkg compose_dsl render start: '
+      'package=${widget.plugin.packageName}, '
+      'module=$uiModuleId, '
+      'context=$executionContextKey',
+    );
     try {
       final previousExecutionContext = _activeExecutionContext;
       if (previousExecutionContext != null &&
@@ -126,7 +140,16 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
           return;
         }
       }
-      _activeExecutionContext = executionContext;
+      if (_activeExecutionContext != executionContext) {
+        _activeExecutionContext = executionContext;
+        await _acquireExecutionContext(executionContext);
+        if (!_isCurrentRouteLoad(routeLoadGeneration)) {
+          if (_activeExecutionContext != executionContext) {
+            await _releaseExecutionContext(executionContext);
+          }
+          return;
+        }
+      }
       final script = await _packageManager.getToolPkgComposeDslScript(
         containerPackageName: widget.plugin.packageName,
         uiModuleId: uiModuleId,
@@ -155,13 +178,18 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
         ),
         envOverrides: const <String, String>{},
       );
+      renderStopwatch.stop();
+      debugPrint(
+        'ToolPkg compose_dsl render finish: '
+        'package=${widget.plugin.packageName}, '
+        'module=$uiModuleId, '
+        'elapsedMs=${renderStopwatch.elapsedMilliseconds}, '
+        'resultChars=${raw?.length ?? 0}',
+      );
       if (!_isCurrentRouteLoad(routeLoadGeneration)) {
         return;
       }
-      final result = await AppWorkers.run(
-        () => _ComposeDslRenderResult.parse(raw),
-        debugName: 'compose-dsl-render-parse',
-      );
+      final result = _ComposeDslRenderResult.parse(raw);
       if (!_isCurrentRouteLoad(routeLoadGeneration)) {
         return;
       }
@@ -170,9 +198,16 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
         _loading = false;
       });
     } catch (error, stackTrace) {
+      renderStopwatch.stop();
       if (!_isCurrentRouteLoad(routeLoadGeneration)) {
         return;
       }
+      debugPrint(
+        'ToolPkg compose_dsl render failure: '
+        'package=${widget.plugin.packageName}, '
+        'module=$uiModuleId, '
+        'elapsedMs=${renderStopwatch.elapsedMilliseconds}',
+      );
       _printComposeError('render', error, stackTrace);
       setState(() {
         _error = error.toString();
@@ -183,6 +218,16 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
 
   bool _isCurrentRouteLoad(int routeLoadGeneration) {
     return mounted && routeLoadGeneration == _routeLoadGeneration;
+  }
+
+  /// Acquires one page-owned ToolPkg execution context.
+  Future<void> _acquireExecutionContext(
+    ({String contextKey, String containerPackageName}) executionContext,
+  ) async {
+    await _packageManager.acquireToolPkgExecutionEngine(
+      contextKey: executionContext.contextKey,
+      containerPackageName: executionContext.containerPackageName,
+    );
   }
 
   /// Releases one page-owned ToolPkg execution context.
@@ -242,6 +287,14 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
       routeInstanceId: routeInstanceId,
     );
     Object? latestActionResult;
+    final actionStopwatch = Stopwatch()..start();
+    debugPrint(
+      'ToolPkg compose_dsl action start: '
+      'package=${widget.plugin.packageName}, '
+      'module=$uiModuleId, '
+      'action=$actionId, '
+      'context=$executionContextKey',
+    );
     try {
       final events = await _packageManager
           .dispatchToolPkgComposeDslActionEvents(
@@ -256,15 +309,28 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
             ),
             envOverrides: const <String, String>{},
           );
+      actionStopwatch.stop();
+      debugPrint(
+        'ToolPkg compose_dsl action events received: '
+        'package=${widget.plugin.packageName}, '
+        'module=$uiModuleId, '
+        'action=$actionId, '
+        'elapsedMs=${actionStopwatch.elapsedMilliseconds}, '
+        'eventCount=${events.length}',
+      );
       for (final event in events) {
         if (!mounted) {
           return latestActionResult;
         }
-        final parsedEvent = await AppWorkers.run(
-          () => _ParsedComposeDslActionEvent.parse(event),
-          debugName: 'compose-dsl-action-event-parse',
-        );
+        final parsedEvent = _ParsedComposeDslActionEvent.parse(event);
         final phase = parsedEvent.phase;
+        debugPrint(
+          'ToolPkg compose_dsl action event: '
+          'package=${widget.plugin.packageName}, '
+          'module=$uiModuleId, '
+          'action=$actionId, '
+          'phase=${phase ?? '<missing>'}',
+        );
         if (phase == 'intermediate' || phase == 'final') {
           latestActionResult = parsedEvent.actionResult;
           final result = parsedEvent.renderResult;
@@ -296,9 +362,17 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
       }
       return latestActionResult;
     } catch (error, stackTrace) {
+      actionStopwatch.stop();
       if (!mounted) {
         return latestActionResult;
       }
+      debugPrint(
+        'ToolPkg compose_dsl action failure: '
+        'package=${widget.plugin.packageName}, '
+        'module=$uiModuleId, '
+        'action=$actionId, '
+        'elapsedMs=${actionStopwatch.elapsedMilliseconds}',
+      );
       _printComposeError('action:$actionId', error, stackTrace);
       setState(() {
         _error = error.toString();
@@ -324,8 +398,8 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
       'uiModuleId': uiModuleId,
       '__operit_ui_module_id': uiModuleId,
       '__operit_toolpkg_runtime_kind': 'ui',
-      'state': _renderResult?.state ?? const <String, Object?>{},
-      'memo': _renderResult?.memo ?? const <String, Object?>{},
+      'state': _renderResult?.state ?? widget.initialState,
+      'memo': _renderResult?.memo ?? widget.initialMemo,
       'routeInstanceId': routeInstanceId,
       '__operit_route_instance_id': routeInstanceId,
       'executionContextKey': executionContextKey,
@@ -394,6 +468,10 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
   }
 
   Map<String, Object?> _moduleSpec(String routeId) {
+    final initialModuleSpec = widget.initialModuleSpec;
+    if (initialModuleSpec != null) {
+      return initialModuleSpec;
+    }
     for (final route in widget.plugin.uiRoutes) {
       if (route.routeId == routeId || route.id == routeId) {
         return <String, Object?>{
@@ -940,6 +1018,10 @@ class _ComposeDslRenderer extends StatelessWidget {
         );
       case 'SnackbarHost':
         return _slotOrChildren('content');
+      case 'AiChat':
+        return const AIChatEmbed();
+      case 'AdaptiveSidePanel':
+        return _adaptiveSidePanel();
       case 'PullToRefreshBox':
         return _pullToRefreshBox(context);
       case 'DropdownMenu':
@@ -2219,6 +2301,40 @@ class _ComposeDslRenderer extends StatelessWidget {
         });
       },
       child: canvas,
+    );
+  }
+
+  /// Builds a plugin-controlled responsive trailing panel around the primary slot.
+  Widget _adaptiveSidePanel() {
+    final openChangedActionId = _requiredActionId(
+      node.props['onOpenChanged'],
+      'onOpenChanged',
+    );
+    return AdaptiveSidePanel(
+      open: node.props['open'] == true,
+      onOpenChanged: (open) {
+        unawaited(onAction(openChangedActionId, open));
+      },
+      breakpoint: _number(node.props['breakpoint']) ?? 600,
+      defaultWidth: _number(node.props['defaultWidth']) ?? 360,
+      minWidth: _number(node.props['minWidth']) ?? 280,
+      minContentWidth: _number(node.props['minContentWidth']) ?? 320,
+      panel: _adaptiveSidePanelSlot('side'),
+      child: _adaptiveSidePanelSlot('content', useChildren: true),
+    );
+  }
+
+  /// Renders one adaptive side-panel slot while preserving its available bounds.
+  Widget _adaptiveSidePanelSlot(String name, {bool useChildren = false}) {
+    final nodes = _slotNodes(name, useChildren: useChildren);
+    if (nodes.length != 1) {
+      throw StateError('AdaptiveSidePanel.$name requires exactly one child');
+    }
+    return _ComposeDslRenderer(
+      node: nodes.single,
+      onAction: onAction,
+      webViewHostContext: webViewHostContext,
+      nodePath: '$nodePath:$name/0',
     );
   }
 
@@ -3975,6 +4091,15 @@ String? _actionId(Object? raw) {
   }
   final text = raw?.toString().trim();
   return text == null || text.isEmpty ? null : text;
+}
+
+/// Reads one required Compose action identifier from a serialized node property.
+String _requiredActionId(Object? raw, String propertyName) {
+  final actionId = _actionId(raw);
+  if (actionId == null) {
+    throw StateError('$propertyName requires a Compose action');
+  }
+  return actionId;
 }
 
 Map<String, Object?> _stringMap(Object? raw) {

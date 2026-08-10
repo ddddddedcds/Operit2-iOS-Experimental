@@ -6,19 +6,22 @@ use crate::core::chat::plugins::MessageProcessingPluginRegistry::{
     MessageProcessingHookParams, MessageProcessingPluginRegistry,
 };
 use crate::data::preferences::ApiPreferences::ApiPreferences;
+use operit_host_api::HostManager::defaultHostRuntimeTaskSchedulerHost;
 use operit_model::AttachmentInfo::AttachmentInfo;
 use operit_model::ChatMessage::ChatMessage;
 use operit_model::ChatMessageTimestampAllocator::ChatMessageTimestampAllocator;
+use operit_model::MessagePart::MessagePartKind;
 use operit_model::PromptFunctionType::PromptFunctionType;
 use operit_model::PromptTurn::{PromptTurn, PromptTurnKind};
-use operit_providers::chat::llmprovider::AIService::SharedAiResponseStream;
+use operit_providers::chat::enhance::InputProcessor::{InputProcessor, ProcessUserInputRequest};
+use operit_providers::chat::llmprovider::AIService::{AiServiceError, SharedAiResponseStream};
 use operit_providers::chat::llmprovider::MediaLinkParser::MediaLinkParser;
 use operit_providers::chat::EnhancedAIService::{
     EnhancedAIService, SendMessageCallbacks, SendMessageOptions, SendMessageRuntime,
 };
 use operit_store::PreferencesDataStore::FlowLike;
-use operit_util::stream::HotStream::StreamStart;
-use operit_util::stream::RevisableTextStream::{share_revisable, with_event_channel_shared};
+use operit_util::stream::RevisableTextStream::with_event_channel_shared;
+use operit_util::stream::Stream::Stream;
 use operit_util::AppLogger::AppLogger;
 use operit_util::ChainLogger::{self, PLUGIN_CHAIN, RECEIVE_CHAIN, SEND_CHAIN};
 
@@ -32,7 +35,7 @@ pub struct MessageTiming {
     pub startedAtMs: u64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct BuildUserMessageContentRequest {
     pub messageText: String,
     pub proxySenderName: Option<String>,
@@ -44,6 +47,8 @@ pub struct BuildUserMessageContentRequest {
     pub enableDirectVideoProcessing: bool,
     pub chatId: Option<String>,
     pub roleCardId: Option<String>,
+    /// Host callback used to surface a timed-out Prompt Input Hook.
+    pub onHookTimeout: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 pub struct SendMessageRequest<'a> {
@@ -127,7 +132,23 @@ impl AIMessageManager {
 
     #[allow(non_snake_case)]
     pub fn buildUserMessageContent(request: BuildUserMessageContentRequest) -> String {
-        let processedMessageText = request.messageText;
+        let promptInputStartTime = messageTimingNow();
+        let originalMessageLength = request.messageText.len();
+        let processedMessageText = InputProcessor::process_user_input(ProcessUserInputRequest {
+            input: request.messageText,
+            chat_id: request.chatId.clone(),
+            role_card_id: request.roleCardId.clone(),
+            on_hook_timeout: request.onHookTimeout.clone(),
+        });
+        logMessageTiming(
+            "buildUserMessageContent.processUserInput",
+            promptInputStartTime,
+            Some(format!(
+                "originalLength={}, processedLength={}",
+                originalMessageLength,
+                processedMessageText.len()
+            )),
+        );
         let proxySenderTag = match request.proxySenderName {
             Some(proxySenderName)
                 if !proxySenderName.trim().is_empty()
@@ -319,21 +340,28 @@ impl AIMessageManager {
         );
         match request.enhancedAiService.sendMessage(options).await {
             Ok(stream) => {
-                let shared = share_revisable(
-                    ActiveChatTextStream {
-                        chatKey: chatKey.clone(),
-                        stream,
-                    },
-                    usize::MAX,
-                    StreamStart::Lazily,
-                );
-                Self::rememberActiveResponseStream(chatKey.clone(), shared.clone());
+                let cleanupChatKey = chatKey.clone();
+                let mut cleanupStream = stream.upstream.clone();
+                defaultHostRuntimeTaskSchedulerHost()
+                    .scheduleHostRuntimeAsyncTask(
+                        "ai-message-manager-response-cleanup",
+                        Box::new(move || {
+                            Box::pin(async move {
+                                cleanupStream.collect(&mut |_| {}).await;
+                                Self::forgetActiveChatKey(&cleanupChatKey);
+                                Self::forgetActiveEnhancedAiService(&cleanupChatKey);
+                                Self::forgetActiveResponseStream(&cleanupChatKey);
+                            })
+                        }),
+                    )
+                    .map_err(|error| AiServiceError::RequestFailed(error.to_string()))?;
+                Self::rememberActiveResponseStream(chatKey.clone(), stream.clone());
                 ChainLogger::info(
                     RECEIVE_CHAIN,
                     "receive.provider.stream.ready",
                     &[("chatKey", chatKey.clone())],
                 );
-                Ok(shared)
+                Ok(stream)
             }
             Err(error) => {
                 ChainLogger::error(
@@ -361,7 +389,7 @@ impl AIMessageManager {
             .iter()
             .rposition(|message| message.sender == "summary");
         let previousSummary = lastSummaryIndex.and_then(|index| {
-            let content = messages[index].content.trim().to_string();
+            let content = messages[index].displayText().trim().to_string();
             if content.is_empty() {
                 None
             } else {
@@ -462,7 +490,11 @@ impl AIMessageManager {
 
         Ok(Some(ChatMessage {
             sender: "summary".to_string(),
-            content: finalSummary,
+            parts: vec![operit_model::MessagePart::MessagePart::markdown(
+                "part-0".to_string(),
+                0,
+                finalSummary,
+            )],
             timestamp: ChatMessageTimestampAllocator::next(),
             roleName: "system".to_string(),
             ..ChatMessage::new("summary".to_string())
@@ -472,7 +504,7 @@ impl AIMessageManager {
     #[allow(non_snake_case)]
     pub async fn calculateStableContextWindow(
         request: StableContextWindowRequest<'_>,
-    ) -> Result<i32, operit_providers::chat::llmprovider::AIService::AiServiceError> {
+    ) -> Result<i64, operit_providers::chat::llmprovider::AIService::AiServiceError> {
         let memory = Self::getMemoryFromMessages(
             request.chatHistory,
             request.splitHistoryByRole,
@@ -502,7 +534,7 @@ impl AIMessageManager {
     #[allow(non_snake_case)]
     pub fn shouldGenerateSummary(
         messages: Vec<ChatMessage>,
-        currentTokens: i32,
+        currentTokens: i64,
         maxTokens: i32,
         tokenUsageThreshold: f64,
         enableSummary: bool,
@@ -513,7 +545,7 @@ impl AIMessageManager {
             return false;
         }
         if maxTokens > 0 {
-            let usageRatio = currentTokens as f64 / maxTokens as f64;
+            let usageRatio = currentTokens as f64 / f64::from(maxTokens);
             if usageRatio >= tokenUsageThreshold {
                 return true;
             }
@@ -566,7 +598,7 @@ impl AIMessageManager {
                 )),
                 "summary" => Some(PromptTurn::new(
                     PromptTurnKind::SUMMARY,
-                    message.content.clone(),
+                    message.displayText(),
                 )),
                 _ => None,
             })
@@ -582,7 +614,7 @@ impl AIMessageManager {
         if !isRoleScopedMode {
             return Some(PromptTurn::new(
                 PromptTurnKind::ASSISTANT,
-                message.content.clone(),
+                message.assistantProtocolMarkup(),
             ));
         }
 
@@ -590,11 +622,16 @@ impl AIMessageManager {
         if messageRoleName == targetRoleName {
             return Some(PromptTurn::new(
                 PromptTurnKind::ASSISTANT,
-                message.content.clone(),
+                message.assistantProtocolMarkup(),
             ));
         }
 
-        let cleanedContent = remove_status_tags(&remove_thinking_content(&message.content));
+        let cleanedContent = message
+            .parts
+            .iter()
+            .filter(|part| part.kind == MessagePartKind::Markdown)
+            .map(|part| part.content.as_str())
+            .collect::<String>();
         if cleanedContent.trim().is_empty() {
             return None;
         }
@@ -616,7 +653,7 @@ impl AIMessageManager {
         isRoleScopedMode: bool,
         groupOrchestrationMode: bool,
     ) -> PromptTurn {
-        let baseContent = message.content.clone();
+        let baseContent = message.displayText();
         if groupOrchestrationMode && isRoleScopedMode {
             let trimmed = baseContent.trim();
             if trimmed.is_empty() {
@@ -631,7 +668,7 @@ impl AIMessageManager {
     }
 
     fn buildReplyTag(message: &ChatMessage) -> String {
-        let cleanContent = strip_xml_tags(&message.content).trim().to_string();
+        let cleanContent = strip_xml_tags(&message.displayText()).trim().to_string();
         let clipped = if cleanContent.chars().count() > 100 {
             let mut text = cleanContent.chars().take(100).collect::<String>();
             text.push_str("...");
@@ -905,54 +942,6 @@ impl AIMessageManager {
     }
 }
 
-struct ActiveChatTextStream {
-    chatKey: String,
-    stream: Box<dyn operit_util::stream::RevisableTextStream::RevisableTextStreamLike>,
-}
-
-impl operit_util::stream::Stream::Stream for ActiveChatTextStream {
-    type Item = String;
-
-    fn is_locked(&self) -> bool {
-        self.stream.is_locked()
-    }
-
-    fn buffered_count(&self) -> usize {
-        self.stream.buffered_count()
-    }
-
-    fn lock(&mut self) {
-        self.stream.lock();
-    }
-
-    fn unlock(&mut self) {
-        self.stream.unlock();
-    }
-
-    fn clear_buffer(&mut self) {
-        self.stream.clear_buffer();
-    }
-
-    fn collect(&mut self, collector: &mut dyn FnMut(Self::Item)) {
-        self.stream.collect(collector);
-        AIMessageManager::forgetActiveChatKey(&self.chatKey);
-        AIMessageManager::forgetActiveEnhancedAiService(&self.chatKey);
-        AIMessageManager::forgetActiveResponseStream(&self.chatKey);
-    }
-}
-
-impl operit_util::stream::RevisableTextStream::TextStreamEventCarrier for ActiveChatTextStream {
-    fn event_channel(
-        &self,
-    ) -> &operit_util::stream::HotStream::MutableSharedStreamImpl<
-        operit_util::stream::RevisableTextStream::TextStreamEvent,
-    > {
-        self.stream.event_channel()
-    }
-}
-
-impl operit_util::stream::RevisableTextStream::RevisableTextStream for ActiveChatTextStream {}
-
 fn strip_xml_tags(input: &str) -> String {
     let mut output = String::new();
     let mut inside_tag = false;
@@ -993,7 +982,12 @@ fn remove_status_tags(input: &str) -> String {
 
 #[allow(non_snake_case)]
 fn cleanSummarySourceMessage(message: &ChatMessage) -> String {
-    let mut cleaned = strip_tag_blocks(&message.content, "memory");
+    let source = if message.sender == "ai" {
+        message.assistantProtocolMarkup()
+    } else {
+        message.displayText()
+    };
+    let mut cleaned = strip_tag_blocks(&source, "memory");
     if message.sender == "ai" {
         cleaned = remove_thinking_content(&cleaned);
     }

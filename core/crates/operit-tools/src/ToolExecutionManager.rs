@@ -193,7 +193,7 @@ impl ToolExecutionManager {
     }
 
     /// Executes a batch of parsed tool invocations and returns emitted markup plus results.
-    pub fn executeInvocations(
+    pub async fn executeInvocations(
         invocations: &[ToolInvocation],
         toolHandler: &mut AIToolHandler,
         packageManager: &RuntimePackageManager,
@@ -310,6 +310,19 @@ impl ToolExecutionManager {
             }
 
             toolHandler.notifyToolCallRequested(&invocation.tool);
+            let interception = toolHandler.checkToolInterception(&invocation.tool);
+            if let operit_tools::tools::AIToolHook::AIToolHookDecision::Block(_) = interception {
+                let blockedResult = AIToolHandler::toolInterceptionResult(
+                    &invocation.tool,
+                    interception,
+                );
+                toolHandler.notifyToolExecutionResult(&invocation.tool, &blockedResult);
+                emitted.push(ensureEndsWithNewline(
+                    &ConversationMarkupManager::formatToolResultForMessage(&blockedResult),
+                ));
+                results.push(blockedResult);
+                continue;
+            }
             let (hasPermission, errorResult) = Self::checkRoleCardToolAccess(
                 toolHandler,
                 &invocation,
@@ -358,8 +371,9 @@ impl ToolExecutionManager {
                 continue;
             }
             toolHandler.notifyToolExecutionStarted(&invocation.tool);
-            let Some(collected) =
-                toolHandler.executeToolSafelyWithResolvedExecutor(&invocation.tool)
+            let Some(collected) = toolHandler
+                .executeToolSafelyWithResolvedExecutor(&invocation.tool)
+                .await
             else {
                 toolHandler.notifyToolExecutionFinished(&invocation.tool);
                 AppLogger::w(
@@ -458,6 +472,12 @@ impl ToolExecutionManager {
         ensureEndsWithNewline(content)
     }
 
+    /// Returns the concrete target carried by a proxy tool invocation.
+    pub(crate) fn resolveProxyTargetTool(tool: &AITool) -> AITool {
+        Self::resolveToolTarget(tool).tool
+    }
+
+    /// Resolves one proxy wrapper into its concrete target and display name.
     fn resolveToolTarget(tool: &AITool) -> ResolvedToolTarget {
         if tool.name != PACKAGE_PROXY_TOOL_NAME && tool.name != CLI_PROXY_TOOL_NAME {
             return ResolvedToolTarget {

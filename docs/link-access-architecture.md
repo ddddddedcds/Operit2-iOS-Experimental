@@ -39,13 +39,13 @@ web access
 
 | Part | Owns | Must Not Own |
 | --- | --- | --- |
-| runtime/core | 核心执行、core 对象状态、进程内 core 能力 | 配对、session、签名、server 生命周期、Web Access UX |
+| runtime/core Link Access | 配对、session、签名、设备身份、Link Access 配置、远程连接生命周期与 RuntimeStorage 持久化 | Dart/CLI 私有 session 文件、JNI session 路径、静态 Web 资源读取 |
 | CoreProxy | app 侧 typed 调用投影、把 typed 调用转换成 link request | app 间信任、密钥、远程连接生命周期 |
 | operit-link | call/watch/push/event/error/stream 协议，link envelope 与承载工具 | 配对、session store、签名算法、设备信任、listener 启动、静态文件服务 |
 | app access | 配对、session、签名、设备信任、权限 UI、server 组合 | core 业务执行、runtime 内部状态 |
-| Flutter Dart | 配对 UI、session 持久化、remote link client、本地/远程选择 | core 内部对象、host server 监听 |
-| Flutter native Rust | host server、accepted session、access endpoint、link dispatcher 接入 LocalCoreProxy | Dart UI 状态、普通 Web wasm runtime 路径 |
-| CLI app | CLI session、配对命令、serve/connect/sync/watch | operit-link 内部 access 状态 |
+| Flutter Dart | 配对 UI 与 Core Link Access 状态投影 | session 持久化、签名、host server 生命周期 |
+| Flutter native Rust | 静态资源与平台 WebSocket listener 接入 | accepted session 文件、pairing code 文件、Dart UI 状态 |
+| CLI app | Link Access 命令与 Core Link Access 状态投影 | CLI session 文件、重复配对与验签实现 |
 | Web Access JS | 浏览器 app 的配对、session、签名、link 调用 | wasm local runtime 替换、host app server 生命周期 |
 
 ## 3. Module Ownership
@@ -85,28 +85,18 @@ apps/cli/src
 
 ## 4. Request Flow
 
-Flutter local：
-
 ```text
 Flutter UI
   -> CoreProxy
   -> MethodChannel / wasm bridge
-  -> LocalCoreProxy
-  -> core
+  -> RuntimeCoreRouter
+     -> LocalCoreProxy
+     -> PairedRemoteSession
 ```
 
-Flutter remote：
-
-```text
-Flutter UI
-  -> CoreProxy
-  -> RemoteRuntimeLinkClient
-  -> app access signed HTTP
-  -> host app access
-  -> operit-link HTTP dispatcher
-  -> LocalCoreProxy
-  -> core
-```
+`RuntimeCoreRouter` reads the local runtime's persisted Link route before every
+application request. Link control objects remain local; a paired remote route
+uses the runtime-owned authenticated session transport.
 
 CLI remote：
 
@@ -224,7 +214,8 @@ Generated TTS audio playback
 CorePushRequest {
   requestId: "browser-input-0",
   targetPath: CoreObjectPath { segments: ["services", "runtimeBrowserService"] },
-  methodName: "submitBrowserCommand"
+  methodName: "submitBrowserInteractions",
+  args: CoreValue::Map(...)
 }
 
 CorePushItem {
@@ -254,8 +245,30 @@ WebSocket carrier 使用签名信封承载原始 MessagePack payload bytes，pay
 阻塞鼠标、滚轮和键盘输入。
 
 Flutter MethodChannel、WASM 和 CLI 必须暴露同一组 push 生命周期语义。平台载体
-可以按自身消息机制传输 item，但 Dart API 必须表现为 `CorePushSink.add/close`，
-而不是让业务层循环调用 `call`。
+可以按自身消息机制传输 item，但业务 API 必须声明为 `ReverseStream<T>`，由生成器映射为
+Dart `Stream<T>` 和 Rust typed stream；`CorePushSink.add/close` 仅属于 bridge/link carrier，
+业务层不得循环调用 `call` 或手写 push 帧。
+
+### 5.1 流式归档输入
+
+快照和其他归档输入使用同一条 Core Link push 生命周期：
+
+```text
+beginArchiveUpload(expectedByteLength)
+  -> writeArchiveUpload(archiveId, Stream<Uint8List>)
+  -> completeArchiveUpload(archiveId, expectedByteLength)
+  -> consumer.inspect/restore/import(archive)
+  -> discardArchiveUpload(archiveId)
+```
+
+Flutter、CLI 和 Web UI 只拥有输入流及其元数据，不传递本地路径，也不保留完整归档
+字节。`ArchiveTransferManager` 只负责校验长度、分块上限和 Core Link 生命周期；归档
+字节由运行时 owner 的 `ArchiveStagingHost` 持有。远程 client 的 staged archive 始终
+位于远程 runtime owner，client 不得访问本地同名文件。
+
+`ArchiveStagingHost` 的 `create/append/seal/read/remove` 是唯一归档暂存边界。`seal`
+只接受已经收到声明长度的归档，`read` 只接受有界范围；ZIP 解析器通过范围读取，不能
+调用一次性文件读取来绕过这个边界。所有异常路径都必须释放未 seal 的 session。
 
 Link v3 首次加入 push；v2 与 v3 不协商混用，握手、HTTP header 和 WebSocket
 envelope 必须声明版本 3。WebSocket envelope 字段固定为
@@ -374,7 +387,7 @@ MessagePack tuple，避免在 Dart 与 Rust 之间构造 Link envelope 的字段
 
 ```text
 callRequest          = [requestId, targetPathSegments, methodName, args]
-pushOpenRequest      = [requestId, targetPathSegments, methodName]
+pushOpenRequest      = [requestId, targetPathSegments, methodName, args]
 pushItem             = [pushId, sequence, args]
 watchSnapshotRequest = [requestId, targetPathSegments, propertyName, args]
 watchStreamRequest   = [subscriptionId, requestId, targetPathSegments, propertyName, args]

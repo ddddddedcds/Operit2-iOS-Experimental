@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-pub use operit_model::ChatMessage::SharedAiResponseStream;
 use operit_model::ModelParameter::ModelParameter;
 use operit_model::OpenAIModels::ModelOption;
 use operit_model::PromptTurn::PromptTurn;
@@ -10,7 +9,10 @@ use operit_util::stream::RevisableTextStream::{
     empty_revisable_event_channel, with_event_channel, DelegatingRevisableSharedTextStream,
     RevisableTextStreamLike,
 };
-use operit_util::stream::Stream::VecStream;
+
+/// Shared provider response stream used only inside runtime generation coordination.
+pub type SharedAiResponseStream = DelegatingRevisableSharedTextStream;
+use operit_util::stream::Stream::{Stream, VecStream};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -30,9 +32,9 @@ pub struct SendMessageRequest {
 /// Token usage counters accumulated by a provider service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TokenCounts {
-    pub input: i32,
-    pub cached_input: i32,
-    pub output: i32,
+    pub input: i64,
+    pub cached_input: i64,
+    pub output: i64,
 }
 
 /// Error surface shared by all AI provider services.
@@ -63,11 +65,13 @@ pub fn empty_response_stream() -> Box<dyn RevisableTextStreamLike> {
 }
 
 /// Collects every chunk from a revisable response stream.
-pub fn collect_stream_chunks(mut stream: Box<dyn RevisableTextStreamLike>) -> Vec<String> {
+pub async fn collect_stream_chunks(mut stream: Box<dyn RevisableTextStreamLike>) -> Vec<String> {
     let mut chunks = Vec::new();
-    stream.collect(&mut |chunk| {
-        chunks.push(chunk);
-    });
+    stream
+        .collect(&mut |chunk| {
+            chunks.push(chunk);
+        })
+        .await;
     chunks
 }
 
@@ -109,17 +113,17 @@ pub fn retry_message(error_text: &str, retry_number: i32) -> String {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait AIService: Send + Sync {
     /// Returns the accumulated uncached input token count.
-    fn input_token_count(&self) -> i32 {
+    fn input_token_count(&self) -> i64 {
         0
     }
 
     /// Returns the accumulated cached input token count.
-    fn cached_input_token_count(&self) -> i32 {
+    fn cached_input_token_count(&self) -> i64 {
         0
     }
 
     /// Returns the accumulated output token count.
-    fn output_token_count(&self) -> i32 {
+    fn output_token_count(&self) -> i64 {
         0
     }
 
@@ -163,7 +167,7 @@ pub trait AIService: Send + Sync {
         &self,
         _chat_history: &[PromptTurn],
         _available_tools: &[ToolPrompt],
-    ) -> Result<i32, AiServiceError> {
+    ) -> Result<i64, AiServiceError> {
         Err(AiServiceError::ProviderNotImplemented(
             self.provider_model(),
         ))

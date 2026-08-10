@@ -1,16 +1,15 @@
 // ignore_for_file: file_names
 
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../core/bridge/ProxyCoreRuntimeBridge.dart';
-import '../../core/errors/UnhandledErrorReporter.dart';
 import '../../core/proxy/generated/CoreProxyClients.g.dart';
 import '../../core/proxy/generated/CoreProxyModels.g.dart' as core_proxy;
 import '../../core/runtime/RuntimeConnectionManager.dart';
@@ -21,6 +20,7 @@ import '../features/chat/tts/TtsFloatingPanel.dart';
 import '../../core/host/browser/RuntimeBrowserOwnerHost.dart';
 import '../features/chat/components/workspace/browser/automation/WorkspaceWebVisitHost.dart';
 import '../permissions/ToolApprovalHost.dart';
+import 'OperitThemeAssets.dart';
 
 class OperitTheme extends StatefulWidget {
   const OperitTheme({
@@ -62,6 +62,10 @@ class _OperitThemeState extends State<OperitTheme> {
   bool _runtimeUiReady = false;
   bool _preserveUnconfiguredChild = false;
   int _runtimeGeneration = 0;
+  Timer? _runtimeStartupStatusTimer;
+  String _runtimeStartupMessage = '正在准备本地运行时';
+
+  static const MethodChannel _runtimeChannel = MethodChannel('operit/runtime');
 
   /// Subscribes to runtime readiness and starts theme services when configured.
   @override
@@ -78,6 +82,7 @@ class _OperitThemeState extends State<OperitTheme> {
   /// Releases runtime readiness and theme subscriptions.
   @override
   void dispose() {
+    _stopRuntimeStartupStatusPolling();
     _runtimeManager.removeListener(_handleRuntimeConnectionChanged);
     _controller.dispose();
     super.dispose();
@@ -87,12 +92,14 @@ class _OperitThemeState extends State<OperitTheme> {
   void _handleRuntimeConnectionChanged() {
     if (!_runtimeManager.runtimeConfigured) {
       _runtimeGeneration++;
+      _stopRuntimeStartupStatusPolling();
       _controller.dispose();
       setState(() {
         _runtimeUiReady = false;
         _runtimeStartupError = null;
         _runtimeStartFuture = null;
         _preserveUnconfiguredChild = widget.unconfiguredChildEnabled;
+        _runtimeStartupMessage = '正在准备本地运行时';
       });
       return;
     }
@@ -107,6 +114,7 @@ class _OperitThemeState extends State<OperitTheme> {
       return;
     }
     final generation = ++_runtimeGeneration;
+    _startRuntimeStartupStatusPolling(generation);
     final startFuture = _controller.start();
     _runtimeStartFuture = startFuture;
     try {
@@ -137,9 +145,46 @@ class _OperitThemeState extends State<OperitTheme> {
       });
     } finally {
       if (generation == _runtimeGeneration) {
+        _stopRuntimeStartupStatusPolling();
         _runtimeStartFuture = null;
       }
     }
+  }
+
+  /// Starts reading Android native runtime stages while Core-backed UI is starting.
+  void _startRuntimeStartupStatusPolling(int generation) {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    _stopRuntimeStartupStatusPolling();
+    unawaited(_refreshRuntimeStartupStatus(generation));
+    _runtimeStartupStatusTimer = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (_) => unawaited(_refreshRuntimeStartupStatus(generation)),
+    );
+  }
+
+  /// Stops Android native runtime stage polling.
+  void _stopRuntimeStartupStatusPolling() {
+    _runtimeStartupStatusTimer?.cancel();
+    _runtimeStartupStatusTimer = null;
+  }
+
+  /// Applies the current Android native runtime stage to the bootstrap screen.
+  Future<void> _refreshRuntimeStartupStatus(int generation) async {
+    final status = await _runtimeChannel.invokeMapMethod<String, String>(
+      'localRuntimeStartupStatus',
+    );
+    final message = status?['message'];
+    if (!mounted || generation != _runtimeGeneration || message == null) {
+      return;
+    }
+    if (_runtimeStartupMessage == message) {
+      return;
+    }
+    setState(() {
+      _runtimeStartupMessage = message;
+    });
   }
 
   /// Builds the bootstrap or fully initialized application theme.
@@ -152,20 +197,27 @@ class _OperitThemeState extends State<OperitTheme> {
         : UserPreferencesManager.defaultThemePreferenceSnapshot;
     final themeMode = runtimeReady ? _controller.themeMode : ThemeMode.system;
     final Widget appChild;
-    if (!runtimeConfigured) {
+    if (_preserveUnconfiguredChild) {
+      appChild = Stack(
+        fit: StackFit.expand,
+        children: <Widget>[
+          widget.child,
+          if (runtimeConfigured && !runtimeReady)
+            RuntimeBootstrapScreen(
+              message: _runtimeStartupMessage,
+              errorText: _runtimeStartupError?.toString(),
+            ),
+        ],
+      );
+    } else if (!runtimeConfigured) {
       appChild = widget.unconfiguredChildEnabled
           ? widget.child
           : const RuntimeBootstrapScreen(message: '请先在主窗口配置运行时目录和工作区目录');
     } else if (!runtimeReady) {
-      final bootstrap = RuntimeBootstrapScreen(
+      appChild = RuntimeBootstrapScreen(
+        message: _runtimeStartupMessage,
         errorText: _runtimeStartupError?.toString(),
       );
-      appChild = _preserveUnconfiguredChild
-          ? Stack(
-              fit: StackFit.expand,
-              children: <Widget>[widget.child, bootstrap],
-            )
-          : bootstrap;
     } else {
       appChild = widget.child;
     }
@@ -207,7 +259,6 @@ class _OperitMaterialApp extends StatelessWidget {
       themePreferenceSnapshot,
     );
     return MaterialApp(
-      navigatorKey: UnhandledErrorReporter.navigatorKey,
       title: 'Operit2',
       debugShowCheckedModeBanner: false,
       localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -257,14 +308,14 @@ class OperitThemeController {
   final UserPreferencesManager _preferencesManager;
   final GeneratedCoreProxyClients _clients;
   StreamSubscription<Object?>? _activePromptSubscription;
-  ThemeMode _themeMode = ThemeMode.system;
   ThemePreferenceSnapshot _themePreferenceSnapshot =
       UserPreferencesManager.defaultThemePreferenceSnapshot;
   String? _activeCharacterCardId;
   String? _activeCharacterGroupId;
   String? _activeThemeTargetName;
+  int _activePromptRevision = 0;
 
-  ThemeMode get themeMode => _themeMode;
+  ThemeMode get themeMode => _themePreferenceSnapshot.themeMode;
   ThemePreferenceSnapshot get themePreferenceSnapshot =>
       _themePreferenceSnapshot;
   String get activeThemeTargetName {
@@ -282,49 +333,46 @@ class OperitThemeController {
     final activePrompt = await _clients.preferencesActivePromptManager
         .getActivePrompt();
     _applyActivePrompt(activePrompt);
-    await _loadActiveThemeTargetName();
+    final revision = ++_activePromptRevision;
     _activePromptSubscription = _clients.preferencesActivePromptManager
         .activePromptFlowChanges()
         .listen((activePrompt) {
           unawaited(_handleActivePromptChange(activePrompt));
         });
-    await loadThemeMode();
+    await _loadActiveThemeTarget(revision);
   }
 
   /// Cancels the active prompt subscription.
   void dispose() {
+    _activePromptRevision++;
     unawaited(_activePromptSubscription?.cancel());
     _activePromptSubscription = null;
   }
 
-  Future<void> loadThemeMode() async {
-    final snapshot = await _resolveThemePreferenceSnapshot();
-    await _loadCustomFontIfNeeded(snapshot);
-    final themeMode = snapshot.flutterThemeMode;
-    if (_themeMode == themeMode && _themePreferenceSnapshot == snapshot) {
-      return;
-    }
-    _themePreferenceSnapshot = snapshot;
-    _themeMode = themeMode;
-    _onChanged();
-  }
-
+  /// Reports whether the effective Material theme is dark.
   bool isDark(BuildContext context) {
     return Theme.of(context).brightness == Brightness.dark;
   }
 
+  /// Toggles directly between explicit light and dark modes.
   void toggle(BuildContext context) {
     unawaited(setThemeMode(isDark(context) ? ThemeMode.light : ThemeMode.dark));
   }
 
+  /// Persists and applies one theme mode for the active target.
   Future<void> setThemeMode(ThemeMode themeMode) async {
-    if (_themeMode == themeMode) {
+    if (_themePreferenceSnapshot.themeMode == themeMode) {
       return;
     }
-    await _saveThemeModeToCurrentTarget(themeMode);
+    await _preferencesManager.saveThemeSettings(
+      characterCardId: _activeCharacterCardId,
+      characterGroupId: _activeCharacterGroupId,
+      themeMode: themeMode,
+    );
     await _reloadThemePreferenceSnapshot();
   }
 
+  /// Applies transient slider values without persisting them.
   void previewThemeSettings({
     double? backgroundImageOpacity,
     double? backgroundBlurRadius,
@@ -337,10 +385,10 @@ class OperitThemeController {
       fontScale: fontScale,
     );
     _themePreferenceSnapshot = snapshot;
-    _themeMode = snapshot.flutterThemeMode;
     _onChanged();
   }
 
+  /// Persists a partial theme update for the active target.
   Future<void> saveThemeSettings({
     String? inputStyle,
     String? chatStyle,
@@ -500,6 +548,7 @@ class OperitThemeController {
     await _reloadThemePreferenceSnapshot();
   }
 
+  /// Persists the global user avatar shown by the active theme.
   Future<void> saveActiveThemeUserAvatarSettings({
     required String customUserAvatarUri,
   }) async {
@@ -509,60 +558,36 @@ class OperitThemeController {
     await _reloadThemePreferenceSnapshot();
   }
 
+  /// Clears message color overrides for the active target.
   Future<void> resetMessageColorSettings() async {
     await _resetCurrentTargetMessageColorSettings();
     await _reloadThemePreferenceSnapshot();
   }
 
+  /// Clears every target-scoped theme preference for the active target.
   Future<void> resetThemeSettings() async {
     await _resetCurrentTargetThemeSettings();
     await _reloadThemePreferenceSnapshot();
   }
 
+  /// Reloads and commits the latest snapshot for the active target.
   Future<void> _reloadThemePreferenceSnapshot() async {
-    final snapshot = await _resolveThemePreferenceSnapshot();
-    await _loadCustomFontIfNeeded(snapshot);
-    _themePreferenceSnapshot = snapshot;
-    _themeMode = _themePreferenceSnapshot.flutterThemeMode;
-    _onChanged();
-  }
-
-  Future<ThemePreferenceSnapshot> _resolveThemePreferenceSnapshot() {
-    return _preferencesManager.resolveThemePreferenceSnapshot(
+    final snapshot = await _preferencesManager.resolveThemePreferenceSnapshot(
       characterCardId: _activeCharacterCardId,
       characterGroupId: _activeCharacterGroupId,
     );
+    await _loadCustomFontIfNeeded(snapshot);
+    _themePreferenceSnapshot = snapshot;
+    _onChanged();
   }
 
+  /// Starts a revision-guarded load when the active prompt target changes.
   Future<void> _handleActivePromptChange(
     core_proxy.ActivePrompt? activePrompt,
   ) async {
     if (_applyActivePrompt(activePrompt)) {
-      await _loadActiveThemeTargetName();
-      await _reloadThemePreferenceSnapshot();
+      await _loadActiveThemeTarget(++_activePromptRevision);
     }
-  }
-
-  Future<void> _saveThemeModeToCurrentTarget(ThemeMode themeMode) {
-    return switch (themeMode) {
-      ThemeMode.system => _preferencesManager.saveThemeSettings(
-        characterCardId: _activeCharacterCardId,
-        characterGroupId: _activeCharacterGroupId,
-        useSystemTheme: true,
-      ),
-      ThemeMode.light => _preferencesManager.saveThemeSettings(
-        characterCardId: _activeCharacterCardId,
-        characterGroupId: _activeCharacterGroupId,
-        themeMode: UserPreferencesManager.THEME_MODE_LIGHT,
-        useSystemTheme: false,
-      ),
-      ThemeMode.dark => _preferencesManager.saveThemeSettings(
-        characterCardId: _activeCharacterCardId,
-        characterGroupId: _activeCharacterGroupId,
-        themeMode: UserPreferencesManager.THEME_MODE_DARK,
-        useSystemTheme: false,
-      ),
-    };
   }
 
   Future<void> _resetCurrentTargetThemeSettings() async {
@@ -593,22 +618,46 @@ class OperitThemeController {
     }
   }
 
-  Future<void> _loadActiveThemeTargetName() async {
+  /// Loads one target snapshot and commits it only while still current.
+  Future<void> _loadActiveThemeTarget(int revision) async {
     final groupId = _activeCharacterGroupId;
     final cardId = _activeCharacterCardId;
-    if (groupId != null) {
-      final group = await _clients.preferencesCharacterGroupCardManager
-          .getCharacterGroupCard(groupId: groupId);
-      _activeThemeTargetName = group?.name;
-    } else if (cardId != null) {
-      final card = await _clients.preferencesCharacterCardManager
-          .getCharacterCard(id: cardId);
-      _activeThemeTargetName = card.name;
-    } else {
-      _activeThemeTargetName = null;
+    final targetName = await _resolveActiveThemeTargetName(
+      characterCardId: cardId,
+      characterGroupId: groupId,
+    );
+    final snapshot = await _preferencesManager.resolveThemePreferenceSnapshot(
+      characterCardId: cardId,
+      characterGroupId: groupId,
+    );
+    await _loadCustomFontIfNeeded(snapshot);
+    if (revision != _activePromptRevision) {
+      return;
     }
+    _activeThemeTargetName = targetName;
+    _themePreferenceSnapshot = snapshot;
+    _onChanged();
   }
 
+  /// Resolves the display name for one explicit theme target.
+  Future<String?> _resolveActiveThemeTargetName({
+    required String? characterCardId,
+    required String? characterGroupId,
+  }) async {
+    if (characterGroupId != null) {
+      final group = await _clients.preferencesCharacterGroupCardManager
+          .getCharacterGroupCard(groupId: characterGroupId);
+      return group?.name;
+    }
+    if (characterCardId != null) {
+      final card = await _clients.preferencesCharacterCardManager
+          .getCharacterCard(id: characterCardId);
+      return card.name;
+    }
+    throw StateError('No active theme target');
+  }
+
+  /// Applies a generated active prompt to the current theme target ids.
   bool _applyActivePrompt(core_proxy.ActivePrompt? activePrompt) {
     String? nextCardId;
     String? nextGroupId;
@@ -650,7 +699,6 @@ ThemePreferenceSnapshot _themePreferenceSnapshotWith(
 }) {
   return ThemePreferenceSnapshot(
     themeMode: snapshot.themeMode,
-    useSystemTheme: snapshot.useSystemTheme,
     useCustomColors: snapshot.useCustomColors,
     customPrimaryColor: snapshot.customPrimaryColor,
     customSecondaryColor: snapshot.customSecondaryColor,
@@ -967,9 +1015,7 @@ class _ThemeBackgroundMedia extends StatelessWidget {
   Widget build(BuildContext context) {
     final media = mediaType == UserPreferencesManager.MEDIA_TYPE_VIDEO
         ? _VideoThemeBackground(mediaPath: mediaPath, muted: muted, loop: loop)
-        : SizedBox.expand(
-            child: Image.file(File(mediaPath), fit: BoxFit.cover),
-          );
+        : ThemeAssetImage(storagePath: mediaPath, fit: BoxFit.cover);
     final blurred = blurEnabled
         ? ImageFiltered(
             imageFilter: ui.ImageFilter.blur(
@@ -999,70 +1045,90 @@ class _VideoThemeBackground extends StatefulWidget {
   final bool muted;
   final bool loop;
 
+  /// Creates the video state that owns the runtime asset controller.
   @override
   State<_VideoThemeBackground> createState() => _VideoThemeBackgroundState();
 }
 
 class _VideoThemeBackgroundState extends State<_VideoThemeBackground> {
-  late VideoPlayerController _controller;
+  VideoPlayerController? _controller;
+  int _loadToken = 0;
 
+  /// Starts loading the runtime video asset when the widget mounts.
   @override
   void initState() {
     super.initState();
-    _controller = _createController();
-    unawaited(_initializeController());
+    unawaited(_loadController());
   }
 
+  /// Updates playback settings or reloads bytes when the video asset changes.
   @override
   void didUpdateWidget(covariant _VideoThemeBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.mediaPath != widget.mediaPath) {
-      final previous = _controller;
-      _controller = _createController();
-      unawaited(_initializeController());
-      previous.dispose();
+      unawaited(_loadController());
+      return;
+    }
+    final controller = _controller;
+    if (controller == null) {
       return;
     }
     if (oldWidget.loop != widget.loop) {
-      unawaited(_controller.setLooping(widget.loop));
+      unawaited(controller.setLooping(widget.loop));
     }
     if (oldWidget.muted != widget.muted) {
-      unawaited(_controller.setVolume(widget.muted ? 0 : 1));
+      unawaited(controller.setVolume(widget.muted ? 0 : 1));
     }
   }
 
-  VideoPlayerController _createController() {
-    return VideoPlayerController.file(File(widget.mediaPath))
-      ..setLooping(widget.loop)
-      ..setVolume(widget.muted ? 0 : 1);
-  }
-
-  Future<void> _initializeController() async {
-    await _controller.initialize();
-    await _controller.play();
-    if (mounted) {
-      setState(() {});
+  /// Creates and starts a controller from imported runtime asset bytes.
+  Future<void> _loadController() async {
+    final token = ++_loadToken;
+    final bytes = await ThemeAssetStore().readBytes(widget.mediaPath);
+    final controller =
+        VideoPlayerController.networkUrl(
+            Uri.dataFromBytes(
+              bytes,
+              mimeType: themeAssetVideoMimeType(widget.mediaPath),
+            ),
+          )
+          ..setLooping(widget.loop)
+          ..setVolume(widget.muted ? 0 : 1);
+    await controller.initialize();
+    await controller.play();
+    if (!mounted || token != _loadToken) {
+      await controller.dispose();
+      return;
     }
+    final previous = _controller;
+    setState(() {
+      _controller = controller;
+    });
+    await previous?.dispose();
   }
 
+  /// Releases the active video controller.
   @override
   void dispose() {
-    _controller.dispose();
+    _loadToken++;
+    unawaited(_controller?.dispose());
     super.dispose();
   }
 
+  /// Builds the fitted video once the controller is initialized.
   @override
   Widget build(BuildContext context) {
-    if (!_controller.value.isInitialized) {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) {
       return const SizedBox.expand();
     }
     return SizedBox.expand(
       child: FittedBox(
         fit: BoxFit.cover,
         child: SizedBox(
-          width: _controller.value.size.width,
-          height: _controller.value.size.height,
-          child: VideoPlayer(_controller),
+          width: controller.value.size.width,
+          height: controller.value.size.height,
+          child: VideoPlayer(controller),
         ),
       ),
     );
@@ -1164,6 +1230,7 @@ List<String> _fontFamilyFallbackForSettings({
   };
 }
 
+/// Loads every custom font referenced by the active theme snapshot.
 Future<void> _loadCustomFontIfNeeded(
   ThemePreferenceSnapshot themePreferenceSnapshot,
 ) async {
@@ -1186,7 +1253,7 @@ Future<void> _loadCustomFontIfNeeded(
         _loadedCustomFontPaths.contains(fontPath)) {
       continue;
     }
-    final fontBytes = await File(fontPath).readAsBytes();
+    final fontBytes = await ThemeAssetStore().readBytes(fontPath);
     final loader = FontLoader(_customFontFamilyForPath(fontPath))
       ..addFont(Future<ByteData>.value(ByteData.sublistView(fontBytes)));
     await loader.load();
@@ -1194,6 +1261,7 @@ Future<void> _loadCustomFontIfNeeded(
   }
 }
 
+/// Builds a stable in-process font family name for a theme font asset.
 String _customFontFamilyForPath(String fontPath) {
   return 'OperitCustomFont_${fontPath.hashCode.abs()}';
 }
@@ -1232,6 +1300,7 @@ const List<String> _monospaceFontFamilyFallback = <String>[
 
 const Color _brandSeedColor = Color(0xFFBBDEFB);
 
+/// Builds one Material color scheme and applies the secondary accent color.
 ColorScheme _seedColorScheme(
   Brightness brightness,
   ThemePreferenceSnapshot themePreferenceSnapshot,

@@ -4,14 +4,20 @@
 
 #include <desktop_multi_window/desktop_multi_window_plugin.h>
 
+#include "crash_channel.h"
+#include "engine_channel_lifetime.h"
 #include "flutter/generated_plugin_registrant.h"
 #include "operit_runtime_channel.h"
+#include "system_audio_input_channel.h"
 
+/// Creates a window that owns one Flutter view controller.
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
+/// Destroys the window after Win32 teardown has released hosted content.
 FlutterWindow::~FlutterWindow() {}
 
+/// Initializes Flutter, plugins, and native channels for the window.
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
     return false;
@@ -28,7 +34,9 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  RegisterOperitCrashChannel(flutter_controller_->engine());
   RegisterOperitRuntimeChannel(flutter_controller_->engine(), GetHandle());
+  RegisterSystemAudioInputChannel(flutter_controller_->engine());
   DesktopMultiWindowSetWindowCreatedCallback([](void* controller) {
     auto* flutter_view_controller =
         reinterpret_cast<flutter::FlutterViewController*>(controller);
@@ -36,6 +44,7 @@ bool FlutterWindow::OnCreate() {
     RegisterOperitRuntimeChannel(
         flutter_view_controller->engine(),
         flutter_view_controller->view()->GetNativeWindow());
+    RegisterSystemAudioInputChannel(flutter_view_controller->engine());
   });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
@@ -51,19 +60,29 @@ bool FlutterWindow::OnCreate() {
   return true;
 }
 
+/// Releases native channels before destroying the Flutter controller.
 void FlutterWindow::OnDestroy() {
   if (flutter_controller_) {
+    ShutdownOperitRuntimeChannel();
+    ShutdownAllOperitEngineChannels();
+    ShutdownSystemAudioInputChannel();
+    ShutdownOperitCrashChannel();
     flutter_controller_ = nullptr;
   }
 
   Win32Window::OnDestroy();
 }
 
+/// Dispatches Windows messages through runtime hooks, Flutter, and Win32.
 LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
   LRESULT operit_runtime_result = 0;
+  if (HandleOperitNotificationActivationWindowMessage(
+          message, wparam, lparam, &operit_runtime_result)) {
+    return operit_runtime_result;
+  }
   if (HandleOperitRuntimeChannelWindowMessage(message, wparam, lparam,
                                               &operit_runtime_result)) {
     return operit_runtime_result;
@@ -77,12 +96,12 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     if (result) {
       return *result;
     }
-  }
 
-  switch (message) {
-    case WM_FONTCHANGE:
-      flutter_controller_->engine()->ReloadSystemFonts();
-      break;
+    switch (message) {
+      case WM_FONTCHANGE:
+        flutter_controller_->engine()->ReloadSystemFonts();
+        break;
+    }
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);

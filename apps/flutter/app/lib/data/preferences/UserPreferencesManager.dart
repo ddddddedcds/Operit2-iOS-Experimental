@@ -8,7 +8,6 @@ import '../../core/proxy/generated/CoreProxyClients.g.dart';
 class ThemePreferenceSnapshot {
   const ThemePreferenceSnapshot({
     required this.themeMode,
-    required this.useSystemTheme,
     required this.useCustomColors,
     required this.customPrimaryColor,
     required this.customSecondaryColor,
@@ -89,8 +88,7 @@ class ThemePreferenceSnapshot {
     required this.showInputProcessingStatus,
   });
 
-  final String themeMode;
-  final bool useSystemTheme;
+  final ThemeMode themeMode;
   final bool useCustomColors;
   final int? customPrimaryColor;
   final int? customSecondaryColor;
@@ -169,17 +167,17 @@ class ThemePreferenceSnapshot {
   final bool showMessageTimingStats;
   final bool showMessageTimestamp;
   final bool showInputProcessingStatus;
+}
 
-  ThemeMode get flutterThemeMode {
-    if (useSystemTheme) {
-      return ThemeMode.system;
-    }
-    return switch (themeMode) {
-      UserPreferencesManager.THEME_MODE_LIGHT => ThemeMode.light,
-      UserPreferencesManager.THEME_MODE_DARK => ThemeMode.dark,
-      _ => throw FormatException('invalid theme mode preference: $themeMode'),
-    };
-  }
+class LongPastedTextInputSettings {
+  /// Creates the global settings for converting long pasted text to attachments.
+  const LongPastedTextInputSettings({
+    required this.enabled,
+    required this.threshold,
+  });
+
+  final bool enabled;
+  final int threshold;
 }
 
 class UserPreferencesManager {
@@ -192,8 +190,6 @@ class UserPreferencesManager {
   final GeneratedCoreProxyClients _clients;
 
   static const String DEFAULT_PROFILE_ID = 'default';
-  static const String THEME_MODE_LIGHT = 'light';
-  static const String THEME_MODE_DARK = 'dark';
   static const String MEDIA_TYPE_IMAGE = 'image';
   static const String MEDIA_TYPE_VIDEO = 'video';
   static const String CHAT_STYLE_CURSOR = 'cursor';
@@ -218,14 +214,25 @@ class UserPreferencesManager {
   static const String TOOL_COLLAPSE_MODE_READ_ONLY = 'read_only';
   static const String TOOL_COLLAPSE_MODE_ALL = 'all';
   static const String TOOL_COLLAPSE_MODE_FULL = 'full';
+  static const int longPastedTextInputMinimumThreshold = 1000;
+  static const int longPastedTextInputMaximumThreshold = 20000;
+  static const int longPastedTextInputThresholdStep = 500;
+  static const int defaultLongPastedTextInputThreshold = 3000;
+
+  static final ValueNotifier<LongPastedTextInputSettings>
+  longPastedTextInputSettings = ValueNotifier<LongPastedTextInputSettings>(
+    const LongPastedTextInputSettings(
+      enabled: true,
+      threshold: defaultLongPastedTextInputThreshold,
+    ),
+  );
 
   static const String _fileName = 'user_preferences.preferences.json';
   static const String _displayPreferencesFileName = 'display_preferences';
 
   static const ThemePreferenceSnapshot defaultThemePreferenceSnapshot =
       ThemePreferenceSnapshot(
-        themeMode: THEME_MODE_LIGHT,
-        useSystemTheme: true,
+        themeMode: ThemeMode.system,
         useCustomColors: false,
         customPrimaryColor: null,
         customSecondaryColor: null,
@@ -307,7 +314,7 @@ class UserPreferencesManager {
       );
 
   static const String _THEME_MODE = 'theme_mode';
-  static const String _USE_SYSTEM_THEME = 'use_system_theme';
+  static const String _LEGACY_USE_SYSTEM_THEME = 'use_system_theme';
   static const String _CUSTOM_PRIMARY_COLOR = 'custom_primary_color';
   static const String _CUSTOM_SECONDARY_COLOR = 'custom_secondary_color';
   static const String _USE_CUSTOM_COLORS = 'use_custom_colors';
@@ -418,6 +425,10 @@ class UserPreferencesManager {
   static const String _KEY_AVATAR_CORNER_RADIUS = 'avatar_corner_radius';
   static const String _KEY_SHOW_INPUT_PROCESSING_STATUS =
       'show_input_processing_status';
+  static const String _KEY_LONG_PASTED_TEXT_INPUT_ENABLED =
+      'long_pasted_text_input_enabled';
+  static const String _KEY_LONG_PASTED_TEXT_INPUT_THRESHOLD =
+      'long_pasted_text_input_threshold';
 
   static const List<String> _stringThemeKeys = <String>[
     _THEME_MODE,
@@ -442,7 +453,6 @@ class UserPreferencesManager {
   ];
 
   static const List<String> _booleanThemeKeys = <String>[
-    _USE_SYSTEM_THEME,
     _USE_CUSTOM_COLORS,
     _USE_BACKGROUND_IMAGE,
     _VIDEO_BACKGROUND_MUTED,
@@ -521,6 +531,55 @@ class UserPreferencesManager {
     _KEY_CUSTOM_USER_AVATAR_URI,
   ];
 
+  /// Loads the global settings for converting long pasted text to attachments.
+  Future<void> loadLongPastedTextInputSettings() async {
+    final values = await _getStrings(<String>[
+      _KEY_LONG_PASTED_TEXT_INPUT_ENABLED,
+      _KEY_LONG_PASTED_TEXT_INPUT_THRESHOLD,
+    ]);
+    final enabledValue = values[_KEY_LONG_PASTED_TEXT_INPUT_ENABLED];
+    final thresholdValue = values[_KEY_LONG_PASTED_TEXT_INPUT_THRESHOLD];
+    final settings = LongPastedTextInputSettings(
+      enabled: enabledValue == null ? true : _decodeBool(enabledValue),
+      threshold: thresholdValue == null
+          ? defaultLongPastedTextInputThreshold
+          : int.parse(thresholdValue),
+    );
+    if (settings.threshold < longPastedTextInputMinimumThreshold ||
+        settings.threshold > longPastedTextInputMaximumThreshold) {
+      throw StateError(
+        'long pasted text threshold is outside the supported range: '
+        '${settings.threshold}',
+      );
+    }
+    longPastedTextInputSettings.value = settings;
+  }
+
+  /// Persists the global settings for converting long pasted text to attachments.
+  Future<void> saveLongPastedTextInputSettings({
+    required bool enabled,
+    required int threshold,
+  }) async {
+    if (threshold < longPastedTextInputMinimumThreshold ||
+        threshold > longPastedTextInputMaximumThreshold) {
+      throw ArgumentError.value(
+        threshold,
+        'threshold',
+        'must be within the supported long pasted text range',
+      );
+    }
+    final settings = LongPastedTextInputSettings(
+      enabled: enabled,
+      threshold: threshold,
+    );
+    await _setStrings(<String, String>{
+      _KEY_LONG_PASTED_TEXT_INPUT_ENABLED: enabled.toString(),
+      _KEY_LONG_PASTED_TEXT_INPUT_THRESHOLD: threshold.toString(),
+    });
+    longPastedTextInputSettings.value = settings;
+  }
+
+  /// Resolves one target-scoped theme snapshot and migrates its mode field.
   Future<ThemePreferenceSnapshot> resolveThemePreferenceSnapshot({
     String? characterCardId,
     String? characterGroupId,
@@ -531,6 +590,7 @@ class UserPreferencesManager {
     );
     final keys = [
       ..._prefixedTargetThemeKeys(prefix),
+      _keyWithPrefix(_LEGACY_USE_SYSTEM_THEME, prefix),
       _KEY_CUSTOM_USER_AVATAR_URI,
     ];
     final preferences = await _getStrings(keys);
@@ -559,9 +619,28 @@ class UserPreferencesManager {
       return value == null ? defaultValue : double.parse(value);
     }
 
+    final storedThemeMode = _decodeThemeMode(
+      stringValue(_THEME_MODE) ?? ThemeMode.system.name,
+    );
+    final legacyUseSystemThemeKey = _keyWithPrefix(
+      _LEGACY_USE_SYSTEM_THEME,
+      prefix,
+    );
+    final legacyUseSystemTheme = preferences[legacyUseSystemThemeKey];
+    final themeMode = legacyUseSystemTheme == null
+        ? storedThemeMode
+        : _decodeBool(legacyUseSystemTheme)
+        ? ThemeMode.system
+        : storedThemeMode;
+    if (legacyUseSystemTheme != null) {
+      await _setStrings(<String, String>{
+        _keyWithPrefix(_THEME_MODE, prefix): themeMode.name,
+      });
+      await _removeStrings(<String>[legacyUseSystemThemeKey]);
+    }
+
     return ThemePreferenceSnapshot(
-      themeMode: stringValue(_THEME_MODE) ?? THEME_MODE_LIGHT,
-      useSystemTheme: booleanValue(_USE_SYSTEM_THEME, true),
+      themeMode: themeMode,
       useCustomColors: booleanValue(_USE_CUSTOM_COLORS, false),
       customPrimaryColor: intValue(_CUSTOM_PRIMARY_COLOR),
       customSecondaryColor: intValue(_CUSTOM_SECONDARY_COLOR),
@@ -699,11 +778,11 @@ class UserPreferencesManager {
     );
   }
 
+  /// Persists the supplied target-scoped theme fields.
   Future<void> saveThemeSettings({
     String? characterCardId,
     String? characterGroupId,
-    String? themeMode,
-    bool? useSystemTheme,
+    ThemeMode? themeMode,
     bool? useCustomColors,
     int? customPrimaryColor,
     int? customSecondaryColor,
@@ -794,8 +873,7 @@ class UserPreferencesManager {
       values[_keyWithPrefix(key, prefix)] = value.toString();
     }
 
-    setIfPresent(_THEME_MODE, themeMode);
-    setIfPresent(_USE_SYSTEM_THEME, useSystemTheme);
+    setIfPresent(_THEME_MODE, themeMode?.name);
     setIfPresent(_CUSTOM_PRIMARY_COLOR, customPrimaryColor);
     setIfPresent(_CUSTOM_SECONDARY_COLOR, customSecondaryColor);
     setIfPresent(_USE_CUSTOM_COLORS, useCustomColors);
@@ -1014,11 +1092,22 @@ class UserPreferencesManager {
   }
 }
 
+/// Decodes one strict boolean preference value.
 bool _decodeBool(String value) {
   return switch (value) {
     'true' => true,
     'false' => false,
     _ => throw FormatException('invalid boolean preference: $value'),
+  };
+}
+
+/// Decodes one persisted Flutter theme mode name.
+ThemeMode _decodeThemeMode(String value) {
+  return switch (value) {
+    'system' => ThemeMode.system,
+    'light' => ThemeMode.light,
+    'dark' => ThemeMode.dark,
+    _ => throw FormatException('invalid theme mode preference: $value'),
   };
 }
 

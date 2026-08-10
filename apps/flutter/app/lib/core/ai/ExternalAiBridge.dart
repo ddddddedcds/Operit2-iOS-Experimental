@@ -51,6 +51,7 @@ class ExternalAiBridge {
           notifyReply: null,
           hideUserMessage: false,
           disableWarning: false,
+          chatInputSubmitRequestedHandled: false,
         ),
       );
       return 'ok';

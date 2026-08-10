@@ -1,7 +1,6 @@
 // ignore_for_file: file_names
 
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -14,6 +13,7 @@ import '../../../../l10n/generated/app_localizations.dart';
 import '../../chat/components/style/bubble/BubbleSurface.dart';
 import '../../../theme/OperitGlassSurface.dart';
 import '../../../theme/OperitTheme.dart';
+import '../../../theme/OperitThemeAssets.dart';
 import '../components/SettingsControlStyles.dart';
 
 class AppearanceSettingsPanel extends StatelessWidget {
@@ -118,7 +118,7 @@ class AppearanceSettingsPanel extends StatelessWidget {
               children: <Widget>[
                 FilledButton.tonalIcon(
                   onPressed: () {
-                    unawaited(_pickBackgroundImage(themeController));
+                    unawaited(_pickBackgroundImage(context, themeController));
                   },
                   icon: const Icon(Icons.image_outlined),
                   label: Text(l10n.settingsAppearanceBackgroundChooseImage),
@@ -333,7 +333,7 @@ class AppearanceSettingsPanel extends StatelessWidget {
                   snapshot.customUserAvatarUri != null &&
                   snapshot.customUserAvatarUri!.isNotEmpty,
               onChoose: () {
-                unawaited(_pickUserAvatarImage(themeController));
+                unawaited(_pickUserAvatarImage(context, themeController));
               },
               onClear: () {
                 unawaited(
@@ -484,6 +484,11 @@ class AppearanceSettingsPanel extends StatelessWidget {
                 );
               },
             ),
+          ],
+        ),
+        _SectionCard(
+          title: l10n.settingsAppearanceMessageDisplaySection,
+          children: <Widget>[
             _SettingSwitch(
               title: l10n.settingsAppearanceShowThinkingProcess,
               value: snapshot.showThinkingProcess,
@@ -619,17 +624,17 @@ Future<void> _pickBackgroundImage(OperitThemeController themeController) async {
     label: 'image',
     extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
   );
-  final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
-  if (file == null) {
+  if (imported == null) {
     return;
   }
   await themeController.saveThemeSettings(
     useBackgroundImage: true,
-    backgroundImageUri: file.path,
+    backgroundImageUri: imported.storagePath,
     backgroundMediaType: UserPreferencesManager.MEDIA_TYPE_IMAGE,
   );
 }
 
+/// Imports and saves a selected video as the active background asset.
 Future<void> _pickBackgroundVideo(OperitThemeController themeController) async {
   if (Platform.isIOS) {
     final result = await const MethodChannel('operit/runtime')
@@ -655,9 +660,10 @@ Future<void> _pickBackgroundVideo(OperitThemeController themeController) async {
   if (file == null) {
     return;
   }
+  final imported = await ThemeAssetStore().importFile(file);
   await themeController.saveThemeSettings(
     useBackgroundImage: true,
-    backgroundImageUri: file.path,
+    backgroundImageUri: imported.storagePath,
     backgroundMediaType: UserPreferencesManager.MEDIA_TYPE_VIDEO,
     videoBackgroundMuted: true,
     videoBackgroundLoop: true,
@@ -690,6 +696,272 @@ Future<void> _pickUserAvatarImage(OperitThemeController themeController) async {
   );
 }
 
+/// Builds a PNG file name for a cropped theme image.
+String _croppedThemeImageFileName(String fileName, String outputRole) {
+  final normalized = fileName.replaceAll('\\', '/');
+  final slashIndex = normalized.lastIndexOf('/');
+  final baseName = normalized.substring(slashIndex + 1).trim();
+  if (baseName.isEmpty) {
+    throw StateError('theme image file name is empty');
+  }
+  final dotIndex = baseName.lastIndexOf('.');
+  final stem = dotIndex <= 0 ? baseName : baseName.substring(0, dotIndex);
+  return '${stem}_$outputRole.png';
+}
+
+/// Shows an equal-aspect crop dialog and returns encoded PNG bytes.
+Future<Uint8List?> _showThemeImageCropDialog(
+  BuildContext context, {
+  required Uint8List bytes,
+  required double aspectRatio,
+}) async {
+  final sourceImage = await _decodeThemeImage(bytes);
+  return showDialog<Uint8List>(
+    // ignore: use_build_context_synchronously
+    context: context,
+    builder: (dialogContext) {
+      return _ThemeImageCropDialog(
+        sourceImage: sourceImage,
+        aspectRatio: aspectRatio,
+      );
+    },
+  );
+}
+
+/// Decodes selected image bytes for the crop editor.
+Future<ui.Image> _decodeThemeImage(Uint8List bytes) async {
+  final codec = await ui.instantiateImageCodec(bytes);
+  final frame = await codec.getNextFrame();
+  return frame.image;
+}
+
+class _ThemeImageCropSettings {
+  /// Creates cover crop settings for one source image.
+  const _ThemeImageCropSettings({
+    required this.zoom,
+    required this.offsetX,
+    required this.offsetY,
+  });
+
+  final double zoom;
+  final double offsetX;
+  final double offsetY;
+}
+
+class _ThemeImageCropDialog extends StatefulWidget {
+  /// Creates a crop dialog that preserves the requested aspect ratio.
+  const _ThemeImageCropDialog({
+    required this.sourceImage,
+    required this.aspectRatio,
+  });
+
+  final ui.Image sourceImage;
+  final double aspectRatio;
+
+  /// Creates the crop dialog state.
+  @override
+  State<_ThemeImageCropDialog> createState() => _ThemeImageCropDialogState();
+}
+
+class _ThemeImageCropDialogState extends State<_ThemeImageCropDialog> {
+  double _zoom = 1;
+  double _offsetX = 0;
+  double _offsetY = 0;
+
+  /// Releases the decoded source image after the dialog is unmounted.
+  @override
+  void dispose() {
+    widget.sourceImage.dispose();
+    super.dispose();
+  }
+
+  /// Builds the crop editor with cover preview controls.
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final settings = _ThemeImageCropSettings(
+      zoom: _zoom,
+      offsetX: _offsetX,
+      offsetY: _offsetY,
+    );
+    return AlertDialog(
+      title: Text(l10n.settingsAppearanceBubbleImageCrop),
+      content: SingleChildScrollView(
+        child: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              AspectRatio(
+                aspectRatio: widget.aspectRatio,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: CustomPaint(
+                    painter: _ThemeImageCropPreviewPainter(
+                      image: widget.sourceImage,
+                      aspectRatio: widget.aspectRatio,
+                      settings: settings,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              _ValueSlider(
+                label: l10n.zoom,
+                value: _zoom,
+                min: 1,
+                max: 4,
+                divisions: 30,
+                onChanged: (value) => setState(() => _zoom = value),
+              ),
+              _ValueSlider(
+                label: 'X',
+                value: _offsetX,
+                min: -1,
+                max: 1,
+                divisions: 40,
+                onChanged: (value) => setState(() => _offsetX = value),
+              ),
+              _ValueSlider(
+                label: 'Y',
+                value: _offsetY,
+                min: -1,
+                max: 1,
+                divisions: 40,
+                onChanged: (value) => setState(() => _offsetY = value),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          onPressed: () {
+            unawaited(_saveCroppedImage(context, settings));
+          },
+          child: Text(l10n.save),
+        ),
+      ],
+    );
+  }
+
+  /// Encodes the current crop and closes the dialog.
+  Future<void> _saveCroppedImage(
+    BuildContext context,
+    _ThemeImageCropSettings settings,
+  ) async {
+    final bytes = await _encodeCroppedThemeImage(
+      widget.sourceImage,
+      aspectRatio: widget.aspectRatio,
+      settings: settings,
+    );
+    if (!context.mounted) {
+      return;
+    }
+    Navigator.of(context).pop(bytes);
+  }
+}
+
+class _ThemeImageCropPreviewPainter extends CustomPainter {
+  /// Creates a painter for the exact crop area that will be encoded.
+  const _ThemeImageCropPreviewPainter({
+    required this.image,
+    required this.aspectRatio,
+    required this.settings,
+  });
+
+  final ui.Image image;
+  final double aspectRatio;
+  final _ThemeImageCropSettings settings;
+
+  /// Paints the cropped image without stretching its pixels.
+  @override
+  void paint(Canvas canvas, Size size) {
+    final src = _themeImageCropRect(
+      image,
+      aspectRatio: aspectRatio,
+      settings: settings,
+    );
+    canvas.drawImageRect(image, src, Offset.zero & size, Paint());
+  }
+
+  /// Reports whether the crop preview needs repainting.
+  @override
+  bool shouldRepaint(covariant _ThemeImageCropPreviewPainter oldDelegate) {
+    return oldDelegate.image != image ||
+        oldDelegate.aspectRatio != aspectRatio ||
+        oldDelegate.settings != settings;
+  }
+}
+
+/// Encodes one cover crop as PNG bytes.
+Future<Uint8List> _encodeCroppedThemeImage(
+  ui.Image image, {
+  required double aspectRatio,
+  required _ThemeImageCropSettings settings,
+}) async {
+  final src = _themeImageCropRect(
+    image,
+    aspectRatio: aspectRatio,
+    settings: settings,
+  );
+  final outputWidth = src.width.round().clamp(1, image.width).toInt();
+  final outputHeight = src.height.round().clamp(1, image.height).toInt();
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.drawImageRect(
+    image,
+    src,
+    Rect.fromLTWH(0, 0, outputWidth.toDouble(), outputHeight.toDouble()),
+    Paint(),
+  );
+  final picture = recorder.endRecording();
+  final croppedImage = await picture.toImage(outputWidth, outputHeight);
+  final byteData = await croppedImage.toByteData(
+    format: ui.ImageByteFormat.png,
+  );
+  picture.dispose();
+  croppedImage.dispose();
+  if (byteData == null) {
+    throw StateError('cropped theme image bytes are unavailable');
+  }
+  return byteData.buffer.asUint8List();
+}
+
+/// Calculates a non-stretched source crop rectangle for cover display.
+Rect _themeImageCropRect(
+  ui.Image image, {
+  required double aspectRatio,
+  required _ThemeImageCropSettings settings,
+}) {
+  if (aspectRatio <= 0) {
+    throw StateError('theme image crop aspect ratio must be positive');
+  }
+  final imageWidth = image.width.toDouble();
+  final imageHeight = image.height.toDouble();
+  final imageAspectRatio = imageWidth / imageHeight;
+  final baseWidth = imageAspectRatio > aspectRatio
+      ? imageHeight * aspectRatio
+      : imageWidth;
+  final baseHeight = imageAspectRatio > aspectRatio
+      ? imageHeight
+      : imageWidth / aspectRatio;
+  final zoom = settings.zoom.clamp(1.0, 4.0);
+  final cropWidth = baseWidth / zoom;
+  final cropHeight = baseHeight / zoom;
+  final xRange = (imageWidth - cropWidth) / 2;
+  final yRange = (imageHeight - cropHeight) / 2;
+  final left = xRange + xRange * settings.offsetX.clamp(-1.0, 1.0);
+  final top = yRange + yRange * settings.offsetY.clamp(-1.0, 1.0);
+  return Rect.fromLTWH(left, top, cropWidth, cropHeight);
+}
+
+/// Imports and saves a selected font as the active custom font asset.
 Future<void> _pickCustomFont(OperitThemeController themeController) async {
   const fontGroup = XTypeGroup(
     label: 'font',
@@ -701,13 +973,15 @@ Future<void> _pickCustomFont(OperitThemeController themeController) async {
   if (file == null) {
     return;
   }
+  final imported = await ThemeAssetStore().importFile(file);
   await themeController.saveThemeSettings(
     useCustomFont: true,
     fontType: UserPreferencesManager.FONT_TYPE_FILE,
-    customFontPath: file.path,
+    customFontPath: imported.storagePath,
   );
 }
 
+/// Shows font controls for the selected message bubble side.
 Future<void> _showBubbleFontDialog(
   BuildContext context,
   OperitThemeController themeController,
@@ -733,6 +1007,7 @@ Future<void> _showBubbleFontDialog(
     builder: (dialogContext) {
       return StatefulBuilder(
         builder: (context, setDialogState) {
+          /// Imports a selected file font for this bubble side.
           Future<void> pickFontFile() async {
             const fontGroup = XTypeGroup(
               label: 'font',
@@ -746,10 +1021,11 @@ Future<void> _showBubbleFontDialog(
             if (file == null) {
               return;
             }
+            final imported = await ThemeAssetStore().importFile(file);
             setDialogState(() {
               useCustomFont = true;
               fontType = UserPreferencesManager.FONT_TYPE_FILE;
-              customFontPath = file.path;
+              customFontPath = imported.storagePath;
             });
           }
 
@@ -854,6 +1130,7 @@ Future<void> _showBubbleFontDialog(
   );
 }
 
+/// Imports and saves a selected image as a bubble surface asset.
 Future<void> _pickBubbleImage(
   OperitThemeController themeController, {
   required ThemePreferenceSnapshot snapshot,
@@ -880,10 +1157,10 @@ Future<void> _pickBubbleImage(
     }
     filePath = file.path;
   }
-  final file = XFile(filePath);
+  final imported = await ThemeAssetStore().importFile(file);
   final useImage = !snapshot.transparentSurfaceEnabled;
-  if (_isNinePatchPngPath(file.path)) {
-    final autoParams = await _parseNinePatchBubbleParams(file.path);
+  if (_isNinePatchPngPath(imported.fileName)) {
+    final autoParams = await _parseNinePatchBubbleParams(imported.bytes);
     await themeController.saveThemeSettings(
       bubbleUserImageRenderMode: isUser
           ? UserPreferencesManager.BUBBLE_IMAGE_RENDER_MODE_NINE_PATCH
@@ -893,8 +1170,8 @@ Future<void> _pickBubbleImage(
           : UserPreferencesManager.BUBBLE_IMAGE_RENDER_MODE_NINE_PATCH,
       bubbleUserUseImage: isUser ? useImage : null,
       bubbleAiUseImage: isUser ? null : useImage,
-      bubbleUserImageUri: isUser ? file.path : null,
-      bubbleAiImageUri: isUser ? null : file.path,
+      bubbleUserImageUri: isUser ? imported.storagePath : null,
+      bubbleAiImageUri: isUser ? null : imported.storagePath,
       bubbleUserImageCropLeft: isUser ? autoParams.cropLeftRatio : null,
       bubbleUserImageCropTop: isUser ? autoParams.cropTopRatio : null,
       bubbleUserImageCropRight: isUser ? autoParams.cropRightRatio : null,
@@ -925,12 +1202,13 @@ Future<void> _pickBubbleImage(
         : UserPreferencesManager.BUBBLE_IMAGE_RENDER_MODE_TILED_NINE_SLICE,
     bubbleUserUseImage: isUser ? useImage : null,
     bubbleAiUseImage: isUser ? null : useImage,
-    bubbleUserImageUri: isUser ? file.path : null,
-    bubbleAiImageUri: isUser ? null : file.path,
+    bubbleUserImageUri: isUser ? imported.storagePath : null,
+    bubbleAiImageUri: isUser ? null : imported.storagePath,
   );
 }
 
 class _NinePatchBubbleAutoParams {
+  /// Creates parsed nine-patch ratios for bubble image rendering.
   const _NinePatchBubbleAutoParams({
     required this.cropLeftRatio,
     required this.cropTopRatio,
@@ -952,14 +1230,15 @@ class _NinePatchBubbleAutoParams {
   final double repeatYEndRatio;
 }
 
+/// Returns whether a selected image file name uses Android nine-patch naming.
 bool _isNinePatchPngPath(String path) {
   return path.toLowerCase().endsWith('.9.png');
 }
 
+/// Parses nine-patch stretch markers from decoded PNG bytes.
 Future<_NinePatchBubbleAutoParams> _parseNinePatchBubbleParams(
-  String path,
+  Uint8List bytes,
 ) async {
-  final bytes = await File(path).readAsBytes();
   final codec = await ui.instantiateImageCodec(bytes);
   final frame = await codec.getNextFrame();
   final image = frame.image;
@@ -1004,6 +1283,7 @@ Future<_NinePatchBubbleAutoParams> _parseNinePatchBubbleParams(
   );
 }
 
+/// Returns whether one pixel is a nine-patch stretch marker.
 bool _isNinePatchMarker(ByteData bytes, int width, int x, int y) {
   final offset = ((y * width + x) * 4);
   final red = bytes.getUint8(offset);
@@ -1013,6 +1293,7 @@ bool _isNinePatchMarker(ByteData bytes, int width, int x, int y) {
   return alpha >= 0x80 && red < 32 && green < 32 && blue < 32;
 }
 
+/// Converts marked pixel positions into normalized stretch bounds.
 (double, double) _buildNinePatchRange(List<int> marked, int innerSize) {
   if (marked.isEmpty || innerSize <= 0) {
     throw StateError('nine-patch bubble image is missing stretch markers');
@@ -2995,6 +3276,7 @@ class _ValueSlider extends StatelessWidget {
   final String? valueText;
   final ValueChanged<double> onChanged;
 
+  /// Builds a labeled slider for an appearance preference.
   @override
   Widget build(BuildContext context) {
     final text = valueText ?? value.toStringAsFixed(2);

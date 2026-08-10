@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import shutil
 import sys
@@ -7,10 +8,12 @@ from pathlib import Path
 from common import (
     FLUTTER_APP_DIR,
     REPO_ROOT,
+    WEB_ACCESS_APP_DIR,
     WEB_ACCESS_BUNDLE_DIR,
     copy_required_file,
     dart_pub_get,
     ensure_node_and_npm,
+    ensure_terser,
     ensure_typescript,
     flutter_command,
     generate_dart_proxy_artifacts,
@@ -28,6 +31,14 @@ from common import (
 WASI_SDK_MAJOR_VERSION = "20"
 WEB_ACCESS_ASSET_PREFIX = "    - path: assets/web_access/"
 WEB_ACCESS_ASSET_PLATFORM_LINE = "      platforms: [android, ios, linux, macos, windows]"
+WEB_EXCLUDED_DEPENDENCIES = frozenset(
+    {
+        "file_selector_ohos",
+        "path_provider_ohos",
+        "url_launcher_ohos",
+        "video_player_ohos",
+    }
+)
 WASM_SOURCE = (
     REPO_ROOT
     / "apps"
@@ -47,6 +58,39 @@ SQL_DIST_DIR = (
     / "sql.js"
     / "dist"
 )
+# Parses the required deployment base path for the Flutter Web bundle.
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--base-href",
+        default="/",
+        help="Absolute deployment path ending with a slash, such as /Operit2/. Defaults to /.",
+    )
+    arguments = parser.parse_args()
+    if not arguments.base_href.startswith("/") or not arguments.base_href.endswith("/"):
+        parser.error("--base-href must start and end with '/'")
+    return arguments
+
+
+# Compiles and minifies the browser runtime bridge into Flutter's web shell.
+def compile_web_runtime_bridge(typescript_bin: Path, terser_bin: Path) -> None:
+    suffix = ".cmd" if sys.platform == "win32" else ""
+    run([typescript_bin / f"tsc{suffix}", "-p", WEB_ACCESS_APP_DIR / "tsconfig.json"])
+    bridge = WEB_ACCESS_APP_DIR / "web" / "operit_runtime_bridge.js"
+    minified = bridge.with_suffix(".min.js")
+    run(
+        [
+            terser_bin / f"terser{suffix}",
+            str(bridge),
+            "--compress",
+            "--mangle",
+            "--format",
+            "comments=false",
+            "--output",
+            str(minified),
+        ]
+    )
+    minified.replace(bridge)
 
 
 # Ensures wasm-bindgen is installed at the requested version.
@@ -141,13 +185,59 @@ def remove_web_access_native_assets_from_pubspec(pubspec: Path) -> str:
     return original
 
 
-# Restores the pubspec after the temporary Web Access build view is finished.
-def restore_pubspec(pubspec: Path, content: str) -> None:
-    with pubspec.open("w", encoding="utf-8", newline="") as output:
+# Removes OpenHarmony-only dependencies from the temporary Flutter Web pubspec.
+def remove_web_excluded_dependencies_from_pubspec(pubspec: Path) -> str:
+    original = pubspec.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    staged: list[str] = []
+    removed: set[str] = set()
+    inside_dependencies = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.rstrip("\r\n") == "dependencies:":
+            inside_dependencies = True
+            staged.append(line)
+            index += 1
+            continue
+        if inside_dependencies and not line.startswith(" ") and line.strip():
+            inside_dependencies = False
+        if (
+            inside_dependencies
+            and line.startswith("  ")
+            and not line.startswith("    ")
+            and line.rstrip("\r\n").endswith(":")
+        ):
+            dependency_name = line.strip().removesuffix(":")
+            if dependency_name in WEB_EXCLUDED_DEPENDENCIES:
+                removed.add(dependency_name)
+                index += 1
+                while index < len(lines) and lines[index].startswith("    "):
+                    index += 1
+                continue
+        staged.append(line)
+        index += 1
+    if removed != WEB_EXCLUDED_DEPENDENCIES:
+        missing = sorted(WEB_EXCLUDED_DEPENDENCIES - removed)
+        unexpected = sorted(removed - WEB_EXCLUDED_DEPENDENCIES)
+        raise RuntimeError(
+            "Unexpected OpenHarmony dependency declarations: "
+            f"missing={missing} unexpected={unexpected}"
+        )
+    staged_content = "".join(staged)
+    if "https://gitee.com/" in staged_content:
+        raise RuntimeError("Flutter Web pubspec still declares a Gitee dependency")
+    restore_staged_file(pubspec, staged_content)
+    return original
+
+
+# Restores one file after the temporary Flutter Web build view is finished.
+def restore_staged_file(path: Path, content: str) -> None:
+    with path.open("w", encoding="utf-8", newline="") as output:
         output.write(content)
 
 
-# Writes bridge and SQL.js runtime files after Flutter finalizes its output.
+# Writes bridge and SQL.js files after Flutter finalizes its output.
 def stage_web_runtime_files(wasm_bindgen_bin: Path) -> None:
     suffix = ".exe" if sys.platform == "win32" else ""
     run(
@@ -162,6 +252,15 @@ def stage_web_runtime_files(wasm_bindgen_bin: Path) -> None:
             WASM_SOURCE,
         ]
     )
+    bridge_module = WEB_ACCESS_BUNDLE_DIR / "operit_flutter_bridge.js"
+    worker_bridge_module = WEB_ACCESS_BUNDLE_DIR / "operit_flutter_bridge_worker.js"
+    worker_bridge_contents = bridge_module.read_text(encoding="utf-8").replace(
+        'from "wasi_snapshot_preview1"',
+        'from "./wasi_snapshot_preview1.js"',
+    )
+    if worker_bridge_contents == bridge_module.read_text(encoding="utf-8"):
+        raise RuntimeError("WebAssembly bridge did not declare the WASI module import")
+    worker_bridge_module.write_text(worker_bridge_contents, encoding="utf-8")
     copy_required_file(
         SQL_DIST_DIR / "sql-wasm.js",
         WEB_ACCESS_BUNDLE_DIR / "sql-wasm.js",
@@ -170,12 +269,11 @@ def stage_web_runtime_files(wasm_bindgen_bin: Path) -> None:
         SQL_DIST_DIR / "sql-wasm.wasm",
         WEB_ACCESS_BUNDLE_DIR / "sql-wasm.wasm",
     )
-
-
-# Builds the shared Web Access Flutter Web bundle.
-def main() -> int:
+# Builds the shared Web Access Flutter Web bundle for one deployment base path.
+def main(base_href: str) -> int:
     os.environ.setdefault("RUSTFLAGS", "-Awarnings")
     typescript_version = os.environ.get("TYPESCRIPT_VERSION", "5.9.3")
+    terser_version = os.environ.get("TERSER_VERSION", "5.44.0")
     wasm_bindgen_version = os.environ.get("WASM_BINDGEN_VERSION", "0.2.122")
     wasi_sdk_version = os.environ.get("WASI_SDK_VERSION", "20.0")
 
@@ -186,6 +284,7 @@ def main() -> int:
 
     env = os.environ.copy()
     typescript_bin = ensure_typescript(typescript_version)
+    terser_bin = ensure_terser(terser_version)
     wasm_bindgen_bin = ensure_wasm_bindgen(wasm_bindgen_version)
     wasi_sdk = ensure_wasi_sdk(wasi_sdk_version)
     clang_resource_includes = sorted(
@@ -232,8 +331,17 @@ def main() -> int:
     stage_web_access_source()
     reset_dir(WEB_ACCESS_BUNDLE_DIR)
     pubspec = FLUTTER_APP_DIR / "pubspec.yaml"
-    original_pubspec = remove_web_access_native_assets_from_pubspec(pubspec)
+    pubspec_lock = FLUTTER_APP_DIR / "pubspec.lock"
+    original_pubspec = remove_web_excluded_dependencies_from_pubspec(pubspec)
+    original_pubspec_lock = pubspec_lock.read_text(encoding="utf-8")
     try:
+        generate_dart_proxy_artifacts()
+        dart_pub_get(enforce_lockfile=False, env=env)
+        run(["rustup", "target", "add", "wasm32-unknown-unknown"])
+        compile_web_runtime_bridge(typescript_bin, terser_bin)
+        stage_web_access_source()
+        reset_dir(WEB_ACCESS_BUNDLE_DIR)
+        remove_web_access_native_assets_from_pubspec(pubspec)
         run(
             [
                 flutter,
@@ -242,6 +350,8 @@ def main() -> int:
                 "--release",
                 "--no-pub",
                 "--no-wasm-dry-run",
+                "--base-href",
+                base_href,
                 "--output",
                 WEB_ACCESS_BUNDLE_DIR,
             ],
@@ -249,7 +359,8 @@ def main() -> int:
             env=env,
         )
     finally:
-        restore_pubspec(pubspec, original_pubspec)
+        restore_staged_file(pubspec, original_pubspec)
+        restore_staged_file(pubspec_lock, original_pubspec_lock)
     stage_web_runtime_files(wasm_bindgen_bin)
     manifest = write_web_access_version_manifest()
     print(
@@ -264,7 +375,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(main(parse_arguments().base_href))
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(1)

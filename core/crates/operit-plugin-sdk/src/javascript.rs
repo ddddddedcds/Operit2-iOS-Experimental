@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::execution_result::JsExecutionResult;
 use crate::package::ToolPackage;
-use crate::toolpkg::ToolPkgParser::ToolPkgSubpackageRuntime;
+use crate::toolpkg::ToolPkgParser::{ToolPkgMarketOrigin, ToolPkgSubpackageRuntime};
 
 /// Describes one tool call issued by JavaScript package code.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -61,6 +61,30 @@ pub struct JsToolPkgResourceRequest {
     pub internal: bool,
 }
 
+/// Describes one scalar argument passed from JavaScript into a ToolPkg WASM export.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct JsToolPkgWasmArg {
+    #[serde(rename = "type")]
+    pub value_type: String,
+    pub value: Value,
+}
+
+/// Describes one ToolPkg WASM export call requested by JavaScript.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct JsToolPkgWasmRequest {
+    pub package_target: String,
+    pub module_id: String,
+    pub export_name: String,
+    pub args: Vec<JsToolPkgWasmArg>,
+}
+
+/// Contains one ToolPkg WASM export result returned to JavaScript.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct JsToolPkgWasmResult {
+    pub value_type: Option<String>,
+    pub value: Value,
+}
+
 /// Describes one package-aware tool name resolution request.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct JsToolNameResolutionRequest {
@@ -108,11 +132,20 @@ pub trait JsExecutionHost: crate::js_sdk::JsToolsHost + Send + Sync {
         request: JsToolPkgResourceRequest,
     ) -> Result<String, String>;
 
+    /// Calls one scalar ToolPkg WASM export.
+    fn call_toolpkg_wasm(
+        &self,
+        request: JsToolPkgWasmRequest,
+    ) -> Result<JsToolPkgWasmResult, String>;
+
     /// Handles one Compose DSL WebView controller command.
     fn handle_compose_webview_controller_command(
         &self,
         payload_json: &str,
     ) -> Result<String, String>;
+
+    /// Opens one Compose DSL file picker through the embedding application's host UI.
+    fn open_compose_file_picker(&self, payload_json: &str) -> Result<String, String>;
 
     /// Returns whether one package is currently imported.
     fn is_package_imported(&self, package_name: &str) -> Result<bool, String>;
@@ -202,6 +235,8 @@ pub trait JsPackageRuntime: Send + Sync {
 /// Captured metadata emitted by a package's main registration script.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ToolPkgMainRegistrationCapture {
+    #[serde(rename = "marketOrigin", default)]
+    pub marketOrigin: Option<ToolPkgMarketOrigin>,
     #[serde(rename = "toolboxUiModules", default)]
     pub toolboxUiModules: Vec<String>,
     #[serde(rename = "uiRoutes", default)]
@@ -222,6 +257,8 @@ pub struct ToolPkgMainRegistrationCapture {
     pub chatInputHooks: Vec<String>,
     #[serde(rename = "chatViewHooks", default)]
     pub chatViewHooks: Vec<String>,
+    #[serde(rename = "chatMessageHooks", default)]
+    pub chatMessageHooks: Vec<String>,
     #[serde(rename = "hostEventHooks", default)]
     pub hostEventHooks: Vec<String>,
     #[serde(rename = "toolLifecycleHooks", default)]
@@ -260,6 +297,18 @@ pub trait JsExecutionEngine: Send + Sync {
         timeout_sec: u64,
     ) -> JsExecutionResult<Option<String>>;
 
+    /// Executes a named JavaScript function with an exact millisecond timeout for ToolPkg runtime hooks.
+    fn execute_script_function_with_timeout_millis(
+        &self,
+        script: &str,
+        function_name: &str,
+        params: &BTreeMap<String, Value>,
+        env_overrides: &BTreeMap<String, String>,
+        on_intermediate_result: Option<Arc<dyn Fn(String) + Send + Sync>>,
+        dispatch_intermediate_on_main: bool,
+        timeout_millis: u64,
+    ) -> JsExecutionResult<Option<String>>;
+
     /// Executes a ToolPkg registration function and returns captured declarations.
     fn execute_toolpkg_main_registration_function_with_text_resources(
         &self,
@@ -269,12 +318,13 @@ pub trait JsExecutionEngine: Send + Sync {
         text_resources: Option<Arc<BTreeMap<String, String>>>,
     ) -> JsExecutionResult<ToolPkgMainRegistrationCapture>;
 
-    /// Executes one Compose DSL render script.
+    /// Executes one Compose DSL render script with its immutable package text resources.
     fn execute_compose_dsl_script(
         &self,
         script: &str,
         runtime_options: &BTreeMap<String, Value>,
         env_overrides: &BTreeMap<String, String>,
+        text_resources: Arc<BTreeMap<String, String>>,
     ) -> JsExecutionResult<Option<String>>;
 
     /// Dispatches one Compose DSL action and emits intermediate render events.

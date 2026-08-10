@@ -1,26 +1,55 @@
 use super::JsEngineState;
+use crate::javascript::TestJsToolsHost::expect_js_output;
 use operit_host_api::{HostError, HostResult, RuntimeStorageEntry, RuntimeStorageHost};
 use operit_plugin_sdk::execution_result::JsExecutionErrorKind;
 use operit_plugin_sdk::javascript::{
-    JsExecutionHost, JsToolCallRequest, JsToolCallResult, JsToolNameResolutionRequest,
-    JsToolPkgIpcRequest, JsToolPkgResourceRequest,
+    JsExecutionHost, JsToolCallRequest, JsToolCallResult, JsToolCallResultData,
+    JsToolNameResolutionRequest, JsToolPkgIpcRequest, JsToolPkgResourceRequest,
+    JsToolPkgWasmRequest, JsToolPkgWasmResult,
 };
+use operit_plugin_sdk::JsPackageLoader::JsPackageLoader;
 use operit_store::RuntimeStorageHost::setDefaultRuntimeStorageHost;
 use operit_util::OperitPaths;
-use operit_util::RuntimeStoreRoot::setDefaultRuntimeStoreRoot;
+use operit_util::RuntimeStoreRoot::{setDefaultRuntimeStoreRootConfig, RuntimeStoreRootConfig};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-struct TestPluginConfigExecutionHost;
+#[derive(Default)]
+struct TestPluginConfigExecutionHost {
+    toolPkgTextResourceReads: AtomicUsize,
+}
+
+crate::impl_rejecting_js_tools_host!(TestPluginConfigExecutionHost);
 
 impl JsExecutionHost for TestPluginConfigExecutionHost {
-    /// Rejects unexpected tool execution.
-    fn execute_tool_call(&self, _request: JsToolCallRequest) -> JsToolCallResult {
-        panic!("Tool execution is not part of the plugin config test")
+    /// Executes the System sleep call used by the JavaScript worker regression test.
+    fn execute_tool_call(&self, request: JsToolCallRequest) -> JsToolCallResult {
+        if request.tool_name != "sleep" {
+            panic!(
+                "Unexpected tool execution in JavaScript engine test: {}",
+                request.tool_name
+            );
+        }
+        let requestedMs = request
+            .parameters
+            .get("duration_ms")
+            .and_then(Value::as_u64)
+            .expect("System.sleep must forward duration_ms to the host");
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::sleep(Duration::from_millis(requestedMs));
+        JsToolCallResult {
+            success: true,
+            data: JsToolCallResultData::Value(serde_json::json!({
+                "requestedMs": requestedMs,
+                "sleptMs": requestedMs,
+            })),
+            error: None,
+        }
     }
 
     /// Returns the language used by the plugin config test.
@@ -38,13 +67,15 @@ impl JsExecutionHost for TestPluginConfigExecutionHost {
         OperitPaths::pluginConfigDir(plugin_id).map(|path| path.to_string_lossy().to_string())
     }
 
-    /// Rejects unexpected ToolPkg text resource access.
+    /// Records direct ToolPkg text resource reads rejected by this test host.
     fn read_toolpkg_text_resource(
         &self,
         _package_name_or_subpackage_id: &str,
         _resource_path: &str,
     ) -> Result<String, String> {
-        panic!("ToolPkg text resources are not part of the plugin config test")
+        self.toolPkgTextResourceReads
+            .fetch_add(1, Ordering::Relaxed);
+        Err("ToolPkg text resources are not part of this test host".to_string())
     }
 
     /// Rejects unexpected ToolPkg resource materialization.
@@ -55,12 +86,25 @@ impl JsExecutionHost for TestPluginConfigExecutionHost {
         panic!("ToolPkg resources are not part of the plugin config test")
     }
 
+    /// Rejects unexpected ToolPkg WASM calls.
+    fn call_toolpkg_wasm(
+        &self,
+        _request: JsToolPkgWasmRequest,
+    ) -> Result<JsToolPkgWasmResult, String> {
+        panic!("ToolPkg WASM is not part of the plugin config test")
+    }
+
     /// Rejects unexpected Compose DSL controller commands.
     fn handle_compose_webview_controller_command(
         &self,
         _payload_json: &str,
     ) -> Result<String, String> {
         panic!("Compose DSL WebView control is not part of the plugin config test")
+    }
+
+    /// Rejects unexpected Compose DSL file-picker requests.
+    fn open_compose_file_picker(&self, _payload_json: &str) -> Result<String, String> {
+        panic!("Compose DSL file picking is not part of the plugin config test")
     }
 
     /// Rejects unexpected package state access.
@@ -149,6 +193,49 @@ fn synchronous_timeout_interrupts_quickjs_worker() {
     engine.destroy();
 }
 
+/// Verifies a host System sleep call returns control to the JavaScript worker for later calls.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn system_sleep_host_call_releases_quickjs_worker() {
+    ensure_test_runtime_root();
+    let engine = super::JsEngine::new(Arc::new(TestPluginConfigExecutionHost::default()));
+    let params = testParams();
+
+    let sleepOutput = expect_js_output(
+        engine.execute_script_function_with_timeout_millis(
+            "exports.sleep = function() { return Tools.System.sleep(37); };",
+            "sleep",
+            &params,
+            &BTreeMap::new(),
+            None,
+            true,
+            250,
+            None,
+        ),
+        "System.sleep host call",
+    );
+    let sleepPayload = serde_json::from_str::<Value>(&sleepOutput)
+        .expect("System.sleep host result must serialize as JSON");
+    assert_eq!(sleepPayload["requestedMs"], 37);
+    assert_eq!(sleepPayload["sleptMs"], 37);
+
+    let nextOutput = engine
+        .execute_script_function(
+            "exports.next = function() { return 'ready'; };",
+            "next",
+            &params,
+            &BTreeMap::new(),
+            None,
+            true,
+            2,
+            None,
+        )
+        .expect("worker must accept execution after a System.sleep host call");
+
+    assert_eq!(nextOutput.as_deref(), Some("\"ready\""));
+    engine.destroy();
+}
+
 /// Verifies ToolPkg registration timeout interrupts synchronous code and releases the worker.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
@@ -183,14 +270,20 @@ fn toolpkg_registration_timeout_interrupts_quickjs_worker() {
 
 #[derive(Clone, Debug)]
 struct TestRuntimeStorageHost {
-    root: PathBuf,
+    runtime_root: PathBuf,
+    workspace_root: PathBuf,
 }
 
 impl TestRuntimeStorageHost {
-    fn new(root: PathBuf) -> Self {
-        Self { root }
+    /// Creates a runtime storage host with explicit runtime and workspace roots.
+    fn new(runtime_root: PathBuf, workspace_root: PathBuf) -> Self {
+        Self {
+            runtime_root,
+            workspace_root,
+        }
     }
 
+    /// Resolves a virtual runtime storage path into the test runtime root.
     fn resolve(&self, path: &str) -> HostResult<PathBuf> {
         let path = Path::new(path);
         if path.is_absolute() {
@@ -199,7 +292,7 @@ impl TestRuntimeStorageHost {
                 path.display()
             )));
         }
-        let mut resolved = self.root.clone();
+        let mut resolved = self.runtime_root.clone();
         for component in path.components() {
             match component {
                 Component::Normal(segment) => resolved.push(segment),
@@ -217,14 +310,22 @@ impl TestRuntimeStorageHost {
 }
 
 impl RuntimeStorageHost for TestRuntimeStorageHost {
-    fn rootDir(&self) -> Option<PathBuf> {
-        Some(self.root.clone())
+    /// Returns the test runtime root directory.
+    fn runtimeRootDir(&self) -> Option<PathBuf> {
+        Some(self.runtime_root.clone())
     }
 
+    /// Returns the test workspace root directory.
+    fn workspaceRootDir(&self) -> Option<PathBuf> {
+        Some(self.workspace_root.clone())
+    }
+
+    /// Reads bytes from the test runtime root.
     fn readBytes(&self, path: &str) -> HostResult<Vec<u8>> {
         Ok(std::fs::read(self.resolve(path)?)?)
     }
 
+    /// Writes bytes into the test runtime root.
     fn writeBytes(&self, path: &str, content: &[u8]) -> HostResult<()> {
         let path = self.resolve(path)?;
         if let Some(parent) = path.parent() {
@@ -234,6 +335,7 @@ impl RuntimeStorageHost for TestRuntimeStorageHost {
         Ok(())
     }
 
+    /// Deletes an entry from the test runtime root.
     fn delete(&self, path: &str, recursive: bool) -> HostResult<()> {
         let path = self.resolve(path)?;
         if !path.exists() {
@@ -251,10 +353,12 @@ impl RuntimeStorageHost for TestRuntimeStorageHost {
         Ok(())
     }
 
+    /// Checks whether an entry exists inside the test runtime root.
     fn exists(&self, path: &str) -> HostResult<bool> {
         Ok(self.resolve(path)?.exists())
     }
 
+    /// Lists entries under a prefix inside the test runtime root.
     fn list(&self, prefix: &str) -> HostResult<Vec<RuntimeStorageEntry>> {
         let directory = self.resolve(prefix)?;
         let mut entries = Vec::new();
@@ -266,7 +370,7 @@ impl RuntimeStorageHost for TestRuntimeStorageHost {
             let metadata = entry.metadata()?;
             let path = entry
                 .path()
-                .strip_prefix(&self.root)
+                .strip_prefix(&self.runtime_root)
                 .map_err(|error| HostError::new(error.to_string()))?
                 .to_string_lossy()
                 .replace('\\', "/");
@@ -280,11 +384,18 @@ impl RuntimeStorageHost for TestRuntimeStorageHost {
     }
 }
 
+/// Registers process-wide test runtime storage roots.
 fn ensure_test_runtime_root() {
     let root = std::env::temp_dir().join("operit-runtime-js-engine-tests");
-    std::fs::create_dir_all(&root).expect("test runtime root");
-    let host = Arc::new(TestRuntimeStorageHost::new(root.clone()));
-    setDefaultRuntimeStoreRoot(root);
+    let runtime_root = root.join("runtime");
+    let workspace_root = root.join("workspace");
+    std::fs::create_dir_all(&runtime_root).expect("test runtime root");
+    std::fs::create_dir_all(&workspace_root).expect("test workspace root");
+    let host = Arc::new(TestRuntimeStorageHost::new(
+        runtime_root.clone(),
+        workspace_root.clone(),
+    ));
+    setDefaultRuntimeStoreRootConfig(RuntimeStoreRootConfig::new(runtime_root, workspace_root));
     setDefaultRuntimeStorageHost(host);
 }
 
@@ -315,8 +426,8 @@ fn execute_promise_script_repeatedly_on_same_engine() {
             None,
         );
         assert_eq!(
-            output.as_deref(),
-            Some(format!("\"ASYNC_ECHO:same-engine-{index}\"").as_str())
+            expect_js_output(output, "async echo script execution"),
+            format!("\"ASYNC_ECHO:same-engine-{index}\"")
         );
     }
 }
@@ -343,7 +454,10 @@ fn execute_complete_finishes_call_before_return_value() {
         None,
     );
 
-    assert_eq!(output.as_deref(), Some("\"first\""));
+    assert_eq!(
+        expect_js_output(output, "complete-first execution"),
+        "\"first\""
+    );
 }
 
 #[test]
@@ -372,7 +486,10 @@ fn execute_function_with_active_module_context() {
         None,
     );
 
-    assert_eq!(output.as_deref(), Some("\"true:true:root-marker\""));
+    assert_eq!(
+        expect_js_output(output, "active module context execution"),
+        "\"true:true:root-marker\""
+    );
 }
 
 #[test]
@@ -414,8 +531,8 @@ fn bootstrap_exposes_ui_android_okhttp_api() {
     );
 
     assert_eq!(
-        output.as_deref(),
-        Some("\"function:function:function:function:function:function:object:object:function:object:object:object:function:function:function:function\"")
+        expect_js_output(output, "bootstrap API inspection"),
+        "\"function:function:function:function:function:function:object:object:function:object:object:object:function:function:function:function\""
     );
 }
 
@@ -448,8 +565,8 @@ fn toolpkg_ipc_local_call_returns_handler_result() {
     );
 
     assert_eq!(
-        output.as_deref(),
-        Some("{\"value\":42,\"channel\":\"test.local\",\"runtime\":\"main\"}")
+        expect_js_output(output, "ToolPkg IPC local call"),
+        "{\"value\":42,\"channel\":\"test.local\",\"runtime\":\"main\"}"
     );
 }
 
@@ -480,7 +597,10 @@ fn runtime_context_with_context_runs_local_main_runner() {
         None,
     );
 
-    assert_eq!(output.as_deref(), Some("{\"value\":42}"));
+    assert_eq!(
+        expect_js_output(output, "runtime context execution"),
+        "{\"value\":42}"
+    );
 }
 
 #[test]
@@ -513,7 +633,119 @@ fn execute_inline_hook_function_source() {
         None,
     );
 
-    assert_eq!(output.as_deref(), Some("\"inline-root\""));
+    assert_eq!(
+        expect_js_output(output, "inline hook function execution"),
+        "\"inline-root\""
+    );
+}
+
+#[test]
+/// Verifies Compose rendering waits for the CommonJS module to initialize lexical bindings.
+fn compose_dsl_default_export_can_capture_later_lexical_constants() {
+    ensure_test_runtime_root();
+    let engine = super::JsEngine::new_toolpkg_registration_engine();
+    let script = r#"
+        exports.default = function(ctx) {
+            return ctx.h('Text', {
+                fontSize: FONT_TITLE,
+                hintFontSize: FONT_HINT,
+                reasonFontSize: FONT_REASON,
+                iconSize: ICON_SIZE,
+                chevronSize: CHEVRON_SIZE
+            }, []);
+        };
+        const FONT_TITLE = 13;
+        const FONT_HINT = 11;
+        const FONT_REASON = 11;
+        const ICON_SIZE = 22;
+        const CHEVRON_SIZE = 16;
+    "#;
+    let mut params = testParams();
+    params.insert(
+        "packageName".to_string(),
+        Value::String("compose_lexical_initialization_test".to_string()),
+    );
+    params.insert(
+        "routeInstanceId".to_string(),
+        Value::String("compose_lexical_initialization_route".to_string()),
+    );
+
+    let raw = expect_js_output(
+        engine.execute_compose_dsl_script(
+            script,
+            &params,
+            &BTreeMap::new(),
+            Arc::new(BTreeMap::new()),
+        ),
+        "compose lexical initialization render result",
+    );
+    let parsed = serde_json::from_str::<Value>(&raw).expect("compose render json");
+
+    assert_eq!(parsed["tree"]["props"]["fontSize"], 13);
+    assert_eq!(parsed["tree"]["props"]["hintFontSize"], 11);
+    assert_eq!(parsed["tree"]["props"]["reasonFontSize"], 11);
+    assert_eq!(parsed["tree"]["props"]["iconSize"], 22);
+    assert_eq!(parsed["tree"]["props"]["chevronSize"], 16);
+}
+
+/// Ensures Compose render and actions resolve package modules from the page snapshot without host reentry.
+#[test]
+fn compose_dsl_resource_snapshot_avoids_host_reentry_for_render_and_action() {
+    ensure_test_runtime_root();
+    let executionHost = Arc::new(TestPluginConfigExecutionHost::default());
+    let engine = super::JsEngine::new(executionHost.clone());
+    let script = r#"
+        const shared = require("../shared");
+        exports.default = function(ctx) {
+            return ctx.h('Button', {
+                label: shared.label,
+                onClick: function() {
+                    return require("../shared").label;
+                }
+            }, []);
+        };
+    "#;
+    let mut params = testParams();
+    params.insert(
+        "__operit_ui_package_name".to_string(),
+        Value::String("compose_snapshot_test".to_string()),
+    );
+    params.insert(
+        "__operit_script_screen".to_string(),
+        Value::String("dist/ui/index.ui.js".to_string()),
+    );
+    params.insert(
+        "routeInstanceId".to_string(),
+        Value::String("compose_snapshot_route".to_string()),
+    );
+    let textResources = Arc::new(BTreeMap::from([(
+        "dist/shared.js".to_string(),
+        "module.exports = { label: 'resource-snapshot' };".to_string(),
+    )]));
+
+    let raw = expect_js_output(
+        engine.execute_compose_dsl_script(script, &params, &BTreeMap::new(), textResources),
+        "compose resource snapshot render result",
+    );
+    let rendered = serde_json::from_str::<Value>(&raw).expect("compose render json");
+    assert_eq!(rendered["tree"]["props"]["label"], "resource-snapshot");
+    let actionId = rendered["tree"]["props"]["onClick"]["__actionId"]
+        .as_str()
+        .expect("compose snapshot action id");
+
+    let actionRaw = expect_js_output(
+        engine.execute_compose_dsl_action(actionId, None, &params, &BTreeMap::new(), None),
+        "compose resource snapshot action result",
+    );
+    let action = serde_json::from_str::<Value>(&actionRaw).expect("compose action json");
+    assert_eq!(action["actionResult"], "resource-snapshot");
+    assert_eq!(
+        executionHost
+            .toolPkgTextResourceReads
+            .load(Ordering::Relaxed),
+        0,
+        "Compose module reads must not call the manager-backed host while its mutex is held",
+    );
 }
 
 #[test]
@@ -540,17 +772,24 @@ fn compose_dsl_action_uses_rendered_runtime() {
         "routeInstanceId".to_string(),
         Value::String("compose_route".to_string()),
     );
-    let raw = engine
-        .execute_compose_dsl_script(script, &params, &BTreeMap::new())
-        .expect("compose render result");
+    let raw = expect_js_output(
+        engine.execute_compose_dsl_script(
+            script,
+            &params,
+            &BTreeMap::new(),
+            Arc::new(BTreeMap::new()),
+        ),
+        "compose render result",
+    );
     let parsed = serde_json::from_str::<Value>(&raw).expect("compose render json");
     let actionId = parsed["tree"]["props"]["onClick"]["__actionId"]
         .as_str()
         .expect("action id");
 
-    let actionRaw = engine
-        .execute_compose_dsl_action(actionId, None, &params, &BTreeMap::new(), None)
-        .expect("compose action result");
+    let actionRaw = expect_js_output(
+        engine.execute_compose_dsl_action(actionId, None, &params, &BTreeMap::new(), None),
+        "compose action result",
+    );
     let actionParsed = serde_json::from_str::<Value>(&actionRaw).expect("compose action json");
     assert_eq!(actionParsed["actionResult"], 1);
 }
@@ -578,9 +817,15 @@ fn compose_dsl_action_updates_runtime_options_state_store() {
         "routeInstanceId".to_string(),
         Value::String("compose_route".to_string()),
     );
-    let raw = engine
-        .execute_compose_dsl_script(script, &params, &BTreeMap::new())
-        .expect("compose render result");
+    let raw = expect_js_output(
+        engine.execute_compose_dsl_script(
+            script,
+            &params,
+            &BTreeMap::new(),
+            Arc::new(BTreeMap::new()),
+        ),
+        "compose render result",
+    );
     let parsed = serde_json::from_str::<Value>(&raw).expect("compose render json");
     let actionId = parsed["tree"]["props"]["onCheckedChange"]["__actionId"]
         .as_str()
@@ -589,15 +834,16 @@ fn compose_dsl_action_updates_runtime_options_state_store() {
     params.insert("state".to_string(), parsed["state"].clone());
     params.insert("memo".to_string(), parsed["memo"].clone());
 
-    let actionRaw = engine
-        .execute_compose_dsl_action(
+    let actionRaw = expect_js_output(
+        engine.execute_compose_dsl_action(
             &actionId,
             Some(Value::Bool(true)),
             &params,
             &BTreeMap::new(),
             None,
-        )
-        .expect("compose action result");
+        ),
+        "compose action result",
+    );
     let actionParsed = serde_json::from_str::<Value>(&actionRaw).expect("compose action json");
 
     assert_eq!(actionParsed["state"]["enabled"], true);
@@ -628,17 +874,24 @@ fn compose_dsl_action_can_access_bootstrap_globals() {
         "routeInstanceId".to_string(),
         Value::String("compose_route".to_string()),
     );
-    let raw = engine
-        .execute_compose_dsl_script(script, &params, &BTreeMap::new())
-        .expect("compose render result");
+    let raw = expect_js_output(
+        engine.execute_compose_dsl_script(
+            script,
+            &params,
+            &BTreeMap::new(),
+            Arc::new(BTreeMap::new()),
+        ),
+        "compose render result",
+    );
     let parsed = serde_json::from_str::<Value>(&raw).expect("compose render json");
     let actionId = parsed["tree"]["props"]["onLoad"]["__actionId"]
         .as_str()
         .expect("action id");
 
-    let actionRaw = engine
-        .execute_compose_dsl_action(actionId, None, &params, &BTreeMap::new(), None)
-        .expect("compose action result");
+    let actionRaw = expect_js_output(
+        engine.execute_compose_dsl_action(actionId, None, &params, &BTreeMap::new(), None),
+        "compose action result",
+    );
     let actionParsed = serde_json::from_str::<Value>(&actionRaw).expect("compose action json");
 
     assert_eq!(actionParsed["actionResult"]["readResource"], "function");
@@ -669,11 +922,60 @@ fn execute_function_from_module_exports() {
         None,
     );
 
-    assert_eq!(output.as_deref(), Some("\"module:exports\""));
+    assert_eq!(
+        expect_js_output(output, "module exports execution"),
+        "\"module:exports\""
+    );
+}
+
+/// Verifies a package script keeps metadata readable while its executable body is minified.
+#[test]
+fn execute_minified_package_script_with_metadata() {
+    ensure_test_runtime_root();
+    let script = r#"/* METADATA
+{
+  name: minified_package
+  displayName: Minified Package
+  tools: [
+    {
+      name: echo
+      description: Echo text
+      parameters: [
+        { name: text, description: Text to echo, type: string, required: true }
+      ]
+    }
+  ]
+}
+*/"use strict";Object.defineProperty(exports,"__esModule",{value:!0});exports.echo=function(t){if(typeof Tools!="object")throw new Error("Tools global missing");return"echo:"+t.text};"#;
+    let package = JsPackageLoader::parse(script).expect("minified package metadata should parse");
+    assert_eq!(package.name, "minified_package");
+    assert_eq!(package.tools.len(), 1);
+    assert_eq!(package.tools[0].name, "echo");
+
+    let mut state = JsEngineState::new(None);
+    let mut params = testParams();
+    params.insert("text".to_string(), Value::String("metadata".to_string()));
+
+    let output = state.execute_script_function_on_current_thread(
+        &package.tools[0].script,
+        &package.tools[0].name,
+        &params,
+        &BTreeMap::new(),
+        None,
+        true,
+        60,
+        None,
+    );
+
+    assert_eq!(
+        expect_js_output(output, "minified package script execution"),
+        "\"echo:metadata\""
+    );
 }
 
 #[test]
 fn register_thinking_guidance_toolpkg_main() {
+    ensure_test_runtime_root();
     let engine = super::JsEngine::new_toolpkg_registration_engine();
     let repoRoot = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -776,7 +1078,10 @@ fn execute_script_can_require_axios_and_uuid() {
         None,
     );
 
-    assert_eq!(output.as_deref(), Some("\"function:function:36\""));
+    assert_eq!(
+        expect_js_output(output, "require API inspection"),
+        "\"function:function:36\""
+    );
 }
 
 #[test]
@@ -805,6 +1110,49 @@ fn registration_mode_uses_ui_module_placeholder() {
     assert_eq!(route["screen"], "screens/main.ui.js");
 }
 
+/// Verifies registration blocks resource and WASM execution before native host access.
+#[test]
+fn registration_mode_blocks_resource_and_wasm_calls() {
+    let engine = super::JsEngine::new_toolpkg_registration_engine();
+    let script = r#"
+        exports.registerToolPkg = function() {
+            var resourceError = '';
+            var wasmError = '';
+            try {
+                ToolPkg.readResource('blocked-resource');
+            } catch (error) {
+                resourceError = error.message;
+            }
+            try {
+                ToolPkg.wasm.call('blocked-module', 'blocked-export', []);
+            } catch (error) {
+                wasmError = error.message;
+            }
+            ToolPkg.registerNavigationEntry({
+                id: 'registration-capability-check',
+                resourceError: resourceError,
+                wasmError: wasmError
+            });
+        };
+    "#;
+
+    let capture = engine
+        .execute_toolpkg_main_registration_function(script, "registerToolPkg", &testParams())
+        .expect("registration must reject forbidden runtime capabilities");
+
+    assert_eq!(capture.navigationEntries.len(), 1);
+    let entry = serde_json::from_str::<Value>(&capture.navigationEntries[0])
+        .expect("registration capability check entry");
+    assert_eq!(
+        entry["resourceError"],
+        "ToolPkg.readResource is unavailable during ToolPkg registration"
+    );
+    assert_eq!(
+        entry["wasmError"],
+        "ToolPkg.wasm.call is unavailable during ToolPkg registration"
+    );
+}
+
 /// Verifies call-scoped environment overrides are visible through `getEnv`.
 #[test]
 fn native_interface_reads_env_override_for_call() {
@@ -830,14 +1178,17 @@ fn native_interface_reads_env_override_for_call() {
         None,
     );
 
-    assert_eq!(output.as_deref(), Some("\"enabled\""));
+    assert_eq!(
+        expect_js_output(output, "environment override read"),
+        "\"enabled\""
+    );
 }
 
 /// Verifies plugin configuration directories use the runtime storage layout.
 #[test]
 fn native_interface_resolves_plugin_config_dir() {
     ensure_test_runtime_root();
-    let mut state = JsEngineState::new(Some(Arc::new(TestPluginConfigExecutionHost)));
+    let mut state = JsEngineState::new(Some(Arc::new(TestPluginConfigExecutionHost::default())));
     let script = r#"
         exports.config_dir = function(_params) {
             return getPluginConfigDir('plugin:name');
@@ -855,8 +1206,8 @@ fn native_interface_resolves_plugin_config_dir() {
         60,
         None,
     );
-    let path = serde_json::from_str::<String>(&output.expect("config dir"))
-        .expect("serialized config dir");
+    let output = expect_js_output(output, "config dir execution");
+    let path = serde_json::from_str::<String>(&output).expect("serialized config dir");
 
     let configDir = Path::new(&path);
     let configDirName = configDir
@@ -920,5 +1271,7 @@ fn probe_async_function_declaration_inside_iife() {
         None,
     );
 
-    assert!(output.is_some());
+    assert!(output
+        .expect("async function declaration probe execution")
+        .is_some());
 }

@@ -12,8 +12,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
-use crate::client::{CoreLinkClient, CoreLinkSharedClient};
+use crate::client::{CoreLinkPushSession, CoreLinkTransportClient};
 use crate::codec::{decodeLink, encodeLink};
+use crate::http_protocol::{
+    LinkCallEnvelope, LinkPushCloseEnvelope, LinkPushCloseResponse, LinkPushItemResponse,
+    LinkPushOpenEnvelope, LinkPushOpenResponse, LinkWatchChannelCloseEnvelope,
+    LinkWatchChannelCloseResponse, LinkWatchChannelEnvelope, LinkWatchChannelEvent,
+    LinkWatchChannelOpenEnvelope, LinkWatchChannelOpenResponse, LinkWatchEnvelope,
+};
 use crate::protocol::{
     CoreCallRequest, CoreCallResponse, CoreEvent, CoreEventKind, CoreLinkError, CorePushItem,
     CorePushRequest, CoreWatchRequest,
@@ -31,14 +37,13 @@ struct CoreLinkHttpState {
 }
 
 struct LinkPushState {
-    request: CorePushRequest,
+    session: Box<dyn CoreLinkPushSession>,
     nextSequence: u64,
 }
 
 #[derive(Clone)]
 enum CoreLinkHttpCore {
-    Locked(Arc<Mutex<Box<dyn CoreLinkClient + Send>>>),
-    Shared(Arc<dyn CoreLinkSharedClient + Send + Sync>),
+    Locked(Arc<Mutex<Box<dyn CoreLinkTransportClient>>>),
 }
 
 struct LinkWatchChannel {
@@ -85,75 +90,6 @@ impl Drop for LinkWatchChannelEventStream {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkCallEnvelope {
-    pub request: CoreCallRequest,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkWatchEnvelope {
-    pub request: CoreWatchRequest,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkWatchChannelEnvelope {
-    pub channelId: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkWatchChannelOpenEnvelope {
-    pub channelId: String,
-    pub subscriptionId: String,
-    pub request: CoreWatchRequest,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkWatchChannelCloseEnvelope {
-    pub channelId: String,
-    pub subscriptionId: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkWatchChannelOpenResponse {
-    pub subscriptionId: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkWatchChannelCloseResponse {}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkWatchChannelEvent {
-    pub subscriptionId: String,
-    pub event: CoreEvent,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkPushOpenEnvelope {
-    pub pushId: String,
-    pub request: CorePushRequest,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkPushCloseEnvelope {
-    pub pushId: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkPushOpenResponse {
-    pub pushId: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkPushItemResponse {
-    pub pushId: String,
-    pub sequence: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LinkPushCloseResponse {
-    pub pushId: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "body")]
 pub enum CoreLinkWsPayload {
     Call(LinkCallEnvelope),
@@ -176,22 +112,10 @@ pub enum CoreLinkWsResponse {
 
 impl CoreLinkHttpDispatcher {
     /// Creates an HTTP/WebSocket dispatcher around a core link client.
-    pub fn new(core: impl CoreLinkClient + Send + 'static) -> Self {
+    pub fn new(core: impl CoreLinkTransportClient + 'static) -> Self {
         Self {
             state: Arc::new(CoreLinkHttpState {
                 core: CoreLinkHttpCore::Locked(Arc::new(Mutex::new(Box::new(core)))),
-                watchChannels: Arc::new(Mutex::new(BTreeMap::new())),
-                pushStreams: Arc::new(Mutex::new(BTreeMap::new())),
-            }),
-        }
-    }
-
-    /// Creates an HTTP/WebSocket dispatcher around a shared core link client.
-    #[allow(non_snake_case)]
-    pub fn newShared(core: impl CoreLinkSharedClient + Send + Sync + 'static) -> Self {
-        Self {
-            state: Arc::new(CoreLinkHttpState {
-                core: CoreLinkHttpCore::Shared(Arc::new(core)),
                 watchChannels: Arc::new(Mutex::new(BTreeMap::new())),
                 pushStreams: Arc::new(Mutex::new(BTreeMap::new())),
             }),
@@ -212,14 +136,9 @@ impl CoreLinkHttpDispatcher {
 
     #[allow(non_snake_case)]
     async fn executeCall(&self, request: CoreCallRequest) -> CoreCallResponse {
-        let response = match &self.state.core {
-            CoreLinkHttpCore::Locked(core) => {
-                let mut core = core.lock().await;
-                core.call(request).await
-            }
-            CoreLinkHttpCore::Shared(core) => core.call(request).await,
-        };
-        response
+        let CoreLinkHttpCore::Locked(core) = &self.state.core;
+        let mut core = core.lock().await;
+        core.call(request).await
     }
 
     /// Handles a MessagePack watch snapshot request and returns a MessagePack event.
@@ -243,14 +162,9 @@ impl CoreLinkHttpDispatcher {
         &self,
         request: CoreWatchRequest,
     ) -> Result<CoreEvent, CoreLinkError> {
-        let response = match &self.state.core {
-            CoreLinkHttpCore::Locked(core) => {
-                let mut core = core.lock().await;
-                core.watchSnapshot(request).await
-            }
-            CoreLinkHttpCore::Shared(core) => core.watchSnapshot(request).await,
-        };
-        response
+        let CoreLinkHttpCore::Locked(core) = &self.state.core;
+        let mut core = core.lock().await;
+        core.watchSnapshot(request).await
     }
 
     /// Drains queued events for an opened watch channel.
@@ -328,25 +242,15 @@ impl CoreLinkHttpDispatcher {
             Ok(value) => value,
             Err(error) => return bad_request(error.to_string()),
         };
-        if self
-            .state
-            .pushStreams
-            .lock()
-            .await
-            .remove(&envelope.pushId)
-            .is_none()
-        {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                CoreLinkError::new("PUSH_NOT_FOUND", "Link push stream not found"),
-            );
+        match self.closePushStream(&envelope.pushId).await {
+            Ok(()) => encode_response(
+                StatusCode::OK,
+                LinkPushCloseResponse {
+                    pushId: envelope.pushId,
+                },
+            ),
+            Err(error) => error_response(StatusCode::BAD_REQUEST, error),
         }
-        encode_response(
-            StatusCode::OK,
-            LinkPushCloseResponse {
-                pushId: envelope.pushId,
-            },
-        )
     }
 
     /// Upgrades an HTTP request into a WebSocket core link session.
@@ -373,10 +277,12 @@ impl CoreLinkHttpDispatcher {
                 "Link push stream already exists",
             ));
         }
+        let CoreLinkHttpCore::Locked(core) = &self.state.core;
+        let session = core.lock().await.openPush(request).await?;
         streams.insert(
             pushId.clone(),
             LinkPushState {
-                request,
+                session,
                 nextSequence: 0,
             },
         );
@@ -389,33 +295,38 @@ impl CoreLinkHttpDispatcher {
         &self,
         item: CorePushItem,
     ) -> Result<LinkPushItemResponse, CoreLinkError> {
-        let request = {
-            let mut streams = self.state.pushStreams.lock().await;
-            let state = streams.get_mut(&item.pushId).ok_or_else(|| {
-                CoreLinkError::new("PUSH_NOT_FOUND", "Link push stream not found")
-            })?;
-            if item.sequence != state.nextSequence {
-                return Err(CoreLinkError::new(
-                    "PUSH_SEQUENCE_MISMATCH",
-                    format!(
-                        "Link push sequence is {}, expected {}",
-                        item.sequence, state.nextSequence
-                    ),
-                ));
-            }
-            state.nextSequence += 1;
-            state.request.clone()
-        };
-        let response = self
-            .executeCall(request.itemCall(item.sequence, item.args))
-            .await;
-        match response.result {
-            Ok(_) => Ok(LinkPushItemResponse {
-                pushId: item.pushId,
-                sequence: item.sequence,
-            }),
-            Err(error) => Err(error),
+        let mut streams = self.state.pushStreams.lock().await;
+        let state = streams.get_mut(&item.pushId).ok_or_else(|| {
+            CoreLinkError::new("PUSH_NOT_FOUND", "Link push stream not found")
+        })?;
+        if item.sequence != state.nextSequence {
+            return Err(CoreLinkError::new(
+                "PUSH_SEQUENCE_MISMATCH",
+                format!(
+                    "Link push sequence is {}, expected {}",
+                    item.sequence, state.nextSequence
+                ),
+            ));
         }
+        state.session.send(item.args).await?;
+        state.nextSequence += 1;
+        Ok(LinkPushItemResponse {
+            pushId: item.pushId,
+            sequence: item.sequence,
+        })
+    }
+
+    /// Removes and closes one registered input stream.
+    #[allow(non_snake_case)]
+    async fn closePushStream(&self, pushId: &str) -> Result<(), CoreLinkError> {
+        let state = self
+            .state
+            .pushStreams
+            .lock()
+            .await
+            .remove(pushId)
+            .ok_or_else(|| CoreLinkError::new("PUSH_NOT_FOUND", "Link push stream not found"))?;
+        state.session.close().await
     }
 
     #[allow(non_snake_case)]
@@ -459,13 +370,9 @@ impl CoreLinkHttpDispatcher {
                     CoreLinkError::new("WATCH_CHANNEL_NOT_FOUND", "watch channel not found")
                 })?
         };
-        let receiver = match &self.state.core {
-            CoreLinkHttpCore::Locked(core) => {
-                let mut core = core.lock().await;
-                core.watch(request).await?
-            }
-            CoreLinkHttpCore::Shared(core) => core.watch(request).await?,
-        };
+        let CoreLinkHttpCore::Locked(core) = &self.state.core;
+        let mut core = core.lock().await;
+        let receiver = core.watch(request).await?;
         let task_subscription_id = subscriptionId.clone();
         let task_channel_id = channelId.clone();
         let task_watch_channels = self.state.watchChannels.clone();
@@ -553,23 +460,15 @@ impl CoreLinkHttpDispatcher {
     async fn handleWsPayload(&self, payload: CoreLinkWsPayload) -> CoreLinkWsResponse {
         match payload {
             CoreLinkWsPayload::Call(request) => {
-                let response = match &self.state.core {
-                    CoreLinkHttpCore::Locked(core) => {
-                        let mut core = core.lock().await;
-                        core.call(request.request).await
-                    }
-                    CoreLinkHttpCore::Shared(core) => core.call(request.request).await,
-                };
+                let CoreLinkHttpCore::Locked(core) = &self.state.core;
+                let mut core = core.lock().await;
+                let response = core.call(request.request).await;
                 CoreLinkWsResponse::Call(response)
             }
             CoreLinkWsPayload::WatchSnapshot(request) => {
-                let response = match &self.state.core {
-                    CoreLinkHttpCore::Locked(core) => {
-                        let mut core = core.lock().await;
-                        core.watchSnapshot(request.request).await
-                    }
-                    CoreLinkHttpCore::Shared(core) => core.watchSnapshot(request.request).await,
-                };
+                let CoreLinkHttpCore::Locked(core) = &self.state.core;
+                let mut core = core.lock().await;
+                let response = core.watchSnapshot(request.request).await;
                 match response {
                     Ok(event) => CoreLinkWsResponse::WatchSnapshot(event),
                     Err(error) => CoreLinkWsResponse::Error(error),
@@ -586,18 +485,8 @@ impl CoreLinkHttpDispatcher {
                 Err(error) => CoreLinkWsResponse::Error(error),
             },
             CoreLinkWsPayload::PushClose(envelope) => {
-                if self
-                    .state
-                    .pushStreams
-                    .lock()
-                    .await
-                    .remove(&envelope.pushId)
-                    .is_none()
-                {
-                    return CoreLinkWsResponse::Error(CoreLinkError::new(
-                        "PUSH_NOT_FOUND",
-                        "Link push stream not found",
-                    ));
+                if let Err(error) = self.closePushStream(&envelope.pushId).await {
+                    return CoreLinkWsResponse::Error(error);
                 }
                 CoreLinkWsResponse::PushClosed(LinkPushCloseResponse {
                     pushId: envelope.pushId,

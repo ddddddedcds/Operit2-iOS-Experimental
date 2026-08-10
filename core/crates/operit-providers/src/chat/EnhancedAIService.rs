@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
 
 use operit_store::PreferencesDataStore::mutableStateFlow;
 use operit_store::PreferencesDataStore::MutableStateFlow;
@@ -25,6 +24,7 @@ use crate::chat::llmprovider::AIService::{
     TokenCounts,
 };
 use crate::runtime_support::{ProviderRuntimeContext, ProviderRuntimeSupport};
+use operit_host_api::HostManager::defaultHostRuntimeTaskSchedulerHost;
 use operit_model::CharacterCard::CharacterCardMemoryBindingMode;
 use operit_model::FunctionType::FunctionType;
 use operit_model::InputProcessingState::InputProcessingState;
@@ -35,22 +35,21 @@ use operit_model::PromptTurn::{PromptTurn, PromptTurnKind};
 use operit_model::ToolPrompt::{ToolParameterSchema, ToolPrompt};
 use operit_store::repository::UsageStatisticsStore::{UsageRequestSource, UsageStatisticsStore};
 use operit_store::repository::UserMarkdownRepository::UserMarkdownRepository;
+use operit_store::RuntimeStorageHost::defaultRuntimeStorageHost;
 use operit_tools::tools::climode::CliToolModeSupport::{
     CliToolModeSupport, ToolExposureMode as ResolvedToolExposureMode,
 };
 use operit_tools::tools::AIToolHandler::AIToolHandler;
 use operit_tools::ConversationMarkupManager::{
     ConversationMarkupManager, ENHANCED_PURE_THINKING_ONLY_WARNING,
-    ENHANCED_TRUNCATED_TOOL_CALL_WARNING,
 };
 use operit_tools::ToolExecutionManager::{
     AITool as RuntimeAITool, ToolExecutionManager, ToolExposureMode as RuntimeToolExposureMode,
 };
-use operit_util::stream::RevisableTextStream::RevisableTextStreamLike;
 use operit_util::stream::RevisableTextStream::{with_event_channel_shared, TextStreamEventCarrier};
-use operit_util::stream::Stream::{FnStream, Stream};
+use operit_util::stream::Stream::Stream;
 use operit_util::AppLogger::AppLogger;
-use operit_util::ChatMarkupRegex::{attr_value, ChatMarkupRegex};
+use operit_util::ChatMarkupRegex::ChatMarkupRegex;
 use operit_util::ChatUtils::ChatUtils;
 use operit_util::OperitPaths::{characterMemoryOwnerKey, sharedMemoryOwnerKey};
 
@@ -64,7 +63,7 @@ pub struct EnhancedAIService {
     pub file_binding_service: FileBindingServiceMirror,
     pub tool_handler: AIToolHandler,
     pub input_processing_state: MutableStateFlow<InputProcessingState>,
-    pub request_window_estimate_flow: MutableStateFlow<Option<i32>>,
+    pub request_window_estimate_flow: MutableStateFlow<Option<i64>>,
     pub api_preferences: ApiPreferencesMirror,
     pub character_card_tool_access_resolver: CharacterCardToolAccessResolverMirror,
     pub tool_processing_scope: ToolProcessingScopeMirror,
@@ -76,17 +75,17 @@ pub struct EnhancedAIService {
 #[derive(Clone, Debug)]
 pub struct EnhancedAISharedState {
     pub is_service_manager_initialized: bool,
-    pub per_request_token_counts: Option<(i32, i32)>,
-    pub request_window_estimate: Option<i32>,
+    pub per_request_token_counts: Option<(i64, i64)>,
+    pub request_window_estimate: Option<i64>,
     pub active_execution_contexts: BTreeMap<i32, MessageExecutionContext>,
     pub next_execution_context_id: i32,
     pub tool_execution_jobs: BTreeMap<String, ToolExecutionJobMirror>,
-    pub accumulated_input_token_count: i32,
-    pub accumulated_output_token_count: i32,
-    pub accumulated_cached_input_token_count: i32,
-    pub current_request_input_token_count: i32,
-    pub current_request_output_token_count: i32,
-    pub current_request_cached_input_token_count: i32,
+    pub accumulated_input_token_count: i64,
+    pub accumulated_output_token_count: i64,
+    pub accumulated_cached_input_token_count: i64,
+    pub current_request_input_token_count: i64,
+    pub current_request_output_token_count: i64,
+    pub current_request_cached_input_token_count: i64,
     pub current_response_callback_registered: bool,
     pub current_complete_callback_registered: bool,
     pub last_reply_content: Option<String>,
@@ -96,9 +95,9 @@ pub struct EnhancedAISharedState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TurnTokenSnapshot {
-    pub inputTokens: i32,
-    pub outputTokens: i32,
-    pub cachedInputTokens: i32,
+    pub inputTokens: i64,
+    pub outputTokens: i64,
+    pub cachedInputTokens: i64,
 }
 
 pub trait SendMessageCallbacks: Send + Sync {
@@ -241,7 +240,7 @@ pub struct SendMessageExecution {
     pub requestHistory: Vec<PromptTurn>,
     pub responseChunks: Vec<String>,
     pub tokenSnapshot: TurnTokenSnapshot,
-    pub requestWindowSize: i32,
+    pub requestWindowSize: i64,
     pub providerModel: String,
     pub lifecycle: Vec<SendMessageLifecycleStage>,
 }
@@ -372,6 +371,7 @@ impl PromptHistoryHookDispatcher for RuntimePromptHistoryHooks {
             model_parameters: Vec::new(),
             available_tools: Vec::new(),
             metadata: btree_to_value_map(&context.metadata),
+            on_hook_timeout: None,
         });
 
         HistoryHookContext {
@@ -604,7 +604,7 @@ impl EnhancedAIService {
         runtime.modelParameters.clone()
     }
 
-    pub fn publishRequestWindowEstimate(&mut self, windowSize: i32) {
+    pub fn publishRequestWindowEstimate(&mut self, windowSize: i64) {
         self.shared_state().request_window_estimate = Some(windowSize);
         self.request_window_estimate_flow
             .set_value(Some(windowSize));
@@ -616,7 +616,7 @@ impl EnhancedAIService {
         preparedHistory: &[PromptTurn],
         availableTools: &[ToolPrompt],
         publishEstimate: bool,
-    ) -> Result<i32, AiServiceError> {
+    ) -> Result<i64, AiServiceError> {
         let windowSize = {
             let service = serviceForFunction.lock().await;
             service
@@ -836,7 +836,7 @@ impl EnhancedAIService {
         chatModelIdOverride: Option<String>,
         publishEstimate: bool,
         mut runtime: SendMessageRuntime,
-    ) -> Result<i32, AiServiceError> {
+    ) -> Result<i64, AiServiceError> {
         self.ensureInitialized();
         let preparedHistory = self.prepareConversationHistory(
             chatHistory,
@@ -961,7 +961,7 @@ impl EnhancedAIService {
     }
 
     #[allow(non_snake_case)]
-    pub fn requestWindowEstimateFlow(&self) -> MutableStateFlow<Option<i32>> {
+    pub fn requestWindowEstimateFlow(&self) -> MutableStateFlow<Option<i64>> {
         self.request_window_estimate_flow.clone()
     }
 
@@ -982,7 +982,7 @@ impl EnhancedAIService {
     pub async fn sendMessage(
         &mut self,
         options: SendMessageOptions,
-    ) -> Result<Box<dyn RevisableTextStreamLike>, AiServiceError> {
+    ) -> Result<SharedAiResponseStream, AiServiceError> {
         let runtime = self.createSendMessageRuntime(&options)?;
         self.sendMessageWithRuntime(options, runtime).await
     }
@@ -1035,9 +1035,10 @@ impl EnhancedAIService {
         } else {
             characterMemoryOwnerKey(&activeCard.id).map_err(AiServiceError::RequestFailed)?
         };
-        let userPreferencesText = UserMarkdownRepository::new(userOwnerKey)
-            .readUserMarkdown()
-            .map_err(AiServiceError::RequestFailed)?;
+        let userPreferencesText =
+            UserMarkdownRepository::new(userOwnerKey, defaultRuntimeStorageHost())
+                .readUserMarkdown()
+                .map_err(AiServiceError::RequestFailed)?;
 
         Ok(SendMessageRuntime {
             activePromptMetadata: BTreeMap::new(),
@@ -1072,50 +1073,37 @@ impl EnhancedAIService {
         &mut self,
         options: SendMessageOptions,
         runtime: SendMessageRuntime,
-    ) -> Result<Box<dyn RevisableTextStreamLike>, AiServiceError> {
-        let eventChannel = operit_util::stream::HotStream::mutable_shared_stream(usize::MAX);
-        let streamEventChannel = eventChannel.clone();
+    ) -> Result<SharedAiResponseStream, AiServiceError> {
+        AppLogger::i("CoreSend", "provider response task schedule start");
+        let responseStream = with_event_channel_shared(
+            operit_util::stream::HotStream::mutable_shared_stream(usize::MAX),
+            operit_util::stream::HotStream::mutable_shared_stream(usize::MAX),
+        );
         let mut service = self.clone();
-        let mut ownedOptions = Some(options);
-        let mut ownedRuntime = Some(runtime);
-        let coldStream = FnStream::new(move |emit| {
-            let options = ownedOptions
-                .take()
-                .expect("sendMessageWithRuntime stream must only be collected once");
-            let runtime = ownedRuntime
-                .take()
-                .expect("sendMessageWithRuntime runtime must only be consumed once");
-            let responseStream = with_event_channel_shared(
-                operit_util::stream::HotStream::mutable_shared_stream(usize::MAX),
-                streamEventChannel.clone(),
-            );
-            let mut workerService = service.clone();
-            let workerResponseStream = responseStream.clone();
-            let worker = thread::spawn(move || {
-                let runtimeBuilder = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("tokio runtime must build for EnhancedAIService stream");
-                let result = runtimeBuilder.block_on(workerService.executeSendMessageWithRuntime(
-                    options,
-                    runtime,
-                    workerResponseStream.clone(),
-                ));
-                workerResponseStream.upstream.close();
-                workerResponseStream.event_channel.close();
-                if let Err(error) = result {
-                    workerService.setInputProcessingState(InputProcessingState::Error {
-                        message: error.to_string(),
-                    });
-                }
-            });
-            let mut sharedCollector = responseStream.clone();
-            sharedCollector.collect(emit);
-            let _ = worker.join();
-        });
-        Ok(Box::new(
-            operit_util::stream::RevisableTextStream::with_event_channel(coldStream, eventChannel),
-        ))
+        let producerStream = responseStream.clone();
+        defaultHostRuntimeTaskSchedulerHost()
+            .scheduleHostRuntimeAsyncTask(
+                "enhanced-ai-response",
+                Box::new(move || {
+                    Box::pin(async move {
+                        AppLogger::i("CoreSend", "provider response task entered");
+                        let result = service
+                            .executeSendMessageWithRuntime(options, runtime, producerStream.clone())
+                            .await;
+                        producerStream.upstream.close();
+                        producerStream.event_channel.close();
+                        AppLogger::i("CoreSend", "provider response task closed output streams");
+                        if let Err(error) = result {
+                            service.setInputProcessingState(InputProcessingState::Error {
+                                message: error.to_string(),
+                            });
+                        }
+                    })
+                }),
+            )
+            .map_err(|error| AiServiceError::RequestFailed(error.to_string()))?;
+        AppLogger::i("CoreSend", "provider response task scheduled");
+        Ok(responseStream)
     }
 
     async fn executeSendMessageWithRuntime(
@@ -1465,56 +1453,73 @@ impl EnhancedAIService {
 
         lifecycle.push(SendMessageLifecycleStage::CollectResponseStream);
         let providerEventChannel = provider_stream.event_channel().clone();
-        let responseEventChannel = responseStream.event_channel.clone();
-        let eventForwarder = thread::spawn(move || {
-            let mut events = providerEventChannel;
-            events.collect(&mut |event| {
-                responseEventChannel.emit(event);
-            });
-        });
         let mut responseChunks = Vec::new();
         let mut totalChars = 0;
         let mut isFirstChunk = true;
         let mut chunkCount = 0;
         let mut lastLogTime = runtimeSupport.messageTimingNow().startedAtMs;
         let activeExecutionState = self.shared_state.clone();
-        provider_stream.collect(&mut |content| {
-            if !Self::isExecutionContextActiveInSharedState(&activeExecutionState, &execContext) {
-                return;
-            }
-            if isFirstChunk {
-                if !isSubTask {
-                    self.setInputProcessingState(InputProcessingState::Receiving {
-                        message: "enhanced_receiving_response".to_string(),
-                    });
+        AppLogger::i(
+            "CoreSend",
+            &format!("provider stream collect enter chatId={}", logChatId),
+        );
+        provider_stream
+            .collect(&mut |content| {
+                if !Self::isExecutionContextActiveInSharedState(&activeExecutionState, &execContext)
+                {
+                    return;
                 }
-                isFirstChunk = false;
-                runtimeSupport.logMessageTiming(
-                    "enhanced.sendMessage.firstResponseChunk",
-                    requestStartTime.clone(),
-                    Some(format!(
-                        "functionType={}, stream={}",
-                        function_type_name(&functionType),
-                        stream
-                    )),
-                );
-            }
-            chunkCount += 1;
-            totalChars += content.len() as i32;
-            let currentTime = runtimeSupport.messageTimingNow().startedAtMs;
-            if currentTime.saturating_sub(lastLogTime) > 5000 {
-                AppLogger::d(
-                    TAG,
-                    &format!("已接收 {} 个内容块，总计 {} 个字符", chunkCount, totalChars),
-                );
-                lastLogTime = currentTime;
-            }
-            execContext.streamBuffer.push_str(&content);
-            execContext.roundManager.appendContent(&content);
-            responseStream.upstream.emit(content.clone());
-            responseChunks.push(content);
-        });
-        let _ = eventForwarder.join();
+                if isFirstChunk {
+                    AppLogger::i(
+                        "CoreSend",
+                        &format!(
+                            "provider stream first chunk chatId={} chars={}",
+                            logChatId,
+                            content.chars().count()
+                        ),
+                    );
+                    if !isSubTask {
+                        self.setInputProcessingState(InputProcessingState::Receiving {
+                            message: "enhanced_receiving_response".to_string(),
+                        });
+                    }
+                    isFirstChunk = false;
+                    runtimeSupport.logMessageTiming(
+                        "enhanced.sendMessage.firstResponseChunk",
+                        requestStartTime.clone(),
+                        Some(format!(
+                            "functionType={}, stream={}",
+                            function_type_name(&functionType),
+                            stream
+                        )),
+                    );
+                }
+                chunkCount += 1;
+                totalChars += content.len() as i32;
+                let currentTime = runtimeSupport.messageTimingNow().startedAtMs;
+                if currentTime.saturating_sub(lastLogTime) > 5000 {
+                    AppLogger::d(
+                        TAG,
+                        &format!("已接收 {} 个内容块，总计 {} 个字符", chunkCount, totalChars),
+                    );
+                    lastLogTime = currentTime;
+                }
+                execContext.streamBuffer.push_str(&content);
+                execContext.roundManager.appendContent(&content);
+                responseStream.upstream.emit(content.clone());
+                responseChunks.push(content);
+            })
+            .await;
+        AppLogger::i(
+            "CoreSend",
+            &format!(
+                "provider stream collect return chatId={} chunks={}",
+                logChatId, chunkCount
+            ),
+        );
+        for event in providerEventChannel.replay_cache() {
+            responseStream.event_channel.emit(event);
+        }
 
         if !self.isExecutionContextActive(&execContext) {
             self.unregisterExecutionContext(&execContext);
@@ -1641,8 +1646,22 @@ impl EnhancedAIService {
             self.unregisterExecutionContext(&execContext);
             return Err(error);
         }
+        AppLogger::d(
+            TAG,
+            &format!(
+                "response completion processing done chatId={} executionId={}",
+                logChatId, execContext.executionId
+            ),
+        );
 
         if !self.isExecutionContextActive(&execContext) {
+            AppLogger::d(
+                TAG,
+                &format!(
+                    "response completion inactive chatId={} executionId={}",
+                    logChatId, execContext.executionId
+                ),
+            );
             self.unregisterExecutionContext(&execContext);
             return Ok(());
         }
@@ -1659,6 +1678,13 @@ impl EnhancedAIService {
                 );
             }
         }
+        AppLogger::d(
+            TAG,
+            &format!(
+                "response post-processing done chatId={} executionId={}",
+                logChatId, execContext.executionId
+            ),
+        );
 
         lifecycle.push(SendMessageLifecycleStage::UnregisterExecutionContext);
         self.unregisterExecutionContext(&execContext);
@@ -1683,6 +1709,13 @@ impl EnhancedAIService {
         let _ = requestWindowSize;
         let _ = lifecycle;
         responseStream.upstream.close();
+        AppLogger::d(
+            TAG,
+            &format!(
+                "response stream closed chatId={} executionId={}",
+                logChatId, execContext.executionId
+            ),
+        );
         Ok(())
     }
 
@@ -1930,27 +1963,24 @@ impl EnhancedAIService {
         }
 
         let responseEventChannel = response.event_channel().clone();
-        let collectorEventChannel = collector.event_channel.clone();
-        let eventForwarder = thread::spawn(move || {
-            let mut events = responseEventChannel;
-            events.collect(&mut |event| {
-                collectorEventChannel.emit(event);
-            });
-        });
         let activeExecutionState = self.shared_state.clone();
         let mut chunkCount = 0usize;
         let mut totalChars = 0usize;
-        response.collect(&mut |content| {
-            if !Self::isExecutionContextActiveInSharedState(&activeExecutionState, context) {
-                return;
-            }
-            chunkCount += 1;
-            totalChars += content.len();
-            context.streamBuffer.push_str(&content);
-            context.roundManager.appendContent(&content);
-            collector.upstream.emit(content);
-        });
-        let _ = eventForwarder.join();
+        response
+            .collect(&mut |content| {
+                if !Self::isExecutionContextActiveInSharedState(&activeExecutionState, context) {
+                    return;
+                }
+                chunkCount += 1;
+                totalChars += content.len();
+                context.streamBuffer.push_str(&content);
+                context.roundManager.appendContent(&content);
+                collector.upstream.emit(content);
+            })
+            .await;
+        for event in responseEventChannel.replay_cache() {
+            collector.event_channel.emit(event);
+        }
 
         if !self.isExecutionContextActive(context) {
             return Ok(());
@@ -2088,6 +2118,15 @@ impl EnhancedAIService {
         }
 
         let content = context.streamBuffer.trim().to_string();
+        let rawContentJson = serde_json::to_string(&context.streamBuffer)
+            .expect("completed model response must serialize as JSON string");
+        AppLogger::d(
+            TAG,
+            &format!(
+                "chat.response.raw executionId={} round={} content={}",
+                context.executionId, context.roundManager.roundIndex, rawContentJson
+            ),
+        );
         AppLogger::d(
             TAG,
             &format!(
@@ -2188,29 +2227,8 @@ impl EnhancedAIService {
             .await;
         }
 
-        let enhancedContent = self.enhanceToolDetection(&content);
-        let truncatedToolRecovery = self.detectAndRepairTruncatedToolRound(&content);
-        let finalContent = truncatedToolRecovery
-            .as_ref()
-            .map(|recovery| recovery.repairedContent.clone())
-            .unwrap_or(enhancedContent);
-
-        if let Some(recovery) = &truncatedToolRecovery {
-            AppLogger::w(
-                TAG,
-                &format!(
-                    "chat.tool_call.truncated executionId={} round={} appendedChars={} invalidatedTools={}",
-                    context.executionId,
-                    context.roundManager.roundIndex,
-                    recovery.appendedSuffix.len(),
-                    recovery.invalidatedToolNames.join(", ")
-                ),
-            );
-            if !recovery.appendedSuffix.is_empty() {
-                context.streamBuffer.push_str(&recovery.appendedSuffix);
-                context.roundManager.appendContent(&recovery.appendedSuffix);
-            }
-        } else if finalContent != content {
+        let finalContent = self.enhanceToolDetection(&content);
+        if finalContent != content {
             AppLogger::d(
                 TAG,
                 &format!(
@@ -2226,11 +2244,7 @@ impl EnhancedAIService {
             context.roundManager.updateContent(finalContent.clone());
         }
 
-        let extractedToolInvocations = if truncatedToolRecovery.is_none() {
-            ToolExecutionManager::extractToolInvocations(&finalContent)
-        } else {
-            Vec::new()
-        };
+        let extractedToolInvocations = ToolExecutionManager::extractToolInvocations(&finalContent);
         let extractedToolNames = extractedToolInvocations
             .iter()
             .map(|invocation| invocation.tool.name.clone())
@@ -2261,67 +2275,6 @@ impl EnhancedAIService {
 
         if !self.isExecutionContextActive(context) {
             return Ok(());
-        }
-
-        if let Some(_recovery) = truncatedToolRecovery {
-            if disableWarning {
-                let displayContent = context.roundManager.getDisplayContent();
-                AppLogger::w(
-                    TAG,
-                    &format!(
-                        "chat.response.finalize_truncated_tool executionId={} round={} disableWarning=true",
-                        context.executionId, context.roundManager.roundIndex
-                    ),
-                );
-                self.finalizeAssistantResponse(
-                    context,
-                    &displayContent,
-                    enableMemoryAutoUpdate,
-                    onNonFatalError,
-                    isSubTask,
-                    chatId.clone(),
-                    characterName,
-                    avatarUri,
-                    notifyReplyOverride,
-                    callbacks,
-                );
-                return Ok(());
-            }
-            let warningStatus = ConversationMarkupManager::createWarningStatus(
-                ENHANCED_TRUNCATED_TOOL_CALL_WARNING,
-            );
-            let warningDisplayContent = format!("\n{warningStatus}");
-            context.roundManager.appendContent(&warningDisplayContent);
-            context.streamBuffer.push_str(&warningDisplayContent);
-            collector.upstream.emit(warningDisplayContent);
-            return Box::pin(self.handleToolInvocation(
-                collector,
-                Vec::new(),
-                context,
-                functionType,
-                promptFunctionType,
-                enableThinking,
-                enableMemoryAutoUpdate,
-                onNonFatalError,
-                onTokenLimitExceeded,
-                maxTokens,
-                tokenUsageThreshold,
-                isSubTask,
-                characterName,
-                avatarUri,
-                roleCardId,
-                chatId,
-                onToolInvocation,
-                notifyReplyOverride,
-                chatProviderIdOverride.clone(),
-                chatModelIdOverride,
-                stream,
-                enableGroupOrchestrationHint,
-                Some(warningStatus),
-                disableWarning,
-                runtime,
-            ))
-            .await;
         }
 
         if !extractedToolInvocations.is_empty() {
@@ -2443,7 +2396,7 @@ impl EnhancedAIService {
 
         for invocation in &toolInvocations {
             if let Some(callback) = onToolInvocation.as_ref() {
-                callback(invocation.tool.name.clone());
+                callback(resolveToolDisplayName(&invocation.tool));
             }
         }
 
@@ -2477,7 +2430,8 @@ impl EnhancedAIService {
             roleCardId.clone(),
             context.workspacePath.clone(),
             toolExposureMode,
-        );
+        )
+        .await;
         let emittedChars = emittedToolResultMessages
             .iter()
             .map(|content| content.len())
@@ -2625,133 +2579,6 @@ impl EnhancedAIService {
         trimmed.ends_with("/>") || trimmed.contains(&format!("</{tagName}>"))
     }
 
-    fn detectAndRepairTruncatedToolRound(
-        &self,
-        content: &str,
-    ) -> Option<TruncatedToolRoundRecovery> {
-        if !content.to_ascii_lowercase().contains("<tool") {
-            return None;
-        }
-        let completeToolBlocks = ChatMarkupRegex::tool_call_matches(content);
-        let openToolPattern = Regex::new(&format!(
-            r#"(?is)<({})\b[^>]*"#,
-            operit_util::ChatMarkupRegex::TOOL_TAG_NAME_REGEX_SOURCE
-        ))
-        .ok()?;
-        let candidate = openToolPattern.find_iter(content).last()?;
-        if completeToolBlocks
-            .iter()
-            .any(|block| candidate.start() >= block.start && candidate.end() <= block.end)
-        {
-            return None;
-        }
-        let fragment = &content[candidate.start()..];
-        if !Regex::new(r#"(?i)\bname\s*=\s*""#).ok()?.is_match(fragment) {
-            return None;
-        }
-        let tagName = ChatMarkupRegex::extract_opening_tag_name(fragment)
-            .or_else(|| {
-                openToolPattern
-                    .captures(fragment)
-                    .and_then(|captures| captures.get(1).map(|value| value.as_str().to_string()))
-            })
-            .filter(|name| ChatMarkupRegex::is_tool_tag_name(Some(name)))
-            .unwrap_or_else(ChatMarkupRegex::generate_random_tool_tag_name);
-        if Regex::new(&format!(r#"(?i)</{}\s*>"#, regex::escape(&tagName)))
-            .ok()?
-            .is_match(fragment)
-        {
-            return None;
-        }
-        let appendedSuffix = self.buildTruncatedToolRepairSuffix(fragment, &tagName);
-        if appendedSuffix.is_empty() {
-            return None;
-        }
-        let mut invalidatedToolNames = completeToolBlocks
-            .iter()
-            .map(|tool| tool.name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .collect::<Vec<_>>();
-        if let Some(name) = extractXmlAttributeValue(fragment, "name") {
-            if !name.trim().is_empty() {
-                invalidatedToolNames.push(name.trim().to_string());
-            }
-        }
-        invalidatedToolNames.sort();
-        invalidatedToolNames.dedup();
-        Some(TruncatedToolRoundRecovery {
-            repairedContent: format!("{content}{appendedSuffix}"),
-            appendedSuffix,
-            invalidatedToolNames,
-        })
-    }
-
-    fn buildTruncatedToolRepairSuffix(&self, fragment: &str, fallbackTagName: &str) -> String {
-        let toolTagName = if ChatMarkupRegex::is_tool_tag_name(Some(fallbackTagName)) {
-            fallbackTagName.to_string()
-        } else {
-            ChatMarkupRegex::generate_random_tool_tag_name()
-        };
-        let Some(openingTagEnd) = fragment.find('>') else {
-            return format!(
-                "{}</{}>",
-                completePartialOpenTag(fragment, &toolTagName, "truncated_tool_call"),
-                toolTagName
-            );
-        };
-        let body = &fragment[openingTagEnd + 1..];
-        let tagPattern = Regex::new(r#"(?is)</?([A-Za-z][A-Za-z0-9_]*)\b[^>]*>"#)
-            .expect("tag pattern must compile");
-        let mut openParamCount = 0usize;
-        for capture in tagPattern.captures_iter(body) {
-            let tagText = capture.get(0).map(|value| value.as_str()).unwrap_or("");
-            let tagName = capture.get(1).map(|value| value.as_str()).unwrap_or("");
-            let isClosing = tagText.starts_with("</");
-            if tagName.eq_ignore_ascii_case("param") {
-                if isClosing {
-                    openParamCount = openParamCount.saturating_sub(1);
-                } else if !tagText.ends_with("/>") {
-                    openParamCount += 1;
-                }
-            } else if tagName.eq_ignore_ascii_case(&toolTagName) && isClosing {
-                return String::new();
-            }
-        }
-        let mut suffix = String::new();
-        if let Some(trailingPartialTag) = extractTrailingPartialTag(fragment) {
-            if isPartialClosingTagFor(&trailingPartialTag, "param") {
-                suffix.push_str(&completePartialClosingTag(&trailingPartialTag, "param"));
-                openParamCount = openParamCount.saturating_sub(1);
-            } else if isPartialOpeningTagFor(&trailingPartialTag, "param") {
-                suffix.push_str(&completePartialOpenTag(
-                    &trailingPartialTag,
-                    "param",
-                    "_truncated_fragment",
-                ));
-                openParamCount += 1;
-            } else if isPartialClosingTagFor(&trailingPartialTag, &toolTagName) {
-                suffix.push_str(&completePartialClosingTag(
-                    &trailingPartialTag,
-                    &toolTagName,
-                ));
-                return suffix;
-            } else if isPartialOpeningTagFor(&trailingPartialTag, &toolTagName) {
-                suffix.push_str(&completePartialOpenTag(
-                    &trailingPartialTag,
-                    &toolTagName,
-                    "truncated_tool_call",
-                ));
-            } else if trailingPartialTag == "<" {
-                suffix.push_str("!-- truncated -->");
-            }
-        }
-        for _ in 0..openParamCount {
-            suffix.push_str("</param>");
-        }
-        suffix.push_str(&format!("</{toolTagName}>"));
-        suffix
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn finalizeAssistantResponse(
         &mut self,
@@ -2801,27 +2628,27 @@ impl EnhancedAIService {
     }
 
     #[allow(non_snake_case)]
-    pub fn getCurrentInputTokenCount(&self) -> i32 {
+    pub fn getCurrentInputTokenCount(&self) -> i64 {
         self.shared_state().accumulated_input_token_count
     }
 
     #[allow(non_snake_case)]
-    pub fn getCurrentOutputTokenCount(&self) -> i32 {
+    pub fn getCurrentOutputTokenCount(&self) -> i64 {
         self.shared_state().accumulated_output_token_count
     }
 
     #[allow(non_snake_case)]
-    pub fn getCurrentCachedInputTokenCount(&self) -> i32 {
+    pub fn getCurrentCachedInputTokenCount(&self) -> i64 {
         self.shared_state().accumulated_cached_input_token_count
     }
 
     #[allow(non_snake_case)]
-    pub fn getPerRequestTokenCounts(&self) -> Option<(i32, i32)> {
+    pub fn getPerRequestTokenCounts(&self) -> Option<(i64, i64)> {
         self.shared_state().per_request_token_counts
     }
 
     #[allow(non_snake_case)]
-    pub fn getRequestWindowEstimate(&self) -> Option<i32> {
+    pub fn getRequestWindowEstimate(&self) -> Option<i64> {
         self.shared_state().request_window_estimate
     }
 
@@ -2854,9 +2681,9 @@ impl EnhancedAIService {
     #[allow(non_snake_case)]
     pub fn setCurrentTurnTokenCounts(
         &mut self,
-        inputTokens: i32,
-        outputTokens: i32,
-        cachedInputTokens: i32,
+        inputTokens: i64,
+        outputTokens: i64,
+        cachedInputTokens: i64,
     ) {
         let mut shared = self.shared_state();
         shared.accumulated_input_token_count = inputTokens.max(0);
@@ -2941,9 +2768,9 @@ fn persistProviderModelTokenUsage(
     functionType: FunctionType,
     source: UsageRequestSource,
     chatId: Option<String>,
-    inputTokens: i32,
-    outputTokens: i32,
-    cachedInputTokens: i32,
+    inputTokens: i64,
+    outputTokens: i64,
+    cachedInputTokens: i64,
 ) -> Result<(), AiServiceError> {
     runtimeSupport
         .updateTokensForProviderModel(providerModel, inputTokens, outputTokens, cachedInputTokens)
@@ -2962,17 +2789,7 @@ fn persistProviderModelTokenUsage(
         .map_err(AiServiceError::RequestFailed)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TruncatedToolRoundRecovery {
-    repairedContent: String,
-    appendedSuffix: String,
-    invalidatedToolNames: Vec<String>,
-}
-
-fn empty_ai_response_stream() -> Box<dyn RevisableTextStreamLike> {
-    response_stream_from_chunks(Vec::new())
-}
-
+/// Resolves proxy wrappers to the concrete tool name shown to users and callbacks.
 fn resolveToolDisplayName(tool: &RuntimeAITool) -> String {
     if tool.name != "package_proxy" && tool.name != "proxy" {
         return tool.name.clone();
@@ -3028,68 +2845,6 @@ fn buildPackageProxyToolPrompt() -> ToolPrompt {
         ]),
         details: String::new(),
         notes: String::new(),
-    }
-}
-
-fn extractXmlAttributeValue(fragment: &str, name: &str) -> Option<String> {
-    attr_value(fragment, name)
-}
-
-fn extractTrailingPartialTag(fragment: &str) -> Option<String> {
-    let start = fragment.rfind('<')?;
-    let tail = &fragment[start..];
-    if tail.contains('>') {
-        None
-    } else {
-        Some(tail.to_string())
-    }
-}
-
-fn isPartialClosingTagFor(partial: &str, tagName: &str) -> bool {
-    let normalized = partial.trim_start().to_ascii_lowercase();
-    let target = format!("</{}", tagName.to_ascii_lowercase());
-    target.starts_with(&normalized) || normalized.starts_with(&target)
-}
-
-fn isPartialOpeningTagFor(partial: &str, tagName: &str) -> bool {
-    let normalized = partial.trim_start().to_ascii_lowercase();
-    if normalized.starts_with("</") {
-        return false;
-    }
-    let target = format!("<{}", tagName.to_ascii_lowercase());
-    target.starts_with(&normalized) || normalized.starts_with(&target)
-}
-
-fn completePartialClosingTag(partial: &str, tagName: &str) -> String {
-    let target = format!("</{tagName}>");
-    completePartialToken(partial, &target)
-}
-
-fn completePartialOpenTag(partial: &str, tagName: &str, defaultNameValue: &str) -> String {
-    let mut completed = partial.to_string();
-    if !completed.starts_with('<') {
-        completed.insert(0, '<');
-    }
-    if !completed
-        .to_ascii_lowercase()
-        .starts_with(&format!("<{}", tagName.to_ascii_lowercase()))
-    {
-        completed = format!("<{tagName}");
-    }
-    if !completed.to_ascii_lowercase().contains(" name=") {
-        completed.push_str(&format!(r#" name="{defaultNameValue}""#));
-    }
-    if !completed.ends_with('>') {
-        completed.push('>');
-    }
-    completed
-}
-
-fn completePartialToken(partial: &str, target: &str) -> String {
-    if target.starts_with(partial) {
-        target[partial.len()..].to_string()
-    } else {
-        target.to_string()
     }
 }
 

@@ -1,14 +1,17 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::{
-    AudioPlaybackHost, BluetoothHost, BrowserAutomationHost, BrowserSessionHost,
-    ComposeDslWebViewHost, DeviceAutomationHost, FileSystemHost, HostEnvironmentDescriptor, HostRuntimeEventHost,
-    HostRuntimeEventSchedulerHost, HostSecretStore, HttpHost, LocalInferenceHost,
-    ManagedRuntimeHost, RuntimeSqliteHost, RuntimeStorageHost, SystemOperationHost, TerminalHost,
-    TtsPlaybackHost, TtsSynthesisHost, WebVisitHost,
+    ArchiveStagingHost, AudioPlaybackHost, BluetoothHost, BrowserAutomationHost,
+    BrowserSessionHost, ComposeDslWebViewHost, DeviceAutomationHost, FileSystemHost,
+    HostEnvironmentDescriptor, HostRuntimeEventHost, HostRuntimeEventSchedulerHost,
+    HostRuntimeTaskSchedulerHost, HostSecretStore, HttpHost, LocalInferenceHost,
+    ManagedRuntimeHost, RuntimeSqliteHost, RuntimeStorageHost, RuntimeStorageWriteHost,
+    SystemOperationHost, TerminalHost, TtsPlaybackHost, TtsSynthesisHost, WebVisitHost,
 };
 
 static DEFAULT_HTTP_HOST: OnceLock<Arc<dyn HttpHost>> = OnceLock::new();
+static DEFAULT_RUNTIME_TASK_SCHEDULER_HOST: OnceLock<Arc<dyn HostRuntimeTaskSchedulerHost>> =
+    OnceLock::new();
 
 /// Command callback used by hosts that expose core operations as argv-style calls.
 pub type CoreCommandExecutor = Arc<dyn Fn(Vec<String>) -> Result<String, String> + Send + Sync>;
@@ -25,6 +28,21 @@ pub fn defaultHttpHost() -> Arc<dyn HttpHost> {
     DEFAULT_HTTP_HOST
         .get()
         .expect("HTTP host must be configured before using HTTP-backed runtime services")
+        .clone()
+}
+
+/// Registers the task scheduler shared by runtime services that do not own a HostManager.
+#[allow(non_snake_case)]
+pub fn setDefaultHostRuntimeTaskSchedulerHost(host: Arc<dyn HostRuntimeTaskSchedulerHost>) {
+    let _ = DEFAULT_RUNTIME_TASK_SCHEDULER_HOST.set(host);
+}
+
+/// Returns the task scheduler configured by runtime initialization.
+#[allow(non_snake_case)]
+pub fn defaultHostRuntimeTaskSchedulerHost() -> Arc<dyn HostRuntimeTaskSchedulerHost> {
+    DEFAULT_RUNTIME_TASK_SCHEDULER_HOST
+        .get()
+        .expect("runtime task scheduler host must be configured before scheduling runtime work")
         .clone()
 }
 
@@ -46,11 +64,14 @@ pub struct HostManager {
     pub managedRuntimeHost: Option<Arc<dyn ManagedRuntimeHost>>,
     pub terminalHost: Option<Arc<dyn TerminalHost>>,
     pub runtimeStorageHost: Option<Arc<dyn RuntimeStorageHost>>,
+    pub runtimeStorageWriteHost: Option<Arc<dyn RuntimeStorageWriteHost>>,
+    pub archiveStagingHost: Option<Arc<dyn ArchiveStagingHost>>,
     pub runtimeSqliteHost: Option<Arc<dyn RuntimeSqliteHost>>,
     pub hostSecretStore: Option<Arc<dyn HostSecretStore>>,
     pub hostRuntimeEventHost: Option<Arc<dyn HostRuntimeEventHost>>,
     pub hostRuntimeEventSchedulerHost: Option<Arc<dyn HostRuntimeEventSchedulerHost>>,
     pub deviceAutomationHost: Option<Arc<dyn DeviceAutomationHost>>,
+    pub hostRuntimeTaskSchedulerHost: Option<Arc<dyn HostRuntimeTaskSchedulerHost>>,
     pub hostEnvironment: HostEnvironmentDescriptor,
     pub coreCommandExecutor: Option<CoreCommandExecutor>,
 }
@@ -74,11 +95,14 @@ impl HostManager {
             managedRuntimeHost: None,
             terminalHost: None,
             runtimeStorageHost: None,
+            runtimeStorageWriteHost: None,
+            archiveStagingHost: None,
             runtimeSqliteHost: None,
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
             deviceAutomationHost: None,
+            hostRuntimeTaskSchedulerHost: None,
             hostEnvironment: HostEnvironmentDescriptor::android(),
             coreCommandExecutor: None,
         }
@@ -104,11 +128,14 @@ impl HostManager {
             managedRuntimeHost: None,
             terminalHost: None,
             runtimeStorageHost: None,
+            runtimeStorageWriteHost: None,
+            archiveStagingHost: None,
             runtimeSqliteHost: None,
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
             deviceAutomationHost: None,
+            hostRuntimeTaskSchedulerHost: None,
             hostEnvironment,
             coreCommandExecutor: None,
         }
@@ -137,11 +164,14 @@ impl HostManager {
             managedRuntimeHost: None,
             terminalHost: None,
             runtimeStorageHost: None,
+            runtimeStorageWriteHost: None,
+            archiveStagingHost: None,
             runtimeSqliteHost: None,
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
             deviceAutomationHost: None,
+            hostRuntimeTaskSchedulerHost: None,
             hostEnvironment,
             coreCommandExecutor: None,
         }
@@ -171,11 +201,14 @@ impl HostManager {
             managedRuntimeHost: None,
             terminalHost: None,
             runtimeStorageHost: None,
+            runtimeStorageWriteHost: None,
+            archiveStagingHost: None,
             runtimeSqliteHost: None,
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
             deviceAutomationHost: None,
+            hostRuntimeTaskSchedulerHost: None,
             hostEnvironment,
             coreCommandExecutor: None,
         }
@@ -209,11 +242,14 @@ impl HostManager {
             managedRuntimeHost: Some(managedRuntimeHost),
             terminalHost: None,
             runtimeStorageHost: Some(runtimeStorageHost),
+            runtimeStorageWriteHost: None,
+            archiveStagingHost: None,
             runtimeSqliteHost: Some(runtimeSqliteHost),
             hostSecretStore: None,
             hostRuntimeEventHost: None,
             hostRuntimeEventSchedulerHost: None,
             deviceAutomationHost: None,
+            hostRuntimeTaskSchedulerHost: None,
             hostEnvironment,
             coreCommandExecutor: None,
         }
@@ -230,6 +266,26 @@ impl HostManager {
     #[allow(non_snake_case)]
     pub fn withHostSecretStore(mut self, hostSecretStore: Arc<dyn HostSecretStore>) -> Self {
         self.hostSecretStore = Some(hostSecretStore);
+        self
+    }
+
+    /// Adds platform-owned staged archive storage for streamed transfers.
+    #[allow(non_snake_case)]
+    pub fn withArchiveStagingHost(
+        mut self,
+        archiveStagingHost: Arc<dyn ArchiveStagingHost>,
+    ) -> Self {
+        self.archiveStagingHost = Some(archiveStagingHost);
+        self
+    }
+
+    /// Adds platform-owned sequential writers for large runtime storage files.
+    #[allow(non_snake_case)]
+    pub fn withRuntimeStorageWriteHost(
+        mut self,
+        runtimeStorageWriteHost: Arc<dyn RuntimeStorageWriteHost>,
+    ) -> Self {
+        self.runtimeStorageWriteHost = Some(runtimeStorageWriteHost);
         self
     }
 
@@ -335,6 +391,16 @@ impl HostManager {
         deviceAutomationHost: Arc<dyn DeviceAutomationHost>,
     ) -> Self {
         self.deviceAutomationHost = Some(deviceAutomationHost);
+        self
+    }
+
+    /// Adds a host-owned scheduler for one-shot runtime tasks.
+    #[allow(non_snake_case)]
+    pub fn withHostRuntimeTaskSchedulerHost(
+        mut self,
+        hostRuntimeTaskSchedulerHost: Arc<dyn HostRuntimeTaskSchedulerHost>,
+    ) -> Self {
+        self.hostRuntimeTaskSchedulerHost = Some(hostRuntimeTaskSchedulerHost);
         self
     }
 }

@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use operit_host_api::RuntimeStorageHost;
+use operit_util::AppLogger::AppLogger;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -20,6 +20,7 @@ use crate::LocalModelRegistry::{InstalledLocalEngine, InstalledLocalModel};
 use crate::LocalModelRegistryStore::LocalModelRegistryStore;
 
 static LOCAL_TTS_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const LOCAL_STT_LOG_TAG: &str = "LocalSTT";
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum LocalModelProviderError {
@@ -72,19 +73,10 @@ pub struct ResolvedLocalModelRuntime {
 pub struct LocalModelProvider {
     runtimeRoot: PathBuf,
     registryStore: LocalModelRegistryStore,
+    storageHost: Arc<dyn RuntimeStorageHost>,
 }
 
 impl LocalModelProvider {
-    /// Creates a local provider from the active runtime root directory.
-    pub fn forRuntimeRoot(runtimeRoot: PathBuf) -> Result<Self, LocalModelProviderError> {
-        let registryStore = LocalModelRegistryStore::forRuntimeRoot(runtimeRoot.clone())
-            .map_err(|error| LocalModelProviderError::Registry(error.to_string()))?;
-        Ok(Self {
-            runtimeRoot,
-            registryStore,
-        })
-    }
-
     /// Creates a local provider backed by the runtime storage host.
     pub fn forRuntimeStorage(
         storageHost: Arc<dyn RuntimeStorageHost>,
@@ -97,6 +89,7 @@ impl LocalModelProvider {
         Ok(Self {
             runtimeRoot,
             registryStore: LocalModelRegistryStore::forRuntimeStorage(storageHost.clone()),
+            storageHost,
         })
     }
 
@@ -272,7 +265,7 @@ impl LocalModelProvider {
             "TTS",
         )?;
         let modelDirectory = PathBuf::from(&runtime.modelDirectory);
-        let outputPath = self.localTtsOutputPath()?;
+        let outputPath = self.localTtsOutputPath();
         let speed = jsonNumberOption(&request.options, "speed")?;
         let mut args = vec![
             format!("--sid={speakerId}"),
@@ -280,14 +273,17 @@ impl LocalModelProvider {
             "--provider=cpu".to_string(),
             "--num-threads=2".to_string(),
             "--print-args=false".to_string(),
-            format!("--output-filename={}", outputPath.display()),
+            format!("--output-filename={outputPath}"),
         ];
         appendSherpaTtsDriverArguments(&mut args, driver, speakerId, &runtime, &modelDirectory)?;
         args.push(request.text);
         runEngineCommand(&runtime, &executable, &args)?;
-        let audioBytes = fs::read(&outputPath)
+        let audioBytes = self
+            .storageHost
+            .readBytes(&outputPath)
             .map_err(|error| LocalModelProviderError::Storage(error.to_string()))?;
-        fs::remove_file(&outputPath)
+        self.storageHost
+            .delete(&outputPath, false)
             .map_err(|error| LocalModelProviderError::Storage(error.to_string()))?;
         Ok(LocalTtsResponse {
             audioBytes,
@@ -307,12 +303,13 @@ impl LocalModelProvider {
     }
 
     /// Creates a unique temporary WAV output path below runtime storage.
-    fn localTtsOutputPath(&self) -> Result<PathBuf, LocalModelProviderError> {
-        let directory = self.runtimeRoot.join("temp").join("clean_on_exit");
-        fs::create_dir_all(&directory)
-            .map_err(|error| LocalModelProviderError::Storage(error.to_string()))?;
+    fn localTtsOutputPath(&self) -> String {
         let sequence = LOCAL_TTS_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        Ok(directory.join(format!("local-tts-{}-{sequence}.wav", std::process::id())))
+        format!(
+            "{}/temp/clean_on_exit/local-tts-{}-{sequence}.wav",
+            self.runtimeRoot.to_string_lossy().replace('\\', "/"),
+            std::process::id()
+        )
     }
 }
 
@@ -454,6 +451,16 @@ fn parseSherpaSttOutput(output: &Output) -> Result<LocalSttResponse, LocalModelP
         .and_then(|object| object.get("text"))
         .and_then(Value::as_str)
         .ok_or_else(|| LocalModelProviderError::InvalidOutput(record.to_string()))?;
+    if text.trim().is_empty() {
+        AppLogger::w(
+            LOCAL_STT_LOG_TAG,
+            &format!(
+                "Sherpa STT completed without recognized text\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        );
+    }
     Ok(LocalSttResponse {
         text: text.to_string(),
         segments: Vec::new(),

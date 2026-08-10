@@ -1764,6 +1764,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "libsqlite3-sys"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1791,29 +1797,6 @@ name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
-
-[[package]]
-name = "lmdb-rkv"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "447a296f7aca299cfbb50f4e4f3d49451549af655fb7215d7f8c0c3d64bad42b"
-dependencies = [
- "bitflags 1.3.2",
- "byteorder",
- "libc",
- "lmdb-rkv-sys",
-]
-
-[[package]]
-name = "lmdb-rkv-sys"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61b9ce6b3be08acefa3003c57b7565377432a89ec24476bbe72e11d101f852fe"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
-]
 
 [[package]]
 name = "lock_api"
@@ -2144,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "operit-cli"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "arboard",
  "async-trait",
@@ -2161,8 +2144,11 @@ dependencies = [
  "operit-core-proxy",
  "operit-host-api",
  "operit-host-linux-native",
+ "operit-host-macos-native",
+ "operit-host-native-common",
  "operit-host-windows-native",
  "operit-link",
+ "operit-link-access",
  "operit-model",
  "operit-providers",
  "operit-runtime",
@@ -2209,9 +2195,11 @@ name = "operit-core-proxy"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "mdns-sd",
  "operit-command-core",
  "operit-host-api",
  "operit-link",
+ "operit-link-access",
  "operit-local-models",
  "operit-model",
  "operit-plugin-sdk",
@@ -2236,6 +2224,27 @@ dependencies = [
  "js-sys",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "operit-host-apple-native"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "globset",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "operit-host-api",
+ "operit-host-native-common",
+ "reqwest",
+ "rusqlite",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "tungstenite",
+ "uuid",
+ "zip",
 ]
 
 [[package]]
@@ -2264,11 +2273,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "operit-host-macos-native"
+version = "0.1.0"
+dependencies = [
+ "operit-host-api",
+ "operit-host-apple-native",
+ "operit-host-native-common",
+]
+
+[[package]]
 name = "operit-host-native-common"
+version = "0.1.0"
+dependencies = [
+ "operit-host-native-http",
+ "operit-host-native-scheduler",
+ "operit-host-native-storage",
+ "operit-host-native-terminal",
+]
+
+[[package]]
+name = "operit-host-native-http"
 version = "0.1.0"
 dependencies = [
  "operit-host-api",
  "reqwest",
+ "tokio",
+]
+
+[[package]]
+name = "operit-host-native-scheduler"
+version = "0.1.0"
+dependencies = [
+ "operit-host-api",
+ "tokio",
+]
+
+[[package]]
+name = "operit-host-native-storage"
+version = "0.1.0"
+dependencies = [
+ "operit-host-api",
+ "rusqlite",
+ "uuid",
+]
+
+[[package]]
+name = "operit-host-native-terminal"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "operit-host-api",
+ "portable-pty",
+ "uuid",
 ]
 
 [[package]]
@@ -2290,6 +2346,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tungstenite",
+ "url",
  "uuid",
  "windows",
  "windows-collections",
@@ -2299,7 +2356,7 @@ dependencies = [
 
 [[package]]
 name = "operit-js-bridge"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "aes",
  "base64",
@@ -2314,6 +2371,7 @@ dependencies = [
  "rquickjs",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
  "wasm-bindgen",
  "web-sys",
@@ -2333,8 +2391,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "operit-link-access"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "futures-util",
+ "hmac",
+ "operit-host-api",
+ "operit-link",
+ "operit-runtime",
+ "operit-store",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
+ "x25519-dalek",
+]
+
+[[package]]
 name = "operit-local-models"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "bzip2-rs",
  "operit-host-api",
@@ -2348,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "operit-model"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "chrono",
  "operit-host-api",
@@ -2360,23 +2441,27 @@ dependencies = [
 
 [[package]]
 name = "operit-plugin-sdk"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
+ "chacha20poly1305",
  "chrono",
  "json5",
+ "operit-host-api",
  "operit-plugin-sdk-codegen",
  "regex",
+ "rquickjs",
  "serde",
  "serde_bytes",
  "serde_json",
  "sha2",
  "uuid",
+ "wasmi",
  "zip",
 ]
 
 [[package]]
 name = "operit-plugin-sdk-codegen"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "quote",
  "syn",
@@ -2386,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "operit-providers"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "async-trait",
  "base64",
@@ -2413,7 +2498,7 @@ dependencies = [
 
 [[package]]
 name = "operit-runtime"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "aes",
  "async-trait",
@@ -2425,7 +2510,6 @@ dependencies = [
  "image",
  "js-sys",
  "json5",
- "lmdb-rkv",
  "md-5",
  "operit-host-api",
  "operit-js-bridge",
@@ -2439,7 +2523,6 @@ dependencies = [
  "regex",
  "reqwest",
  "rquickjs",
- "rusqlite",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -2473,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "operit-tools"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "aes",
  "async-trait",
@@ -2508,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "operit-util"
-version = "2.0.0-preview.4"
+version = "2.0.0-preview.5"
 dependencies = [
  "chrono",
  "operit-host-api",
@@ -3526,6 +3609,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b2231b7c3057d5e4ad0156fb3dc807d900806020c5ffa3ee6ff2c8c76fb8520"
 
 [[package]]
+name = "string-interner"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23de088478b31c349c9ba67816fa55d9355232d63c3afea8bf513e31f0f1d2c0"
+dependencies = [
+ "hashbrown 0.15.5",
+ "serde",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4158,7 +4251,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "990065f2fe63003fe337b932cfb5e3b80e0b4d0f5ff650e6985b1048f62c8319"
 dependencies = [
  "leb128fmt",
- "wasmparser",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]
@@ -4170,7 +4263,7 @@ dependencies = [
  "anyhow",
  "indexmap",
  "wasm-encoder",
- "wasmparser",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]
@@ -4184,6 +4277,56 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "wasmi"
+version = "2.0.0-beta.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2ccaa112ecda892f20071b6af052f60af3ff03f8d3de2bb20007415fb116dbc"
+dependencies = [
+ "spin",
+ "wasmi_collections",
+ "wasmi_core",
+ "wasmi_ir",
+ "wasmparser 0.228.0",
+]
+
+[[package]]
+name = "wasmi_collections"
+version = "2.0.0-beta.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "308acd69ff7c49bd127c5e63f48c17b830f2c06eff27c7dc45490da13c769735"
+dependencies = [
+ "string-interner",
+]
+
+[[package]]
+name = "wasmi_core"
+version = "2.0.0-beta.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "442ee40db8940c0b7b87b72ff9af6ed26281378d43de8c21baf1bbd80b9da628"
+dependencies = [
+ "libm",
+]
+
+[[package]]
+name = "wasmi_ir"
+version = "2.0.0-beta.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9de7004daf22eed130a448a25ad779509722d750273ae46b3fcdf72a8febc1b"
+dependencies = [
+ "wasmi_core",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.228.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4abf1132c1fdf747d56bbc1bb52152400c70f336870f968b85e89ea422198ae3"
+dependencies = [
+ "bitflags 2.11.1",
+ "indexmap",
 ]
 
 [[package]]
@@ -4633,7 +4776,7 @@ dependencies = [
  "serde_json",
  "wasm-encoder",
  "wasm-metadata",
- "wasmparser",
+ "wasmparser 0.244.0",
  "wit-parser",
 ]
 
@@ -4652,7 +4795,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "unicode-xid",
- "wasmparser",
+ "wasmparser 0.244.0",
 ]
 
 [[package]]

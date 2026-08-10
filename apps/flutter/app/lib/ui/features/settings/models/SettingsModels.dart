@@ -11,9 +11,11 @@ enum SettingsCategory {
   characters,
   tools,
   workspace,
+  globalBehavior,
   appearance,
   data,
   accessLinks,
+  about,
 }
 
 class SettingsCategorySpec {
@@ -29,6 +31,7 @@ class SettingsCategorySpec {
   final String description;
   final IconData icon;
 
+  /// Resolves the localized presentation specification for a category.
   static SettingsCategorySpec of(
     SettingsCategory category,
     AppLocalizations l10n,
@@ -70,6 +73,12 @@ class SettingsCategorySpec {
         description: l10n.settingsCategoryWorkspaceDescription,
         icon: Icons.folder_outlined,
       ),
+      SettingsCategory.globalBehavior => SettingsCategorySpec(
+        title: l10n.settingsCategoryGlobalBehaviorTitle,
+        subtitle: l10n.settingsCategoryGlobalBehaviorSubtitle,
+        description: l10n.settingsCategoryGlobalBehaviorDescription,
+        icon: Icons.tune_outlined,
+      ),
       SettingsCategory.appearance => SettingsCategorySpec(
         title: l10n.settingsCategoryAppearanceTitle,
         subtitle: l10n.settingsCategoryAppearanceSubtitle,
@@ -87,6 +96,12 @@ class SettingsCategorySpec {
         subtitle: l10n.settingsCategoryAccessLinksSubtitle,
         description: l10n.settingsCategoryAccessLinksDescription,
         icon: Icons.devices_outlined,
+      ),
+      SettingsCategory.about => const SettingsCategorySpec(
+        title: '关于 Operit2',
+        subtitle: '版本、项目与许可',
+        description: '查看 Operit2 的版本信息、项目链接和开源许可证。',
+        icon: Icons.info_outline,
       ),
     };
   }

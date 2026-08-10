@@ -4,11 +4,13 @@ use crate::javascript::JsAssetLoader::{
 use crate::javascript::JsEmbeddedLibraryLoader::{loadCryptoJs, loadJimpJs, loadPakoJs};
 use crate::javascript::JsInitRuntimeScriptBuilder;
 use crate::javascript::JsJavaBridge::buildJavaClassBridgeDefinition;
+use operit_host_api::RuntimeStorageHost;
 use operit_plugin_sdk::toolpkg::ToolPkgComposeDslBridge::buildComposeDslContextBridgeDefinition;
 use operit_plugin_sdk::toolpkg::ToolPkgRegistrationBridge::buildToolPkgRegistrationBridgeScript;
 use operit_plugin_sdk::JsExecutionScriptBuilder;
 use operit_plugin_sdk::JsTools::getJsToolsDefinition;
-use operit_util::OperitPaths;
+use operit_store::RuntimeStorageHost::defaultRuntimeStorageHost;
+use operit_util::RuntimeStorageLayout::RUNTIME_CLEAN_ON_EXIT_DIR_PATH;
 
 /// JavaScript bootstrap module loaded into the QuickJS runtime.
 pub struct JsBootstrapModule {
@@ -49,7 +51,7 @@ pub fn buildRuntimeBootstrapModules() -> Vec<JsBootstrapModule> {
         ),
         JsBootstrapModule::new(
             "quickjs/init/toolpkg-bridge.js",
-            buildToolPkgRegistrationBridgeScript(),
+            buildToolPkgRegistrationBridgeScript(false),
             &["ToolPkg"],
         ),
         JsBootstrapModule::new(
@@ -112,11 +114,8 @@ pub fn buildRuntimeBootstrapModules() -> Vec<JsBootstrapModule> {
 
 #[allow(non_snake_case)]
 fn buildOperitPathsBootstrapScript() -> String {
-    let cleanOnExitDirJson = serde_json::to_string(
-        &OperitPaths::cleanOnExitPathSdcard()
-            .expect("OperitPaths cleanOnExit path must be available"),
-    )
-    .expect("OperitPaths cleanOnExit path must serialize");
+    let cleanOnExitDirJson = serde_json::to_string(&cleanOnExitHostPath())
+        .expect("clean-on-exit host path must serialize");
     format!(
         r#"
         var OPERIT_CLEAN_ON_EXIT_DIR = {};
@@ -126,6 +125,21 @@ fn buildOperitPathsBootstrapScript() -> String {
         "#,
         cleanOnExitDirJson
     )
+}
+
+/// Resolves the clean-on-exit directory into the active host file-system path.
+#[allow(non_snake_case)]
+fn cleanOnExitHostPath() -> String {
+    let runtimeRoot = defaultRuntimeStorageHost()
+        .runtimeRootDir()
+        .expect("runtime storage host must provide a clean-on-exit root");
+    let relativePath = RUNTIME_CLEAN_ON_EXIT_DIR_PATH
+        .strip_prefix("runtime/")
+        .expect("clean-on-exit path must be rooted under runtime");
+    runtimeRoot
+        .join(relativePath)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 #[allow(non_snake_case)]
@@ -211,11 +225,8 @@ pub fn buildRuntimeBootstrapScript() -> String {
     let executionPreludeJson =
         serde_json::to_string(&JsExecutionScriptBuilder::buildExecutionPreludeSource())
             .unwrap_or_else(|_| "\"\"".to_string());
-    let cleanOnExitDirJson = serde_json::to_string(
-        &OperitPaths::cleanOnExitPathSdcard()
-            .expect("OperitPaths cleanOnExit path must be available"),
-    )
-    .expect("OperitPaths cleanOnExit path must serialize");
+    let cleanOnExitDirJson = serde_json::to_string(&cleanOnExitHostPath())
+        .expect("clean-on-exit host path must serialize");
     format!(
         r#"
         {}
@@ -272,8 +283,19 @@ pub fn buildRuntimeBootstrapScript() -> String {
                     String(internal || '')
                 );
             }},
+            callToolPkgWasm: function(packageTarget, moduleId, exportName, argsJson) {{
+                return __operitNativeCallToolPkgWasm(
+                    String(packageTarget || ''),
+                    String(moduleId || ''),
+                    String(exportName || ''),
+                    String(argsJson || '[]')
+                );
+            }},
             composeWebViewControllerCommand: function(payloadJson) {{
                 return __operitNativeComposeWebViewControllerCommand(String(payloadJson || '{{}}'));
+            }},
+            composeFilePickerCommand: function(payloadJson) {{
+                return __operitNativeComposeFilePickerCommand(String(payloadJson || '{{}}'));
             }},
             composeWebViewControllerCommandSuspend: function(payloadJson, callbackId) {{
                 var normalizedCallbackId = String(callbackId || '').trim();
@@ -823,13 +845,13 @@ pub fn buildRuntimeBootstrapScript() -> String {
                 var state = getCallState();
                 return !!(state && !state.completed);
             }}
-            function readCallValue(key, fallbackValue) {{
+            function readCallValue(key, defaultValue) {{
                 var state = getCallState();
                 var currentParams = state && state.params && typeof state.params === 'object'
                     ? state.params
                     : null;
                 var value = currentParams ? currentParams[key] : undefined;
-                return value == null || value === '' ? fallbackValue : __operitText(value);
+                return value == null || value === '' ? defaultValue : __operitText(value);
             }}
             function markStage(stage) {{
                 callState.lastExecStage = __operitText(stage);
@@ -1114,6 +1136,55 @@ pub fn buildRuntimeBootstrapScript() -> String {
                     return handler(payload, meta && typeof meta === 'object' ? meta : {{}});
                 }}
 
+                function normalizeToolPkgWasmValueType(valueType) {{
+                    var normalizedType = __operitText(valueType).trim().toLowerCase();
+                    if (
+                        normalizedType !== 'i32' &&
+                        normalizedType !== 'i64' &&
+                        normalizedType !== 'f32' &&
+                        normalizedType !== 'f64'
+                    ) {{
+                        throw new Error('ToolPkg.wasm arg type is invalid: ' + normalizedType);
+                    }}
+                    return normalizedType;
+                }}
+
+                function normalizeToolPkgWasmArgs(args) {{
+                    if (args == null) {{
+                        return [];
+                    }}
+                    if (!Array.isArray(args)) {{
+                        throw new Error('ToolPkg.wasm args must be an array');
+                    }}
+                    var normalizedArgs = [];
+                    for (var i = 0; i < args.length; i += 1) {{
+                        var arg = args[i];
+                        if (!arg || typeof arg !== 'object' || Array.isArray(arg)) {{
+                            throw new Error('ToolPkg.wasm arg ' + i + ' must be an object');
+                        }}
+                        var valueType = normalizeToolPkgWasmValueType(arg.type);
+                        if (!Object.prototype.hasOwnProperty.call(arg, 'value')) {{
+                            throw new Error('ToolPkg.wasm arg ' + i + ' value is required');
+                        }}
+                        var value = arg.value;
+                        if (valueType === 'i32' && typeof value !== 'number') {{
+                            throw new Error('ToolPkg.wasm arg ' + i + ' i32 value must be a number');
+                        }}
+                        if (valueType === 'i64' && typeof value !== 'number' && typeof value !== 'string') {{
+                            throw new Error('ToolPkg.wasm arg ' + i + ' i64 value must be a number or string');
+                        }}
+                        if (
+                            (valueType === 'f32' || valueType === 'f64') &&
+                            typeof value !== 'number' &&
+                            typeof value !== 'string'
+                        ) {{
+                            throw new Error('ToolPkg.wasm arg ' + i + ' float value must be a number or string');
+                        }}
+                        normalizedArgs.push({{ type: valueType, value: value }});
+                    }}
+                    return normalizedArgs;
+                }}
+
                 function ensureToolPkgIpcApi() {{
                     var toolPkgApi = globalThis.ToolPkg && typeof globalThis.ToolPkg === 'object'
                         ? globalThis.ToolPkg
@@ -1314,7 +1385,79 @@ pub fn buildRuntimeBootstrapScript() -> String {
                     globalThis.__operitInvokeToolPkgIpcLocal = invokeToolPkgIpcLocal;
                 }}
 
+                function ensureToolPkgWasmApi() {{
+                    var toolPkgApi = globalThis.ToolPkg && typeof globalThis.ToolPkg === 'object'
+                        ? globalThis.ToolPkg
+                        : {{}};
+                    if (globalThis.ToolPkg !== toolPkgApi) {{
+                        globalThis.ToolPkg = toolPkgApi;
+                    }}
+                    var wasmApi = toolPkgApi.wasm && typeof toolPkgApi.wasm === 'object'
+                        ? toolPkgApi.wasm
+                        : {{}};
+                    wasmApi.call = function(moduleId, exportName, args) {{
+                        var normalizedModuleId = __operitText(moduleId).trim();
+                        if (normalizedModuleId.length === 0) {{
+                            return Promise.reject(new Error('ToolPkg.wasm module id is required'));
+                        }}
+                        var normalizedExportName = __operitText(exportName).trim();
+                        if (normalizedExportName.length === 0) {{
+                            return Promise.reject(new Error('ToolPkg.wasm export name is required'));
+                        }}
+                        var normalizedArgs;
+                        try {{
+                            normalizedArgs = normalizeToolPkgWasmArgs(args);
+                        }} catch (error) {{
+                            return Promise.reject(error);
+                        }}
+                        if (
+                            !packageTarget ||
+                            typeof NativeInterface === 'undefined' ||
+                            !NativeInterface ||
+                            typeof NativeInterface.callToolPkgWasm !== 'function'
+                        ) {{
+                            return Promise.reject(new Error('ToolPkg.wasm runtime bridge is unavailable'));
+                        }}
+                        var resultJson;
+                        try {{
+                            resultJson = NativeInterface.callToolPkgWasm(
+                                packageTarget,
+                                normalizedModuleId,
+                                normalizedExportName,
+                                JSON.stringify(normalizedArgs)
+                            );
+                        }} catch (error) {{
+                            return Promise.reject(error);
+                        }}
+                        var parsed;
+                        try {{
+                            parsed = JSON.parse(__operitText(resultJson) || 'null');
+                        }} catch (error) {{
+                            return Promise.reject(
+                                new Error(
+                                    'ToolPkg.wasm returned invalid JSON: ' +
+                                        __operitText(error && error.message ? error.message : error)
+                                )
+                            );
+                        }}
+                        if (parsed && parsed.success === true) {{
+                            return Promise.resolve(
+                                Object.prototype.hasOwnProperty.call(parsed, 'value') ? parsed.value : null
+                            );
+                        }}
+                        return Promise.reject(
+                            new Error(
+                                parsed && typeof parsed.message === 'string' && parsed.message.trim().length > 0
+                                    ? parsed.message.trim()
+                                    : 'ToolPkg.wasm call failed'
+                            )
+                        );
+                    }};
+                    toolPkgApi.wasm = wasmApi;
+                }}
+
                 ensureToolPkgIpcApi();
+                ensureToolPkgWasmApi();
                 if (
                     globalThis.RuntimeContext &&
                     typeof globalThis.RuntimeContext.__operitEnsureContextRunnerRegistered === 'function'
@@ -1540,7 +1683,7 @@ pub fn buildRuntimeBootstrapScript() -> String {
         executionPreludeJson,
         buildJavaClassBridgeDefinition(),
         buildComposeDslContextBridgeDefinition(),
-        buildToolPkgRegistrationBridgeScript(),
+        buildToolPkgRegistrationBridgeScript(false),
         getJsToolsDefinition(),
         getJsThirdPartyLibraries(),
         loadPluginConfigJs(),

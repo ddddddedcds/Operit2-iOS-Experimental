@@ -4,7 +4,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 
 class RuntimeMethodChannelRouter(
-    activity: MainActivity,
+    private val activity: MainActivity,
     runtimeHost: AndroidRuntimeHost,
     ownerSystem: OwnerSystemCapabilityChannel,
 ) {
@@ -12,6 +12,7 @@ class RuntimeMethodChannelRouter(
     private val linkHostChannel = RuntimeLinkHostChannel(runtimeHost)
     private val ownerSystemChannel = ownerSystem
     private val androidPlatformChannel = AndroidPlatformChannel(activity, runtimeHost)
+    private val snapshotImportInputChannel = SnapshotImportInputChannel(activity)
     private var runtimeChannel: MethodChannel? = null
 
     fun configure(messenger: BinaryMessenger) {
@@ -19,6 +20,12 @@ class RuntimeMethodChannelRouter(
             coreLinkChannel.attach(channel)
             channel.setMethodCallHandler { call, result ->
                 when {
+                    call.method == "notificationActivationInitial" ->
+                        result.success(activity.takeNotificationActivation())
+                    call.method == "notificationActivationReady" -> {
+                        activity.markNotificationActivationReceiverReady()
+                        result.success(null)
+                    }
                     coreLinkChannel.handle(call, result) -> Unit
                     linkHostChannel.handle(call, result) -> Unit
                     ownerSystemChannel.handle(call, result) -> Unit
@@ -27,12 +34,19 @@ class RuntimeMethodChannelRouter(
                 }
             }
         }
+        snapshotImportInputChannel.attach(messenger)
     }
 
     fun clear() {
         coreLinkChannel.clear()
+        snapshotImportInputChannel.clear()
         runtimeChannel?.setMethodCallHandler(null)
         runtimeChannel = null
+    }
+
+    /** Emits one notification activation after Dart has installed its receiver. */
+    fun emitNotificationActivation(activation: Map<String, String>) {
+        runtimeChannel?.invokeMethod("notificationActivation", activation)
     }
 
     fun onRequestPermissionsResult(
@@ -41,5 +55,10 @@ class RuntimeMethodChannelRouter(
         grantResults: IntArray,
     ): Boolean {
         return androidPlatformChannel.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
+
+    /** Delivers one Android document picker result to the snapshot input channel. */
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        return snapshotImportInputChannel.onActivityResult(requestCode, resultCode, data)
     }
 }

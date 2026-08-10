@@ -2,6 +2,13 @@ use crate::core::chat::AIMessageManager::AIMessageManager;
 use crate::data::preferences::CharacterCardManager::CharacterCardManager;
 use crate::data::preferences::FunctionalConfigManager::FunctionalConfigManager;
 use crate::data::preferences::ModelConfigManager::ModelConfigManager;
+use crate::plugins::toolpkg::ToolPkgChatInputHookBridge::{
+    ChatInputHookContext, ChatInputHookResult, ToolPkgChatInputHookBridge,
+    CHAT_INPUT_EVENT_INPUT_CHANGED, CHAT_INPUT_EVENT_SUBMITTED, CHAT_INPUT_EVENT_SUBMIT_REQUESTED,
+    CHAT_INPUT_SUBMIT_ACTION_ALLOW, CHAT_INPUT_SUBMIT_ACTION_BLOCK,
+    CHAT_INPUT_SUBMIT_ACTION_CONSUME, CHAT_INPUT_SUBMIT_ACTION_REPLACE,
+};
+use crate::plugins::toolpkg::ToolPkgXmlRenderBridge::ToolPkgXmlRenderBridge;
 use crate::services::core::ChatHistoryDelegate::{ChatHistoryDelegate, ChatSelectionMode};
 use crate::services::core::MessageCoordinationDelegate::MessageCoordinationDelegate;
 use crate::services::core::MessageProcessingDelegate::MessageProcessingDelegate;
@@ -10,6 +17,8 @@ use crate::ui::features::chat::webview::workspace::WorkspaceBackupManager::{
     WorkspaceBackupManager, WorkspaceFileChange,
 };
 use crate::ui::features::chat::webview::workspace::WorkspaceUtils;
+use operit_host_api::FileSystemHost;
+use operit_host_api::TimeUtils::currentTimeMillis;
 use operit_model::ActivePrompt::ActivePrompt;
 use operit_model::AttachmentInfo::AttachmentInfo;
 use operit_model::ChatDisplayWindowState::ChatDisplayWindowState;
@@ -21,26 +30,30 @@ use operit_model::ChatMessageLocatorPreview::ChatMessageLocatorPreview;
 use operit_model::ChatTurnOptions::ChatTurnOptions;
 use operit_model::FunctionType::FunctionType;
 use operit_model::InputProcessingState::InputProcessingState;
+use operit_model::MessagePart::MessagePart;
+use operit_model::MessagePartCodec::MessagePartCodec;
+use operit_model::PendingQueueMessageItem::PendingQueueMessageItem;
 use operit_model::PromptFunctionType::PromptFunctionType;
-use operit_providers::chat::llmprovider::AIService::SharedAiResponseStream;
 use operit_providers::chat::EnhancedAIService::EnhancedAIService;
+use operit_providers::chat::llmprovider::AIService::SharedAiResponseStream;
 use operit_store::repository::ChatHistoryManager::ChatImportResult;
-use operit_store::PreferencesDataStore::{combine3, combine5, StateFlow};
+use operit_store::PreferencesDataStore::{combine3, combine4, combine5, MutableStateFlow, StateFlow};
 use operit_tools::files::PathMapper::PathMapper;
 use operit_tools::tools::skill_runtime::SkillRepository::SkillRepository;
 use operit_tools::tools::AIToolHandler::AIToolHandler;
 use operit_tools::ConversationMarkupManager::ToolResult;
 use operit_tools::ToolExecutionManager::{AITool, ToolParameter};
+use operit_util::AppLogger::AppLogger;
 use operit_util::MarkdownRenderStream::{MarkdownRenderEventStream, MarkdownStreamEvent};
 use operit_util::OCRUtils::{OCRUtils, Quality as OCRQuality};
 use operit_util::OperitPaths;
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 use url::Url;
 
 const PACKAGE_ATTACHMENT_PREFIX: &str = "package_attach:";
+const PASTED_TEXT_ATTACHMENT_PREFIX: &str = "pasted_text:";
 const OCR_INLINE_INSTRUCTION: &str = "Do not read the file, answer the user's question directly based on the attachment content and the user's question.";
 
 pub trait ChatServiceUiBridge {}
@@ -49,6 +62,22 @@ pub struct EmptyChatServiceUiBridge;
 
 impl ChatServiceUiBridge for EmptyChatServiceUiBridge {}
 
+/// Serializes a ToolPkg chat input result into the proxy-facing JSON shape.
+#[allow(non_snake_case)]
+fn serializeChatInputHookResult(result: Option<ChatInputHookResult>) -> serde_json::Value {
+    match result {
+        Some(result) => serde_json::json!({
+            "action": result.action,
+            "text": result.text,
+            "message": result.message,
+            "clearInput": result.clearInput,
+            "timedOut": result.timedOut,
+            "metadata": result.metadata,
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct ChatMainFlowInputs {
     messages: Vec<ChatMessage>,
@@ -56,6 +85,50 @@ struct ChatMainFlowInputs {
     chatHistories: Vec<ChatHistory>,
     activeStreamingChatIds: HashSet<String>,
     inputProcessingStateByChatId: HashMap<String, InputProcessingState>,
+    pendingQueueStateByChatId: HashMap<String, PendingChatQueueState>,
+}
+
+/// Stores the runtime-owned pending message queue for one chat.
+#[derive(Clone, Debug, PartialEq)]
+struct PendingChatQueueState {
+    messages: Vec<PendingQueueMessageItem>,
+    isExpanded: bool,
+    nextMessageId: i64,
+    wasBlocked: bool,
+    suppressNextAutoDequeue: bool,
+}
+
+impl PendingChatQueueState {
+    /// Creates the initial queue state for a chat.
+    fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            isExpanded: true,
+            nextMessageId: 1,
+            wasBlocked: false,
+            suppressNextAutoDequeue: false,
+        }
+    }
+}
+
+/// Shares pending-message queues between every chat surface in one runtime.
+#[derive(Clone)]
+pub(crate) struct PendingChatQueueStore {
+    stateFlow: MutableStateFlow<HashMap<String, PendingChatQueueState>>,
+}
+
+impl PendingChatQueueStore {
+    /// Creates an empty queue store shared by chat runtime slots.
+    pub(crate) fn new() -> Self {
+        Self {
+            stateFlow: MutableStateFlow::new(HashMap::new()),
+        }
+    }
+
+    /// Returns the queue-state flow shared by all chat runtime slots.
+    fn stateFlow(&self) -> MutableStateFlow<HashMap<String, PendingChatQueueState>> {
+        self.stateFlow.clone()
+    }
 }
 
 fn buildChatMainState(
@@ -90,6 +163,14 @@ fn buildChatMainState(
         Some(chatId) => inputs.activeStreamingChatIds.contains(chatId),
         None => false,
     };
+    let (pendingQueueMessages, isPendingQueueExpanded) = match inputs
+        .currentChatId
+        .as_ref()
+        .and_then(|chatId| inputs.pendingQueueStateByChatId.get(chatId))
+    {
+        Some(queueState) => (queueState.messages.clone(), queueState.isExpanded),
+        None => (Vec::new(), true),
+    };
 
     ChatMainState {
         currentChatId: inputs.currentChatId,
@@ -107,6 +188,8 @@ fn buildChatMainState(
         hasOlderDisplayHistory: displayWindowState.hasOlderDisplayHistory,
         hasNewerDisplayHistory: displayWindowState.hasNewerDisplayHistory,
         isLoadingDisplayWindow: displayWindowState.isLoadingDisplayWindow,
+        pendingQueueMessages,
+        isPendingQueueExpanded,
     }
 }
 
@@ -156,6 +239,7 @@ fn characterCardAvatarUriByName(
 }
 
 pub struct ChatServiceCore {
+    fileSystemHost: Arc<dyn FileSystemHost>,
     pub selectionMode: ChatSelectionMode,
     pub enhancedAiService: Option<EnhancedAIService>,
     pub messageProcessingDelegate: MessageProcessingDelegate,
@@ -166,12 +250,27 @@ pub struct ChatServiceCore {
     pub additionalOnTurnComplete: Option<fn(Option<String>, i32, i32, i32)>,
     pub uiBridge: EmptyChatServiceUiBridge,
     pub attachments: Vec<AttachmentInfo>,
+    pendingQueueStore: Arc<PendingChatQueueStore>,
 }
 
 impl ChatServiceCore {
     /// Creates a chat service core for the selected chat target mode.
-    pub fn new(selectionMode: ChatSelectionMode) -> Self {
+    pub fn new(selectionMode: ChatSelectionMode, fileSystemHost: Arc<dyn FileSystemHost>) -> Self {
+        Self::newWithPendingQueueStore(
+            selectionMode,
+            fileSystemHost,
+            Arc::new(PendingChatQueueStore::new()),
+        )
+    }
+
+    /// Creates a chat service core backed by a queue store shared with sibling runtime slots.
+    pub(crate) fn newWithPendingQueueStore(
+        selectionMode: ChatSelectionMode,
+        fileSystemHost: Arc<dyn FileSystemHost>,
+        pendingQueueStore: Arc<PendingChatQueueStore>,
+    ) -> Self {
         let mut core = Self {
+            fileSystemHost,
             selectionMode: selectionMode.clone(),
             enhancedAiService: None,
             messageProcessingDelegate: MessageProcessingDelegate::default(),
@@ -182,6 +281,7 @@ impl ChatServiceCore {
             additionalOnTurnComplete: None,
             uiBridge: EmptyChatServiceUiBridge,
             attachments: Vec::new(),
+            pendingQueueStore,
         };
         core.initializeDelegates();
         core
@@ -194,6 +294,47 @@ impl ChatServiceCore {
             .expect("ChatServiceCore requires an enhanced AI service for runtime tool access")
             .tool_handler
             .clone()
+    }
+
+    /// Returns the shared pending-message queue state for this chat runtime.
+    fn pendingQueueStateFlow(&self) -> MutableStateFlow<HashMap<String, PendingChatQueueState>> {
+        self.pendingQueueStore.stateFlow()
+    }
+
+    /// Reports whether the specified chat is currently unable to accept a new turn.
+    fn isChatQueueBlocked(&self, chatId: &str) -> bool {
+        if self
+            .messageProcessingDelegate
+            .activeStreamingChatIds
+            .contains(chatId)
+        {
+            return true;
+        }
+        match self
+            .messageProcessingDelegate
+            .inputProcessingStateByChatId
+            .get(chatId)
+        {
+            Some(InputProcessingState::Idle)
+            | Some(InputProcessingState::Completed)
+            | Some(InputProcessingState::Error { .. })
+            | None => false,
+            Some(_) => true,
+        }
+    }
+
+    /// Marks an existing queue as blocked when a new turn starts for its chat.
+    fn markPendingQueueBlocked(&mut self, chatId: &str) {
+        let mut queueStateByChatId = self.pendingQueueStateFlow().value();
+        let Some(queueState) = queueStateByChatId.get_mut(chatId) else {
+            return;
+        };
+        if queueState.messages.is_empty() || queueState.wasBlocked {
+            return;
+        }
+        queueState.wasBlocked = true;
+        self.pendingQueueStateFlow()
+            .set_value(queueStateByChatId);
     }
 
     fn initializeDelegates(&mut self) {
@@ -235,13 +376,112 @@ impl ChatServiceCore {
         }
     }
 
+    /// Builds a ToolPkg chat input context for the current runtime send surface.
+    #[allow(non_snake_case)]
+    fn buildChatInputHookContext(
+        &self,
+        chatId: &str,
+        text: &str,
+        selectionStart: i32,
+        selectionEnd: i32,
+        attachmentCount: usize,
+        eventName: &str,
+    ) -> ChatInputHookContext {
+        ChatInputHookContext {
+            chatId: chatId.to_string(),
+            text: text.to_string(),
+            selectionStart,
+            selectionEnd,
+            hasAttachments: attachmentCount > 0,
+            attachmentCount: attachmentCount as i32,
+            isProcessing: self
+                .messageProcessingDelegate
+                .isChatLoading(chatId.to_string()),
+            inputStyle: "Runtime".to_string(),
+            source: "Runtime".to_string(),
+            submitSource: "Send".to_string(),
+            eventName: eventName.to_string(),
+        }
+    }
+
+    /// Builds a chat input hook context using the caret at the end of the text.
+    #[allow(non_snake_case)]
+    fn buildChatInputHookContextAtEnd(
+        &self,
+        chatId: &str,
+        text: &str,
+        attachmentCount: usize,
+        eventName: &str,
+    ) -> ChatInputHookContext {
+        let textCharCount = text.chars().count() as i32;
+        self.buildChatInputHookContext(
+            chatId,
+            text,
+            textCharCount,
+            textCharCount,
+            attachmentCount,
+            eventName,
+        )
+    }
+
+    /// Dispatches chat input change notifications from host-owned input widgets.
+    #[allow(non_snake_case)]
+    pub fn dispatchChatInputChanged(
+        &self,
+        chatIdOverride: Option<String>,
+        messageText: String,
+        selectionStart: i32,
+        selectionEnd: i32,
+        attachmentCount: usize,
+    ) {
+        let hookChatId = chatIdOverride
+            .or_else(|| self.chatHistoryDelegate.currentChatId.clone())
+            .unwrap_or_default();
+        ToolPkgChatInputHookBridge::dispatchRegisteredChatInputHooks(
+            self.buildChatInputHookContext(
+                &hookChatId,
+                &messageText,
+                selectionStart,
+                selectionEnd,
+                attachmentCount,
+                CHAT_INPUT_EVENT_INPUT_CHANGED,
+            ),
+        );
+    }
+
+    /// Dispatches submit_requested and returns the ToolPkg decision for the host input widget.
+    #[allow(non_snake_case)]
+    pub fn dispatchChatInputSubmitRequested(
+        &self,
+        chatIdOverride: Option<String>,
+        messageText: String,
+        selectionStart: i32,
+        selectionEnd: i32,
+        attachmentCount: usize,
+    ) -> serde_json::Value {
+        let hookChatId = chatIdOverride
+            .or_else(|| self.chatHistoryDelegate.currentChatId.clone())
+            .unwrap_or_default();
+        let decision = ToolPkgChatInputHookBridge::dispatchRegisteredChatInputHooks(
+            self.buildChatInputHookContext(
+                &hookChatId,
+                &messageText,
+                selectionStart,
+                selectionEnd,
+                attachmentCount,
+                CHAT_INPUT_EVENT_SUBMIT_REQUESTED,
+            ),
+        );
+        serializeChatInputHookResult(decision)
+    }
+
     /// Sends a user-authored message through the active chat runtime.
     pub async fn sendUserMessage(
         &mut self,
         promptFunctionType: PromptFunctionType,
         roleCardIdOverride: Option<String>,
         chatIdOverride: Option<String>,
-        messageText: String,
+        mut messageText: String,
         proxySenderNameOverride: Option<String>,
         chatProviderIdOverride: Option<String>,
         chatModelIdOverride: Option<String>,
@@ -249,6 +489,55 @@ impl ChatServiceCore {
         replyToMessage: Option<ChatMessage>,
         turnOptions: ChatTurnOptions,
     ) {
+        let hookChatId = match chatIdOverride.as_ref() {
+            Some(chatId) => chatId.clone(),
+            None => self
+                .chatHistoryDelegate
+                .currentChatId
+                .clone()
+                .unwrap_or_default(),
+        };
+        let attachmentCount = attachments.len();
+        if !turnOptions.chatInputSubmitRequestedHandled {
+            let submitDecision = ToolPkgChatInputHookBridge::dispatchRegisteredChatInputHooks(
+                self.buildChatInputHookContextAtEnd(
+                    &hookChatId,
+                    &messageText,
+                    attachmentCount,
+                    CHAT_INPUT_EVENT_SUBMIT_REQUESTED,
+                ),
+            );
+            if let Some(decision) = submitDecision {
+                match decision.action.as_str() {
+                    CHAT_INPUT_SUBMIT_ACTION_BLOCK | CHAT_INPUT_SUBMIT_ACTION_CONSUME => {
+                        if let Some(message) = decision.message {
+                            self.messageProcessingDelegate.showToast(message);
+                        }
+                        return;
+                    }
+                    CHAT_INPUT_SUBMIT_ACTION_REPLACE | CHAT_INPUT_SUBMIT_ACTION_ALLOW => {
+                        if let Some(message) = decision.message {
+                            self.messageProcessingDelegate.showToast(message);
+                        }
+                        if let Some(updatedText) = decision.text {
+                            messageText = updatedText;
+                        }
+                    }
+                    _ => {}
+                };
+            }
+        }
+        ToolPkgChatInputHookBridge::dispatchRegisteredChatInputHooks(
+            self.buildChatInputHookContextAtEnd(
+                &hookChatId,
+                &messageText,
+                attachmentCount,
+                CHAT_INPUT_EVENT_SUBMITTED,
+            ),
+        );
+        if self.enhancedAiService.is_some() && self.messageCoordinationDelegate.is_some() {
+            self.markPendingQueueBlocked(&hookChatId);
+        }
         if let (Some(service), Some(delegate)) = (
             self.enhancedAiService.as_mut(),
             self.messageCoordinationDelegate.as_mut(),
@@ -287,14 +576,157 @@ impl ChatServiceCore {
         self.messageProcessingDelegate.cancelMessage(chatId).await;
     }
 
-    /// Returns the live response stream attached to a chat turn.
+    /// Returns the live provider response stream for the active turn of a chat.
+    #[allow(non_snake_case)]
     pub fn getResponseStream(&self, chatId: String) -> Option<SharedAiResponseStream> {
-        self.messageProcessingDelegate.getResponseStream(chatId)
+        self.messageProcessingDelegate
+            .activeResponseStreamForChat(chatId)
+    }
+
+    /// Adds one message to the queue owned by a specific chat.
+    #[allow(non_snake_case)]
+    pub fn enqueuePendingQueueMessage(&mut self, chatId: String, messageText: String) {
+        let mut queueStateByChatId = self.pendingQueueStateFlow().value();
+        let queueState = queueStateByChatId
+            .entry(chatId)
+            .or_insert_with(PendingChatQueueState::new);
+        let messageId = queueState.nextMessageId;
+        queueState.nextMessageId += 1;
+        queueState.messages.push(PendingQueueMessageItem {
+            id: messageId,
+            text: messageText,
+        });
+        queueState.isExpanded = true;
+        queueState.wasBlocked = true;
+        self.pendingQueueStateFlow()
+            .set_value(queueStateByChatId);
+    }
+
+    /// Deletes one queued message from a specific chat.
+    #[allow(non_snake_case)]
+    pub fn deletePendingQueueMessage(&mut self, chatId: String, messageId: i64) {
+        let mut queueStateByChatId = self.pendingQueueStateFlow().value();
+        let Some(queueState) = queueStateByChatId.get_mut(&chatId) else {
+            return;
+        };
+        queueState.messages.retain(|item| item.id != messageId);
+        self.pendingQueueStateFlow()
+            .set_value(queueStateByChatId);
+    }
+
+    /// Removes one queued message for editing or explicit user delivery.
+    #[allow(non_snake_case)]
+    pub fn takePendingQueueMessage(
+        &mut self,
+        chatId: String,
+        messageId: i64,
+        suppressNextAutoDequeue: bool,
+    ) -> Option<PendingQueueMessageItem> {
+        let shouldSuppressAutoDequeue =
+            suppressNextAutoDequeue && self.isChatQueueBlocked(&chatId);
+        let mut queueStateByChatId = self.pendingQueueStateFlow().value();
+        let queueState = queueStateByChatId.get_mut(&chatId)?;
+        let messageIndex = queueState
+            .messages
+            .iter()
+            .position(|item| item.id == messageId)?;
+        let message = queueState.messages.remove(messageIndex);
+        if shouldSuppressAutoDequeue && !queueState.messages.is_empty() {
+            queueState.suppressNextAutoDequeue = true;
+        }
+        self.pendingQueueStateFlow()
+            .set_value(queueStateByChatId);
+        Some(message)
+    }
+
+    /// Clears a manual-send suppression after that message is not delivered.
+    #[allow(non_snake_case)]
+    pub fn clearPendingQueueAutoDequeueSuppression(&mut self, chatId: String) {
+        let mut queueStateByChatId = self.pendingQueueStateFlow().value();
+        let Some(queueState) = queueStateByChatId.get_mut(&chatId) else {
+            return;
+        };
+        if !queueState.suppressNextAutoDequeue {
+            return;
+        }
+        queueState.suppressNextAutoDequeue = false;
+        self.pendingQueueStateFlow()
+            .set_value(queueStateByChatId);
+    }
+
+    /// Atomically removes the next queued message after a chat becomes ready.
+    #[allow(non_snake_case)]
+    pub fn takeNextPendingQueueMessageIfReady(
+        &mut self,
+        chatId: String,
+    ) -> Option<PendingQueueMessageItem> {
+        if self.isChatQueueBlocked(&chatId) {
+            return None;
+        }
+        let mut queueStateByChatId = self.pendingQueueStateFlow().value();
+        let queueState = queueStateByChatId.get_mut(&chatId)?;
+        if !queueState.wasBlocked {
+            return None;
+        }
+        queueState.wasBlocked = false;
+        if queueState.suppressNextAutoDequeue {
+            queueState.suppressNextAutoDequeue = false;
+            self.pendingQueueStateFlow()
+                .set_value(queueStateByChatId);
+            return None;
+        }
+        let Some(message) = queueState.messages.first().cloned() else {
+            self.pendingQueueStateFlow()
+                .set_value(queueStateByChatId);
+            return None;
+        };
+        queueState.messages.remove(0);
+        self.pendingQueueStateFlow()
+            .set_value(queueStateByChatId);
+        Some(message)
+    }
+
+    /// Inserts a rejected queued message back at the front of its chat queue.
+    #[allow(non_snake_case)]
+    pub fn restorePendingQueueMessage(
+        &mut self,
+        chatId: String,
+        message: PendingQueueMessageItem,
+    ) {
+        let mut queueStateByChatId = self.pendingQueueStateFlow().value();
+        let queueState = queueStateByChatId
+            .entry(chatId)
+            .or_insert_with(PendingChatQueueState::new);
+        if queueState.messages.iter().any(|item| item.id == message.id) {
+            return;
+        }
+        queueState.nextMessageId = queueState.nextMessageId.max(message.id + 1);
+        queueState.messages.insert(0, message);
+        self.pendingQueueStateFlow()
+            .set_value(queueStateByChatId);
+    }
+
+    /// Updates whether a chat's pending-message queue is expanded in the UI.
+    #[allow(non_snake_case)]
+    pub fn setPendingQueueExpanded(&mut self, chatId: String, isExpanded: bool) {
+        let mut queueStateByChatId = self.pendingQueueStateFlow().value();
+        let queueState = queueStateByChatId
+            .entry(chatId)
+            .or_insert_with(PendingChatQueueState::new);
+        queueState.isExpanded = isExpanded;
+        self.pendingQueueStateFlow()
+            .set_value(queueStateByChatId);
     }
 
     /// Splits markdown content into stable render events for the client.
     pub fn splitMarkdownContent(&self, content: String) -> Vec<MarkdownStreamEvent> {
         MarkdownRenderEventStream::fromContent(content)
+    }
+
+    /// Renders one XML block through registered ToolPkg XML render hooks.
+    #[allow(non_snake_case)]
+    pub fn renderToolPkgXml(&self, tagName: String, xmlContent: String) -> serde_json::Value {
+        ToolPkgXmlRenderBridge::renderRegisteredXml(tagName, xmlContent)
     }
 
     /// Creates a new chat and makes it available through chat history state.
@@ -398,9 +830,32 @@ impl ChatServiceCore {
         let Some(message) = self.chatHistoryDelegate.chatHistory.get(index).cloned() else {
             return false;
         };
+        let editedParts = match message.sender.as_str() {
+            "ai" => match MessagePartCodec::parseAssistantMarkup(&editedContent) {
+                Ok(parts) => parts,
+                Err(error) => {
+                    AppLogger::e(
+                        "ChatServiceCore",
+                        &format!("cannot update assistant message: invalid markup: {error}"),
+                    );
+                    return false;
+                }
+            },
+            "user" => vec![MessagePart::markdown(
+                "part-0".to_string(),
+                0,
+                editedContent,
+            )],
+            sender => {
+                AppLogger::e(
+                    "ChatServiceCore",
+                    &format!("cannot update message from unsupported sender: {sender}"),
+                );
+                return false;
+            }
+        };
         let editedMessage = ChatMessage {
-            content: editedContent,
-            contentStream: None,
+            parts: editedParts,
             ..message
         };
         self.chatHistoryDelegate
@@ -706,7 +1161,7 @@ impl ChatServiceCore {
         self.rewindWorkspaceForMessage(index);
         self.chatHistoryDelegate
             .truncateChatHistory(Some(targetMessage.timestamp));
-        Some(stripXmlLikeTags(&targetMessage.content))
+        Some(stripXmlLikeTags(&targetMessage.displayText()))
     }
 
     /// Rewinds a user message and sends edited content as a new turn.
@@ -799,8 +1254,13 @@ impl ChatServiceCore {
         }
     }
 
-    /// Adds a file, package, screen capture, notification capture, or location capture as an attachment.
+    /// Adds a file, pasted text, package, screen capture, notification capture, or location capture as an attachment.
     pub fn handleAttachment(&mut self, _filePath: String) {
+        if let Some(content) = _filePath.strip_prefix(PASTED_TEXT_ATTACHMENT_PREFIX) {
+            self.attachPastedText(content.to_string());
+            return;
+        }
+
         let filePath = _filePath.trim();
         if filePath.is_empty() {
             self.messageProcessingDelegate
@@ -845,6 +1305,25 @@ impl ChatServiceCore {
         }
     }
 
+    /// Adds the supplied pasted text as an in-memory plain-text attachment.
+    #[allow(non_snake_case)]
+    fn attachPastedText(&mut self, content: String) {
+        let attachmentInfo = AttachmentInfo {
+            filePath: format!(
+                "pasted_text_{}_{}",
+                currentTimeMillis(),
+                self.attachments.len()
+            ),
+            fileName: "pasted_text.txt".to_string(),
+            mimeType: "text/plain".to_string(),
+            fileSize: content.len() as i64,
+            content,
+        };
+        self.attachments.push(attachmentInfo);
+        self.messageProcessingDelegate
+            .showToast("已添加粘贴文本附件".to_string());
+    }
+
     #[allow(non_snake_case)]
     fn captureScreenContent(&mut self) {
         let mut toolHandler = self.runtimeToolHandler();
@@ -865,8 +1344,18 @@ impl ChatServiceCore {
             return;
         }
 
-        let positionInfo = match image::image_dimensions(&screenshotPath) {
-            Ok((width, height)) if width > 0 && height > 0 => {
+        let screenshotBytes = match self.fileSystemHost.readFileBytes(&screenshotPath) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.messageProcessingDelegate
+                    .showToast(format!("添加屏幕内容失败: {}", error.message));
+                return;
+            }
+        };
+        let positionInfo = match image::load_from_memory(&screenshotBytes) {
+            Ok(image) if image.width() > 0 && image.height() > 0 => {
+                let width = image.width();
+                let height = image.height();
                 format!("【位置】full_screen; image_px={}x{}", width, height)
             }
             _ => "【位置】full_screen".to_string(),
@@ -893,7 +1382,12 @@ impl ChatServiceCore {
         self.messageProcessingDelegate
             .showToast("已添加屏幕内容".to_string());
 
-        let _ = fs::remove_file(&screenshotPath);
+        if let Err(error) = self.fileSystemHost.deleteFile(&screenshotPath, false) {
+            AppLogger::w(
+                "ChatServiceCore",
+                &format!("cannot remove captured screenshot: {}", error.message),
+            );
+        }
     }
 
     #[allow(non_snake_case)]
@@ -1035,8 +1529,15 @@ impl ChatServiceCore {
     #[allow(non_snake_case)]
     fn createAttachmentInfo(&self, filePath: &str) -> Result<AttachmentInfo, String> {
         let localPath = resolveAttachmentPath(filePath)?;
-        let metadata = fs::metadata(&localPath).map_err(|_| "附件文件不存在".to_string())?;
-        if !metadata.is_file() {
+        let localPathText = localPath.to_string_lossy();
+        let source = self
+            .fileSystemHost
+            .fileExists(&localPathText)
+            .map_err(|error| error.message)?;
+        if !source.exists {
+            return Err("附件文件不存在".to_string());
+        }
+        if source.isDirectory {
             return Err(format!("无法添加附件: {}", localPath.display()));
         }
 
@@ -1047,10 +1548,12 @@ impl ChatServiceCore {
             .ok_or_else(|| format!("无法添加附件: {}", localPath.display()))?
             .to_string();
         let mimeType = getMimeTypeFromPath(&localPath).to_string();
-        let tempFile = createTempFileFromPath(&localPath, &fileName)?;
-        let fileSize = fs::metadata(&tempFile)
-            .map_err(|error| format!("无法读取附件大小: {error}"))?
-            .len() as i64;
+        let tempFile = createTempFileFromPath(self.fileSystemHost.as_ref(), &localPath, &fileName)?;
+        let fileSize = self
+            .fileSystemHost
+            .fileExists(&tempFile.to_string_lossy())
+            .map_err(|error| format!("无法读取附件大小: {}", error.message))?
+            .size;
 
         Ok(AttachmentInfo {
             filePath: tempFile.to_string_lossy().into_owned(),
@@ -1238,6 +1741,7 @@ impl ChatServiceCore {
         let inputProcessingStateByChatIdFlow = self
             .messageProcessingDelegate
             .inputProcessingStateByChatIdFlow();
+        let pendingQueueStateByChatIdFlow = self.pendingQueueStateFlow().asStateFlow();
         let displayWindowStateFlow = self.chatHistoryDelegate.displayWindowStateFlow();
         let activePromptFlow = self
             .chatHistoryDelegate
@@ -1260,6 +1764,7 @@ impl ChatServiceCore {
                     chatHistories,
                     activeStreamingChatIds,
                     inputProcessingStateByChatId,
+                    pendingQueueStateByChatId: HashMap::new(),
                 }
             },
         );
@@ -1269,13 +1774,17 @@ impl ChatServiceCore {
             .functionalConfigManager
             .clone();
         let modelConfigManager = self.messageProcessingDelegate.modelConfigManager.clone();
-        combine3(
+        combine4(
             &inputsFlow,
             &displayWindowStateFlow,
             &activePromptFlow,
-            move |inputs, displayWindowState, activePrompt| {
+            &pendingQueueStateByChatIdFlow,
+            move |inputs, displayWindowState, activePrompt, pendingQueueStateByChatId| {
                 buildChatMainState(
-                    inputs,
+                    ChatMainFlowInputs {
+                        pendingQueueStateByChatId,
+                        ..inputs
+                    },
                     displayWindowState,
                     activePrompt,
                     &characterCardManager,
@@ -1321,7 +1830,7 @@ impl ChatServiceCore {
 
     /// Returns the current context window size state flow.
     #[allow(non_snake_case)]
-    pub fn currentWindowSizeFlow(&self) -> StateFlow<i32> {
+    pub fn currentWindowSizeFlow(&self) -> StateFlow<i64> {
         self.getTokenStatisticsDelegate()
             .expect("TokenStatisticsDelegate must be initialized")
             .currentWindowSizeFlow()
@@ -1329,7 +1838,7 @@ impl ChatServiceCore {
 
     /// Returns the cumulative input token count state flow.
     #[allow(non_snake_case)]
-    pub fn inputTokenCountFlow(&self) -> StateFlow<i32> {
+    pub fn inputTokenCountFlow(&self) -> StateFlow<i64> {
         self.getTokenStatisticsDelegate()
             .expect("TokenStatisticsDelegate must be initialized")
             .cumulativeInputTokensFlow()
@@ -1337,7 +1846,7 @@ impl ChatServiceCore {
 
     /// Returns the cumulative output token count state flow.
     #[allow(non_snake_case)]
-    pub fn outputTokenCountFlow(&self) -> StateFlow<i32> {
+    pub fn outputTokenCountFlow(&self) -> StateFlow<i64> {
         self.getTokenStatisticsDelegate()
             .expect("TokenStatisticsDelegate must be initialized")
             .cumulativeOutputTokensFlow()
@@ -1413,12 +1922,6 @@ impl ChatServiceCore {
     pub fn setMessageFavorite(&mut self, timestamp: i64, isFavorite: bool) {
         self.chatHistoryDelegate
             .setMessageFavorite(timestamp, isFavorite);
-    }
-}
-
-impl Default for ChatServiceCore {
-    fn default() -> Self {
-        Self::new(ChatSelectionMode::FOLLOW_GLOBAL)
     }
 }
 
@@ -1610,23 +2113,38 @@ fn fileUrlToPathBuf(url: &Url) -> Result<PathBuf, ()> {
 }
 
 #[allow(non_snake_case)]
-fn createTempFileFromPath(sourcePath: &Path, fileName: &str) -> Result<PathBuf, String> {
+/// Copies an attachment into clean-on-exit storage through the supplied file-system host.
+fn createTempFileFromPath(
+    fileSystemHost: &dyn FileSystemHost,
+    sourcePath: &Path,
+    fileName: &str,
+) -> Result<PathBuf, String> {
     let fileExtension = fileName
         .rsplit_once('.')
         .map(|(_, extension)| extension)
         .filter(|extension| !extension.trim().is_empty())
         .unwrap_or("jpg");
     let externalDir = OperitPaths::cleanOnExitDir()?;
-    fs::create_dir_all(&externalDir).map_err(|error| format!("无法创建附件临时目录: {error}"))?;
+    let externalDirText = externalDir.to_string_lossy();
+    fileSystemHost
+        .makeDirectory(&externalDirText, true)
+        .map_err(|error| format!("无法创建附件临时目录: {}", error.message))?;
     let noMediaFile = externalDir.join(".nomedia");
-    if !noMediaFile.exists() {
-        fs::File::create(&noMediaFile).map_err(|error| format!("无法创建附件媒体标记: {error}"))?;
-    }
+    fileSystemHost
+        .writeFile(&noMediaFile.to_string_lossy(), "", false)
+        .map_err(|error| format!("无法创建附件媒体标记: {}", error.message))?;
     let tempFile = externalDir.join(format!("img_{}.{}", currentTimeMillis(), fileExtension));
-    fs::copy(sourcePath, &tempFile).map_err(|error| format!("无法复制附件: {error}"))?;
-    let metadata =
-        fs::metadata(&tempFile).map_err(|error| format!("无法读取附件临时文件: {error}"))?;
-    if !metadata.is_file() || metadata.len() == 0 {
+    fileSystemHost
+        .copyFile(
+            &sourcePath.to_string_lossy(),
+            &tempFile.to_string_lossy(),
+            false,
+        )
+        .map_err(|error| format!("无法复制附件: {}", error.message))?;
+    let copied = fileSystemHost
+        .fileExists(&tempFile.to_string_lossy())
+        .map_err(|error| format!("无法读取附件临时文件: {}", error.message))?;
+    if !copied.exists || copied.isDirectory || copied.size == 0 {
         return Err(format!("无法添加附件: {}", sourcePath.display()));
     }
     Ok(tempFile)
@@ -1700,12 +2218,4 @@ fn toolFailureMessage(result: &ToolResult) -> String {
         return message;
     }
     result.result.toString()
-}
-
-#[allow(non_snake_case)]
-fn currentTimeMillis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time must be after unix epoch")
-        .as_millis()
 }

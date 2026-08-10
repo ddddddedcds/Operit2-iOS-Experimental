@@ -27,35 +27,12 @@ object OperitRuntimeNative {
         token: String,
         shutdownToken: String,
         webRoot: String,
-        deviceId: String,
-        acceptedSessions: String,
-        acceptedSessionStorePath: String,
-        pairingCodePath: String,
         deviceInfoJson: String,
         enableWebAccess: String,
         enableDiscovery: String,
     ): String
 
     @JvmStatic external fun stopWebAccessServer(handle: Long): String
-
-    @JvmStatic
-    external fun discoverDevices(
-        handle: Long,
-        timeoutMs: Long,
-    ): String
-
-    @JvmStatic external fun remotePairStart(
-        handle: Long,
-        baseUrl: String,
-        tokenHash: String,
-        clientDeviceInfoJson: String,
-    ): String
-
-    @JvmStatic external fun remotePairFinish(
-        handle: Long,
-        pairingId: String,
-        pairingCode: String,
-    ): String
 
     @JvmStatic external fun emitRuntimeEvent(handle: Long, eventJson: String): String
 

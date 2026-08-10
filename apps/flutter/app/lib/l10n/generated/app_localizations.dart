@@ -116,6 +116,18 @@ abstract class AppLocalizations {
   /// **'Fullscreen input'**
   String get fullscreenInput;
 
+  /// No description provided for @expandInput.
+  ///
+  /// In en, this message translates to:
+  /// **'Expand input'**
+  String get expandInput;
+
+  /// No description provided for @collapseInput.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse input'**
+  String get collapseInput;
+
   /// No description provided for @settings.
   ///
   /// In en, this message translates to:
@@ -1106,6 +1118,18 @@ abstract class AppLocalizations {
   /// **'Website permission request'**
   String get browserPermissionRequestTitle;
 
+  /// No description provided for @chatSpeechInputFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Speech input failed. Please try again.'**
+  String get chatSpeechInputFailed;
+
+  /// No description provided for @chatSpeechNoTextRecognized.
+  ///
+  /// In en, this message translates to:
+  /// **'No speech recognized.'**
+  String get chatSpeechNoTextRecognized;
+
   /// No description provided for @history.
   ///
   /// In en, this message translates to:
@@ -1640,6 +1664,24 @@ abstract class AppLocalizations {
   /// **'Manage default workspaces, terminal sessions, browser mode, scripts, and web automation.'**
   String get settingsCategoryWorkspaceDescription;
 
+  /// No description provided for @settingsCategoryGlobalBehaviorTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Global Behavior Settings'**
+  String get settingsCategoryGlobalBehaviorTitle;
+
+  /// No description provided for @settingsCategoryGlobalBehaviorSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Input processing and interaction'**
+  String get settingsCategoryGlobalBehaviorSubtitle;
+
+  /// No description provided for @settingsCategoryGlobalBehaviorDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Configure input and interaction behavior that does not vary by character card.'**
+  String get settingsCategoryGlobalBehaviorDescription;
+
   /// No description provided for @settingsCategoryAppearanceTitle.
   ///
   /// In en, this message translates to:
@@ -1693,6 +1735,54 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Connect another device, sync data, or allow browsers to access this device.'**
   String get settingsCategoryAccessLinksDescription;
+
+  /// No description provided for @settingsCategoryGroupAssistant.
+  ///
+  /// In en, this message translates to:
+  /// **'AI & Creation'**
+  String get settingsCategoryGroupAssistant;
+
+  /// No description provided for @settingsCategoryGroupWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'Workspace & Automation'**
+  String get settingsCategoryGroupWorkspace;
+
+  /// No description provided for @settingsCategoryGroupExperience.
+  ///
+  /// In en, this message translates to:
+  /// **'Display & Interaction'**
+  String get settingsCategoryGroupExperience;
+
+  /// No description provided for @settingsCategoryGroupSystem.
+  ///
+  /// In en, this message translates to:
+  /// **'Data & System'**
+  String get settingsCategoryGroupSystem;
+
+  /// No description provided for @settingsGlobalBehaviorChatInputSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Chat input'**
+  String get settingsGlobalBehaviorChatInputSection;
+
+  /// No description provided for @settingsGlobalBehaviorLongPastedTextAsAttachment.
+  ///
+  /// In en, this message translates to:
+  /// **'Convert long pasted text to a file'**
+  String get settingsGlobalBehaviorLongPastedTextAsAttachment;
+
+  /// No description provided for @settingsGlobalBehaviorLongPastedTextThreshold.
+  ///
+  /// In en, this message translates to:
+  /// **'Conversion threshold'**
+  String get settingsGlobalBehaviorLongPastedTextThreshold;
+
+  /// No description provided for @settingsGlobalBehaviorLongPastedTextThresholdValue.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} characters'**
+  String settingsGlobalBehaviorLongPastedTextThresholdValue(int count);
 
   /// No description provided for @settingsComingSoon.
   ///
@@ -1843,6 +1933,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Delete provider'**
   String get settingsModelDeleteProviderConfirmAction;
+
+  /// No description provided for @settingsTtsDeleteProvider.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete TTS provider'**
+  String get settingsTtsDeleteProvider;
+
+  /// No description provided for @settingsTtsDeleteProviderConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete TTS provider “{name}” and its {count} voice configurations?'**
+  String settingsTtsDeleteProviderConfirm(String name, int count);
+
+  /// No description provided for @settingsTtsDeleteProviderFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to delete TTS provider: {error}'**
+  String settingsTtsDeleteProviderFailed(String error);
+
+  /// No description provided for @settingsTtsCurrentConfigCannotDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'The TTS configuration currently in use cannot be deleted.'**
+  String get settingsTtsCurrentConfigCannotDelete;
+
+  /// No description provided for @settingsTtsConfigUsedByCharacter.
+  ///
+  /// In en, this message translates to:
+  /// **'This TTS configuration is used by a character card and cannot be deleted.'**
+  String get settingsTtsConfigUsedByCharacter;
 
   /// No description provided for @settingsModelChatAutoGlmWarning.
   ///
@@ -2269,6 +2389,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'OpenAI Local'**
   String get settingsModelProviderTypeOpenaiLocal;
+
+  /// No description provided for @settingsModelProviderTypeLocalModel.
+  ///
+  /// In en, this message translates to:
+  /// **'Local model'**
+  String get settingsModelProviderTypeLocalModel;
 
   /// No description provided for @settingsModelProviderTypeMnn.
   ///
@@ -3318,6 +3444,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Wait seconds'**
   String get settingsToolsMcpStartupTimeoutSeconds;
+
+  /// No description provided for @settingsToolsToolPkgPreHookTimeout.
+  ///
+  /// In en, this message translates to:
+  /// **'ToolPkg pre-hook timeout'**
+  String get settingsToolsToolPkgPreHookTimeout;
+
+  /// No description provided for @settingsToolsToolPkgPreHookDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'One ToolPkg pre-hook chain has {seconds} seconds in total.'**
+  String settingsToolsToolPkgPreHookDescription(int seconds);
+
+  /// No description provided for @settingsToolsToolPkgPreHookTimeoutSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Total seconds'**
+  String get settingsToolsToolPkgPreHookTimeoutSeconds;
 
   /// No description provided for @settingsWorkspaceCurrentDesign.
   ///
@@ -4663,6 +4807,12 @@ abstract class AppLocalizations {
   /// **'Show message avatars'**
   String get settingsAppearanceShowAvatars;
 
+  /// No description provided for @settingsAppearanceMessageDisplaySection.
+  ///
+  /// In en, this message translates to:
+  /// **'Message display'**
+  String get settingsAppearanceMessageDisplaySection;
+
   /// No description provided for @settingsAppearanceShowThinkingProcess.
   ///
   /// In en, this message translates to:
@@ -5252,6 +5402,44 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Restore'**
   String get settingsDataSnapshotRestoreConfirmAction;
+
+  /// No description provided for @settingsDataImportOperit1Snapshot.
+  ///
+  /// In en, this message translates to:
+  /// **'Import from Operit1'**
+  String get settingsDataImportOperit1Snapshot;
+
+  /// No description provided for @settingsDataOperit1SnapshotImported.
+  ///
+  /// In en, this message translates to:
+  /// **'Operit1 snapshot imported.'**
+  String get settingsDataOperit1SnapshotImported;
+
+  /// No description provided for @settingsDataOperit1SnapshotImportError.
+  ///
+  /// In en, this message translates to:
+  /// **'Operit1 snapshot import failed: {error}'**
+  String settingsDataOperit1SnapshotImportError(String error);
+
+  /// No description provided for @settingsDataOperit1SnapshotImportConfirmMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Import this Operit1 snapshot into the current Runtime.\nFile: {fileName}\nFormat version: {formatVersion}\nChat model: {chatModelId}\nChats: {chatCount}; messages: {messageCount}\nResource files: {fileCount}\nSnapshot size: {byteCount} bytes'**
+  String settingsDataOperit1SnapshotImportConfirmMessage(
+    String fileName,
+    int formatVersion,
+    String chatModelId,
+    int chatCount,
+    int messageCount,
+    int fileCount,
+    int byteCount,
+  );
+
+  /// No description provided for @settingsDataOperit1SnapshotImportAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Import'**
+  String get settingsDataOperit1SnapshotImportAction;
 
   /// No description provided for @settingsDataAdvancedBackupOptions.
   ///

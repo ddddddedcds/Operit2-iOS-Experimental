@@ -4,7 +4,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void *operit_flutter_bridge_create(void);
+char *operit_ios_ish_terminal_call(const char *command, const char *request_json);
+void operit_ios_ish_terminal_free(char *value);
 void *operit_flutter_bridge_create_with_storage_roots(
     const char *runtime_root,
     const char *workspace_root);
@@ -29,27 +35,11 @@ char *operit_flutter_bridge_start_web_access_server(
     const char *token,
     const char *shutdown_token,
     const char *web_root,
-    const char *device_id,
-    const char *accepted_sessions_json,
-    const char *accepted_session_store_path,
-    const char *pairing_code_path,
     const char *device_info_json,
     const char *enable_web_access,
     const char *enable_discovery
 );
-char *operit_flutter_bridge_discover_devices(void *handle, const char *timeout_ms);
 char *operit_flutter_bridge_stop_web_access_server(void *handle);
-char *operit_flutter_bridge_remote_pair_start(
-    void *handle,
-    const char *base_url,
-    const char *token_hash,
-    const char *client_device_info_json
-);
-char *operit_flutter_bridge_remote_pair_finish(
-    void *handle,
-    const char *pairing_id,
-    const char *pairing_code
-);
 char *operit_flutter_bridge_emit_runtime_event(void *handle, const char *event_json);
 void operit_flutter_bridge_free_string(char *value);
 void operit_flutter_bridge_sync_daemon_config(
@@ -57,5 +47,9 @@ void operit_flutter_bridge_sync_daemon_config(
     const char *provider,
     const char *base_url,
     const char *model);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

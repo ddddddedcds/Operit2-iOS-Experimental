@@ -1,5 +1,5 @@
+use core::time::Duration;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -23,11 +23,14 @@ use operit_model::ChatMessageDisplayMode::ChatMessageDisplayMode;
 use operit_model::ChatTurnOptions::ChatTurnOptions;
 use operit_model::FunctionType::FunctionType;
 use operit_model::InputProcessingState::InputProcessingState;
+use operit_model::MessagePart::MessagePart;
+use operit_model::MessagePartCodec::MessagePartCodec;
 use operit_model::PromptFunctionType::PromptFunctionType;
 use operit_providers::chat::config::FunctionalPrompts::FunctionalPrompts;
 use operit_providers::chat::llmprovider::AIService::collect_stream_chunks;
 use operit_providers::chat::EnhancedAIService::{EnhancedAIService, SendMessageOptions};
 use operit_util::stream::Stream::Stream;
+use operit_util::AppLogger::AppLogger;
 use operit_util::ChainLogger::{self, SEND_CHAIN};
 
 /// Queued continuation work scheduled after a summary completes.
@@ -134,7 +137,7 @@ impl MessageCoordinationDelegate {
         groupParticipantNamesText: Option<String>,
         chatProviderIdOverride: Option<String>,
         chatModelIdOverride: Option<String>,
-    ) -> i32 {
+    ) -> i64 {
         let currentChat = chatId.as_ref().and_then(|chatId| {
             self.chatHistoryDelegate
                 .chatHistoriesFlow()
@@ -193,7 +196,7 @@ impl MessageCoordinationDelegate {
         groupParticipantNamesText: Option<String>,
         chatProviderIdOverride: Option<String>,
         chatModelIdOverride: Option<String>,
-    ) -> Option<i32> {
+    ) -> Option<i64> {
         let targetChatId = chatId.or_else(|| self.chatHistoryDelegate.currentChatId.clone())?;
         let effectivePromptFunctionType =
             promptFunctionType.unwrap_or_else(|| self.currentPromptFunctionType.clone());
@@ -246,6 +249,15 @@ impl MessageCoordinationDelegate {
         replyToMessage: Option<ChatMessage>,
         turnOptions: ChatTurnOptions,
     ) {
+        AppLogger::i(
+            "CoreSend",
+            &format!(
+                "dispatch entry messageChars={} attachments={} prompt={:?}",
+                messageText.chars().count(),
+                attachments.len(),
+                promptFunctionType
+            ),
+        );
         if chatIdOverride
             .as_ref()
             .map(|id| id.trim().is_empty())
@@ -310,6 +322,7 @@ impl MessageCoordinationDelegate {
             turnOptions,
         )
         .await;
+        AppLogger::i("CoreSend", "dispatch return");
     }
 
     /// Regenerates a single AI message variant using the surrounding conversation state.
@@ -341,7 +354,7 @@ impl MessageCoordinationDelegate {
                     prefixHistory[..prefixHistory.len() - 1].to_vec(),
                     prefixHistory
                         .last()
-                        .map(|message| message.content.clone())
+                        .map(ChatMessage::displayText)
                         .unwrap_or_default(),
                 )
             } else {
@@ -384,7 +397,11 @@ impl MessageCoordinationDelegate {
             .map_err(|error| error.to_string())?;
         self.chatHistoryDelegate.addMessageToChat(
             ChatMessage {
-                content: String::new(),
+                parts: vec![MessagePart::markdown(
+                    "part-0".to_string(),
+                    0,
+                    String::new(),
+                )],
                 selectedVariantIndex: targetMessage.variantCount,
                 variantCount: targetMessage.variantCount + 1,
                 isVariantPreview: true,
@@ -392,15 +409,20 @@ impl MessageCoordinationDelegate {
             },
             Some(chatId.clone()),
         );
-        let Some(mut contentStream) = variantMessage.contentStream.clone() else {
+        let Some(mut contentStream) = self
+            .messageProcessingDelegate
+            .activeResponseStreamForChat(chatId.clone())
+        else {
             return Err("Regenerated message stream is missing".to_string());
         };
         let mut content = String::new();
-        contentStream.collect(&mut |chunk| {
-            content.push_str(&chunk);
-        });
-        variantMessage.content = content;
-        variantMessage.contentStream = None;
+        contentStream
+            .collect(&mut |chunk| {
+                content.push_str(&chunk);
+            })
+            .await;
+        variantMessage.parts = MessagePartCodec::parseAssistantMarkup(&content)
+            .expect("regenerated assistant markup must parse into message parts");
         variantMessage.isVariantPreview = false;
         self.chatHistoryDelegate.addMessageVariant(
             targetMessage.timestamp,
@@ -785,7 +807,11 @@ impl MessageCoordinationDelegate {
         self.chatHistoryDelegate.addMessageToChat(
             ChatMessage {
                 sender: "user".to_string(),
-                content: finalUserMessageContent,
+                parts: vec![MessagePart::markdown(
+                    "part-0".to_string(),
+                    0,
+                    finalUserMessageContent,
+                )],
                 roleName: "用户".to_string(),
                 displayMode: if turnOptions.hideUserMessage {
                     ChatMessageDisplayMode::HIDDEN_PLACEHOLDER
@@ -919,8 +945,9 @@ impl MessageCoordinationDelegate {
                         message.sender == "ai" && message.timestamp > beforeLastAiTimestamp
                     });
                 if let Some(newAiMessage) = newAiMessage {
-                    if !newAiMessage.content.trim().is_empty() {
-                        let effectiveSpeech = extractEffectiveSpeechContent(&newAiMessage.content);
+                    let displayText = newAiMessage.displayText();
+                    if !displayText.trim().is_empty() {
+                        let effectiveSpeech = extractEffectiveSpeechContent(&displayText);
                         if !effectiveSpeech.trim().is_empty() {
                             timeline.push((
                                 format!("AI({})", memberCard.name),
@@ -964,9 +991,10 @@ impl MessageCoordinationDelegate {
         options.enableThinking = false;
         options.stream = false;
         let response = enhancedAiService.sendMessage(options).await.ok()?;
-        let rawContent = removeThinkingContent(&collect_stream_chunks(response).join(""))
-            .trim()
-            .to_string();
+        let rawContent =
+            removeThinkingContent(&collect_stream_chunks(Box::new(response)).await.join(""))
+                .trim()
+                .to_string();
         self.parsePlannedRounds(
             &rawContent,
             members
@@ -1122,8 +1150,10 @@ impl MessageCoordinationDelegate {
 
     #[allow(non_snake_case)]
     async fn awaitTurnComplete(&self, chatId: String, targetCounter: i64, timeoutMs: u64) -> bool {
-        let started = Instant::now();
-        while started.elapsed() < Duration::from_millis(timeoutMs) {
+        let startedAtMillis = operit_host_api::TimeUtils::currentTimeMillisU128();
+        while operit_host_api::TimeUtils::currentTimeMillisU128().saturating_sub(startedAtMillis)
+            < u128::from(timeoutMs)
+        {
             if self
                 .messageProcessingDelegate
                 .getTurnCompleteCounter(chatId.clone())

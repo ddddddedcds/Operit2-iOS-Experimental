@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
 
+use operit_host_api::HostRuntimeTaskSchedulerHost;
 use serde_json::Value;
 
 use crate::core::chat::plugins::MessageProcessingPluginRegistry::{
@@ -107,7 +107,7 @@ impl MessageProcessingPlugin for MessageProcessingBridge {
                 ],
             );
             let probeDecoded =
-                runMessageProcessingHook(&manager, &hook, probeEventPayload.clone(), None);
+                runMessageProcessingHook(&manager, &hook, probeEventPayload.clone(), None, None);
             let probeResult = parseMessageProcessingResult(probeDecoded.as_ref());
             let Some(probeResult) = probeResult else {
                 continue;
@@ -143,58 +143,82 @@ impl MessageProcessingPlugin for MessageProcessingBridge {
             let hook_for_worker = hook.clone();
             let manager_for_worker = manager.clone();
             let executionIdForWorker = executionId.clone();
-            thread::spawn(move || {
-                ChainLogger::info(
-                    PLUGIN_CHAIN,
-                    "plugin.toolpkg.message_processing.run.start",
-                    &[
-                        ("package", hook_for_worker.containerPackageName.clone()),
-                        ("hookId", hook_for_worker.pluginId.clone()),
-                        ("executionId", executionIdForWorker.clone()),
-                    ],
-                );
-                let emittedAny = Arc::new(AtomicBool::new(false));
-                let emittedAnyForIntermediate = emittedAny.clone();
-                let decoded = runMessageProcessingHook(
-                    &manager_for_worker,
-                    &hook_for_worker,
-                    eventPayload,
-                    Some(Arc::new(move |raw| {
-                        let decoded = decodeToolPkgHookResult(Some(raw));
-                        for chunk in extractMessageChunks(decoded.as_ref()) {
-                            if !chunk.is_empty() {
-                                emittedAnyForIntermediate.store(true, Ordering::Relaxed);
-                                stream_for_intermediate.emit(chunk);
+            let released = Arc::new(AtomicBool::new(false));
+            let released_for_worker = released.clone();
+            manager.acquireToolPkgExecutionEngine(&executionId, &hook.containerPackageName);
+            self.runtime
+                .host_manager()
+                .hostRuntimeTaskSchedulerHost
+                .as_ref()
+                .expect("HostRuntimeTaskSchedulerHost is required for ToolPkg message processing")
+                .scheduleHostRuntimeTask(
+                    "operit-toolpkg-message-processing",
+                    Box::new(move || {
+                        ChainLogger::info(
+                            PLUGIN_CHAIN,
+                            "plugin.toolpkg.message_processing.run.start",
+                            &[
+                                ("package", hook_for_worker.containerPackageName.clone()),
+                                ("hookId", hook_for_worker.pluginId.clone()),
+                                ("executionId", executionIdForWorker.clone()),
+                            ],
+                        );
+                        let emittedAny = Arc::new(AtomicBool::new(false));
+                        let emittedAnyForIntermediate = emittedAny.clone();
+                        let decoded = runMessageProcessingHook(
+                            &manager_for_worker,
+                            &hook_for_worker,
+                            eventPayload,
+                            Some(&executionIdForWorker),
+                            Some(Arc::new(move |raw| {
+                                let decoded = decodeToolPkgHookResult(Some(raw));
+                                for chunk in extractMessageChunks(decoded.as_ref()) {
+                                    if !chunk.is_empty() {
+                                        emittedAnyForIntermediate.store(true, Ordering::Relaxed);
+                                        stream_for_intermediate.emit(chunk);
+                                    }
+                                }
+                            })),
+                        );
+                        let parsed = parseMessageProcessingResult(decoded.as_ref());
+                        let mut emittedChunkCount = 0usize;
+                        if let Some(parsed) = parsed {
+                            if parsed.matched && !emittedAny.load(Ordering::Relaxed) {
+                                for chunk in parsed.chunks {
+                                    if !chunk.is_empty() {
+                                        emittedChunkCount += 1;
+                                        stream_for_final.emit(chunk);
+                                    }
+                                }
                             }
                         }
-                    })),
-                );
-                let parsed = parseMessageProcessingResult(decoded.as_ref());
-                let mut emittedChunkCount = 0usize;
-                if let Some(parsed) = parsed {
-                    if parsed.matched && !emittedAny.load(Ordering::Relaxed) {
-                        for chunk in parsed.chunks {
-                            if !chunk.is_empty() {
-                                emittedChunkCount += 1;
-                                stream_for_final.emit(chunk);
-                            }
-                        }
-                    }
-                }
-                ChainLogger::info(
-                    PLUGIN_CHAIN,
-                    "plugin.toolpkg.message_processing.run.done",
-                    &[
-                        ("package", hook_for_worker.containerPackageName.clone()),
-                        ("hookId", hook_for_worker.pluginId.clone()),
-                        ("executionId", executionIdForWorker.clone()),
-                        ("chunkCount", emittedChunkCount.to_string()),
-                    ],
-                );
-                stream_for_final.close();
-            });
+                        ChainLogger::info(
+                            PLUGIN_CHAIN,
+                            "plugin.toolpkg.message_processing.run.done",
+                            &[
+                                ("package", hook_for_worker.containerPackageName.clone()),
+                                ("hookId", hook_for_worker.pluginId.clone()),
+                                ("executionId", executionIdForWorker.clone()),
+                                ("chunkCount", emittedChunkCount.to_string()),
+                            ],
+                        );
+                        stream_for_final.close();
+                        releaseMessageProcessingEngine(
+                            &manager_for_worker,
+                            &executionIdForWorker,
+                            &hook_for_worker.containerPackageName,
+                            &released_for_worker,
+                        );
+                    }),
+                )
+                .expect("host runtime task scheduler must schedule ToolPkg message processing");
             return Some(MessageProcessingExecution {
-                controller: Box::new(RegisteredMessageProcessingController { executionId, hook }),
+                controller: Box::new(RegisteredMessageProcessingController {
+                    executionId,
+                    hook,
+                    manager,
+                    released,
+                }),
                 stream,
             });
         }
@@ -232,13 +256,14 @@ fn runMessageProcessingHook(
     manager: &RuntimePackageManager,
     hook: &ToolPkgMessageProcessingHookRegistration,
     eventPayload: Value,
+    executionContextKey: Option<&str>,
     onIntermediateResult: Option<Arc<dyn Fn(String) + Send + Sync>>,
 ) -> Option<Value> {
     match manager.runToolPkgMainHook(
         &hook.containerPackageName,
         &hook.functionName,
         TOOLPKG_EVENT_MESSAGE_PROCESSING,
-        None,
+        executionContextKey,
         Some(&hook.pluginId),
         hook.functionSource.as_deref(),
         eventPayload,
@@ -355,10 +380,30 @@ fn extractMessageChunks(decoded: Option<&Value>) -> Vec<String> {
 struct RegisteredMessageProcessingController {
     executionId: String,
     hook: ToolPkgMessageProcessingHookRegistration,
+    manager: RuntimePackageManager,
+    released: Arc<AtomicBool>,
 }
 
 impl MessageProcessingController for RegisteredMessageProcessingController {
     fn cancel(&self) {
-        let _ = (&self.executionId, &self.hook);
+        releaseMessageProcessingEngine(
+            &self.manager,
+            &self.executionId,
+            &self.hook.containerPackageName,
+            &self.released,
+        );
     }
+}
+
+/// Releases a message-processing execution context at most once.
+fn releaseMessageProcessingEngine(
+    manager: &RuntimePackageManager,
+    executionId: &str,
+    containerPackageName: &str,
+    released: &AtomicBool,
+) {
+    if released.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    manager.releaseToolPkgExecutionEngine(executionId, containerPackageName);
 }

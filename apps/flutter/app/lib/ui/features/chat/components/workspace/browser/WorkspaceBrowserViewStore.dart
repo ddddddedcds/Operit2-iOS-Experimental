@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:operit2/core/browser/BrowserSessions.dart';
 import 'package:operit2/core/logging/ClientLogger.dart';
 import 'package:operit2/core/proxy/generated/CoreProxyModels.g.dart';
-import 'package:operit2/core/runtime/RuntimeConnectionManager.dart';
 
 import 'WorkspaceBrowserStores.dart';
 import 'WorkspaceBrowserUrlUtils.dart';
@@ -78,9 +77,7 @@ class WorkspaceBrowserViewStore extends ChangeNotifier {
 
   /// Returns whether workspace can mount the owner WebView directly.
   bool get usesNativeSurface {
-    return !kIsWeb &&
-        RuntimeConnectionManager.instance.config.mode ==
-            RuntimeConnectionMode.local;
+    return !kIsWeb;
   }
 
   int get activeDownloadCount => stores.downloads.items
@@ -441,7 +438,11 @@ class WorkspaceBrowserViewStore extends ChangeNotifier {
         tab.id,
         displayIntent: _surfaceDisplayIntent(),
       );
-      _applySurfaceDescriptor(tab, snapshot.resultJson);
+      if (snapshot.success) {
+        _applySurfaceDescriptor(tab, snapshot.resultJson);
+      } else {
+        tab.update(errorText: snapshot.error!, isLoading: false);
+      }
     }
     if (select) {
       _selectedIndex = _tabs.length - 1;
@@ -562,17 +563,15 @@ class WorkspaceBrowserViewStore extends ChangeNotifier {
   /// Builds the compositor transport requested by the current viewer.
   Map<String, Object?> _surfaceDisplayIntent() {
     final platform = defaultTargetPlatform;
-    final mode = RuntimeConnectionManager.instance.config.mode;
     final sameProcessWindows =
         !kIsWeb &&
-        mode == RuntimeConnectionMode.local &&
         platform == TargetPlatform.windows &&
         WidgetsBinding.instance.platformDispatcher.views.isNotEmpty;
     final transport = sameProcessWindows
         ? _localTextureTransport
         : _encodedStreamTransport;
     ClientLogger.i(
-      'displayIntent mode=${mode.name} platform=${platform.name} transport=$transport',
+      'displayIntent platform=${platform.name} transport=$transport',
       tag: _logTag,
     );
     return <String, Object?>{

@@ -1,7 +1,7 @@
 use operit_host_api::{
     AppListData, AppOperationData, AppUsageTimeResultData, DeviceInfoData, HostError, HostResult,
-    LocationData, NotificationData, OCRLanguage, OCRQuality, SystemOperationHost,
-    SystemSettingData,
+    LocationData, NotificationData, OCRLanguage, OCRQuality, SystemNotificationRequest,
+    SystemOperationHost, SystemSettingData,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -14,7 +14,13 @@ impl AndroidSystemOperationHost {
 }
 
 impl SystemOperationHost for AndroidSystemOperationHost {
+    /// Reads the system language directly from the Android runtime host.
     fn getSystemLanguageCode(&self) -> HostResult<String> {
+        #[cfg(target_os = "android")]
+        {
+            return crate::secret_store::androidHostSystemLanguageCode();
+        }
+        #[cfg(not(target_os = "android"))]
         Err(HostError::new(
             "Android get_system_language_code requires the Android system host bridge",
         ))
@@ -26,9 +32,10 @@ impl SystemOperationHost for AndroidSystemOperationHost {
         )))
     }
 
-    fn sendNotification(&self, title: &str, message: &str) -> HostResult<()> {
+    fn sendNotification(&self, request: &SystemNotificationRequest) -> HostResult<()> {
         Err(HostError::new(format!(
-            "Android notification requires the Android UI host bridge: {title}: {message}"
+            "Android notification requires the Android UI host bridge: {}: {}",
+            request.title, request.message,
         )))
     }
 

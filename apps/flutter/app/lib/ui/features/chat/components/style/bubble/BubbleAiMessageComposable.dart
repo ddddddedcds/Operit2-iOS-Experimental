@@ -5,10 +5,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../../../../common/markdown/MarkdownNodeGrouper.dart';
-import '../../../../../common/markdown/StreamMarkdownRenderer.dart';
 import '../../../../../common/markdown/StreamMarkdownRendererState.dart';
 import '../../../../../../data/preferences/UserPreferencesManager.dart';
 import '../../../../../theme/OperitTheme.dart';
+import '../../../../../theme/OperitThemeAssets.dart';
+import '../../part/StructuredMessagePartRenderer.dart';
 import '../../part/ThinkToolsXmlNodeGrouper.dart';
 import '../../../viewmodel/ChatViewModel.dart';
 import 'BubbleSurface.dart';
@@ -140,14 +141,14 @@ class _BubbleAiMessageComposableState extends State<BubbleAiMessageComposable> {
         ),
         child: KeyedSubtree(
           key: ValueKey<int>(widget.message.timestamp),
-          child: StreamMarkdownRenderer(
-            content: widget.message.content,
+          child: StreamingStructuredMessageRenderer(
+            parts: widget.message.parts,
             contentStream: widget.message.contentStream,
             isStreaming: widget.isStreaming,
             textColor: textColor,
             backgroundColor: backgroundColor,
             nodeGrouper: nodeGrouper,
-            state: _rendererState,
+            streamState: _rendererState,
             onLinkClick: widget.enableDialogs ? widget.onLinkClick : null,
             rendererId: 'bubble-ai-${widget.message.timestamp}',
             showThinkingProcess: showThinkingProcess,
@@ -533,6 +534,7 @@ class _AiImageOnlyBubble extends StatelessWidget {
 }
 
 class _MessageAvatar extends StatelessWidget {
+  /// Creates an AI message avatar that can render an imported theme asset.
   const _MessageAvatar({
     required this.imagePath,
     required this.avatarShape,
@@ -562,7 +564,7 @@ class _MessageAvatar extends StatelessWidget {
         ),
         clipBehavior: Clip.antiAlias,
         child: avatarImagePath != null && avatarImagePath.isNotEmpty
-            ? Image.file(File(avatarImagePath), fit: BoxFit.cover)
+            ? ThemeAssetImage(storagePath: avatarImagePath, fit: BoxFit.cover)
             : Image.asset(_operitAvatarAsset, fit: BoxFit.cover),
       ),
     );
@@ -611,12 +613,9 @@ String _normalDisplayText(
 }
 
 String? _singleMarkdownImageUrl(ChatUiMessage message) {
-  if (message.contentStream != null) {
-    return null;
-  }
   return RegExp(
     r'^\s*!\[[^\]]*\]\(([^)]+)\)\s*$',
-  ).firstMatch(message.content)?.group(1);
+  ).firstMatch(message.displayText)?.group(1);
 }
 
 bool _shouldUseExpandedBubbleLayout(StreamMarkdownRendererState state) {

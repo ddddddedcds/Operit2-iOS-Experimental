@@ -7,6 +7,22 @@ import 'package:hooks/hooks.dart';
 
 const String _webAccessVersionFile = 'web_access_version.json';
 const int _webAccessVersionSchema = 1;
+const String _v86PackageVersion = '0.5.424';
+const String _v86RuntimeAssetBaseUrl =
+    'https://models.operit.app/v86-runtime/i686-buildroot-node20-python312-20260720/';
+
+const List<_V86GuestAsset> _v86GuestAssets = <_V86GuestAsset>[
+  _V86GuestAsset(
+    relativePath: 'v86/seabios.bin',
+    url: '${_v86RuntimeAssetBaseUrl}seabios.bin',
+    sha256: '73e3f359102e3a9982c35fce98eb7cd08f18303ac7f1ba6ebfbe6cdc1c244d98',
+  ),
+  _V86GuestAsset(
+    relativePath: 'v86/vgabios.bin',
+    url: '${_v86RuntimeAssetBaseUrl}vgabios.bin',
+    sha256: 'a4bc0d80cc3ca028c73dafa8fee396b8d054ce87ebd8abfbd31b06b437607880',
+  ),
+];
 
 void main(List<String> args) async {
   await build(args, (input, output) async {
@@ -34,6 +50,12 @@ void main(List<String> args) async {
     );
     final webSourceDir = Directory.fromUri(
       input.packageRoot.resolve('../../../apps/web_access/web/'),
+    );
+    final webRuntimeSourceDir = Directory.fromUri(
+      input.packageRoot.resolve('../../../apps/web_access/src/'),
+    );
+    final webRuntimeTypescriptConfig = File.fromUri(
+      input.packageRoot.resolve('../../../apps/web_access/tsconfig.json'),
     );
     final webBuildDir = Directory.fromUri(
       input.packageRoot.resolve('../../../apps/web_access/build/bundle/'),
@@ -64,7 +86,7 @@ void main(List<String> args) async {
       '.ts',
       '.d.ts',
       '.py',
-    });
+    }, excludeGeneratedOutputs: true);
     await _addRustDependencies(output, bridgeCrate);
     await _addRustDependencies(output, coreRoot);
     await _addRustDependencies(output, webHostRoot);
@@ -76,7 +98,9 @@ void main(List<String> args) async {
       '.json',
       '.png',
       '.wasm',
-    });
+    }, excludeGeneratedOutputs: true);
+    await _addDirectoryFileDependencies(output, webRuntimeSourceDir, {'.ts'});
+    output.dependencies.add(webRuntimeTypescriptConfig.uri);
 
     await _run(_pythonExecutable(repoRoot), [
       syncScript.path,
@@ -85,6 +109,7 @@ void main(List<String> args) async {
     ], workingDirectory: repoRoot.path);
 
     if (shouldBuildWebAssets) {
+      await _invalidateWebRuntimeArtifacts([webBuildDir]);
       await _run(
         'cargo',
         const ['build', '--release', '--target', 'wasm32-unknown-unknown'],
@@ -101,6 +126,22 @@ void main(List<String> args) async {
         'operit_flutter_bridge',
         wasmSource.path,
       ], workingDirectory: packageRoot.path);
+      await _validateWasmBindgenImports(
+        File.fromUri(webBuildDir.uri.resolve('operit_flutter_bridge.js')),
+      );
+      await _writeWorkerWasmBridgeModule(
+        File.fromUri(webBuildDir.uri.resolve('operit_flutter_bridge.js')),
+        File.fromUri(
+          webBuildDir.uri.resolve('operit_flutter_bridge_worker.js'),
+        ),
+      );
+      await _writeWorkerMessagePackModule(
+        File.fromUri(webSourceDir.uri.resolve('msgpack.min.js')),
+        <File>[
+          File.fromUri(webBuildDir.uri.resolve('operit_messagepack.js')),
+          File.fromUri(webSourceDir.uri.resolve('operit_messagepack.js')),
+        ],
+      );
 
       await _run(_command('npm'), [
         'install',
@@ -110,7 +151,16 @@ void main(List<String> args) async {
         '--prefix',
         depsDir.path,
         'sql.js@1.14.1',
+        'typescript@5.9.3',
+        'v86@$_v86PackageVersion',
       ], workingDirectory: packageRoot.path);
+
+      await _compileWebRuntimeBridge(
+        depsDir,
+        webRuntimeTypescriptConfig,
+        webBuildDir,
+        packageRoot,
+      );
 
       await File.fromUri(
         sqlDist.uri.resolve('sql-wasm.js'),
@@ -118,6 +168,8 @@ void main(List<String> args) async {
       await File.fromUri(
         sqlDist.uri.resolve('sql-wasm.wasm'),
       ).copy(File.fromUri(webBuildDir.uri.resolve('sql-wasm.wasm')).path);
+      await _stageV86RuntimeAssets(depsDir, webBuildDir);
+      await _syncWebRuntimeArtifacts(webBuildDir, webSourceDir);
       final versionManifest = await _writeWebAccessVersionManifest(
         webBuildDir,
         webAccessAssetsDir,
@@ -133,6 +185,7 @@ void main(List<String> args) async {
       await _requireWebAccessVersionManifest(webBuildDir);
       await _addDirectoryFileDependencies(output, webBuildDir, {
         '.bin',
+        '.gz',
         '.html',
         '.js',
         '.json',
@@ -336,11 +389,25 @@ class _DigestSink implements Sink<Digest> {
   void close() {}
 }
 
+/// Describes one immutable Linux guest artifact used by the browser VM.
+class _V86GuestAsset {
+  const _V86GuestAsset({
+    required this.relativePath,
+    required this.url,
+    required this.sha256,
+  });
+
+  final String relativePath;
+  final String url;
+  final String sha256;
+}
+
 Future<void> _addDirectoryFileDependencies(
   BuildOutputBuilder output,
   Directory root,
-  Set<String> extensions,
-) async {
+  Set<String> extensions, {
+  bool excludeGeneratedOutputs = false,
+}) async {
   if (!root.existsSync()) {
     throw StateError('Dependency root does not exist: ${root.path}');
   }
@@ -354,10 +421,52 @@ Future<void> _addDirectoryFileDependencies(
     )) {
       continue;
     }
+    if (excludeGeneratedOutputs && _isGeneratedInputDependency(entity)) {
+      continue;
+    }
     if (extensions.any(path.endsWith)) {
       output.dependencies.add(entity.uri);
     }
   }
+}
+
+/// Detects build-owned outputs that must not be registered as hook inputs.
+bool _isGeneratedInputDependency(File file) {
+  final path = file.path;
+  final separator = Platform.pathSeparator;
+  if (path.contains('$separator.out$separator')) {
+    return true;
+  }
+  final fileName = file.uri.pathSegments.isEmpty
+      ? path
+      : file.uri.pathSegments.last;
+  if (fileName == '.sync_state.json' ||
+      fileName == '.sync_hot_reload_state.json') {
+    return true;
+  }
+  return _generatedWebRuntimeFileNames.contains(fileName);
+}
+
+/// Compiles the browser runtime bridge required by the Flutter Web shell.
+Future<void> _compileWebRuntimeBridge(
+  Directory dependencies,
+  File typescriptConfig,
+  Directory outputDirectory,
+  Directory workingDirectory,
+) async {
+  final executable = Platform.isWindows ? 'tsc.cmd' : 'tsc';
+  final compiler = File.fromUri(
+    dependencies.uri.resolve('node_modules/.bin/$executable'),
+  );
+  if (!compiler.existsSync()) {
+    throw StateError('TypeScript compiler does not exist: ${compiler.path}');
+  }
+  await _run(compiler.path, [
+    '-p',
+    typescriptConfig.path,
+    '--outDir',
+    outputDirectory.path,
+  ], workingDirectory: workingDirectory.path);
 }
 
 Future<void> _addRustDependencies(
@@ -409,6 +518,248 @@ Future<void> _syncDirectory(Directory source, Directory destination) async {
     }
   }
 }
+
+/// Copies generated wasm runtime files into the Web static-file directory.
+Future<void> _syncWebRuntimeArtifacts(
+  Directory source,
+  Directory destination,
+) async {
+  for (final fileName in _webRuntimeArtifactNames) {
+    final sourceFile = File.fromUri(source.uri.resolve(fileName));
+    if (!sourceFile.existsSync()) {
+      throw StateError(
+        'Web runtime artifact does not exist: ${sourceFile.path}',
+      );
+    }
+    final destinationFile = File.fromUri(destination.uri.resolve(fileName));
+    await _copyWebRuntimeFileIfChanged(sourceFile, destinationFile);
+  }
+  await _syncGeneratedWebRuntimeDirectory(
+    Directory.fromUri(source.uri.resolve('v86/')),
+    Directory.fromUri(destination.uri.resolve('v86/')),
+  );
+}
+
+/// Writes the worker bridge from the matching wasm-bindgen output with relative WASI imports.
+Future<void> _writeWorkerWasmBridgeModule(
+  File bridgeModule,
+  File workerBridgeModule,
+) async {
+  final bridgeContents = await bridgeModule.readAsString();
+  final workerContents = bridgeContents.replaceAll(
+    'from "wasi_snapshot_preview1"',
+    'from "./wasi_snapshot_preview1.js"',
+  );
+  if (workerContents == bridgeContents) {
+    throw StateError(
+      'wasm-bindgen bridge did not declare the WASI module import: '
+      '${bridgeModule.path}',
+    );
+  }
+  await workerBridgeModule.writeAsString(workerContents, flush: true);
+}
+
+/// Writes an ESM wrapper that exposes the UMD MessagePack runtime to module workers.
+Future<void> _writeWorkerMessagePackModule(
+  File sourceModule,
+  List<File> workerModules,
+) async {
+  final sourceContents = await sourceModule.readAsString();
+  if (!sourceContents.startsWith('!function')) {
+    throw StateError(
+      'MessagePack source does not use the expected UMD wrapper: '
+      '${sourceModule.path}',
+    );
+  }
+  final workerContents =
+      '''const module = { exports: {} };
+const exports = module.exports;
+$sourceContents
+const MessagePack = module.exports;
+export { MessagePack };
+''';
+  for (final workerModule in workerModules) {
+    await _writeTextFileIfChanged(workerModule, workerContents);
+  }
+}
+
+/// Copies one generated browser runtime directory into the Flutter Web source tree.
+Future<void> _syncGeneratedWebRuntimeDirectory(
+  Directory source,
+  Directory destination,
+) async {
+  if (!source.existsSync()) {
+    throw StateError(
+      'Generated web runtime directory does not exist: ${source.path}',
+    );
+  }
+  await destination.create(recursive: true);
+  final sourceFiles = await _collectFilesByRelativePath(source);
+  final destinationFiles = await _collectFilesByRelativePath(destination);
+  for (final entry in sourceFiles.entries) {
+    final target = File(_joinPath(destination.path, entry.key));
+    await _copyWebRuntimeFileIfChanged(entry.value, target);
+  }
+  for (final entry in destinationFiles.entries) {
+    if (!sourceFiles.containsKey(entry.key)) {
+      await entry.value.delete();
+    }
+  }
+}
+
+/// Lists files below one directory using paths relative to that directory.
+Future<Map<String, File>> _collectFilesByRelativePath(
+  Directory directory,
+) async {
+  final files = <String, File>{};
+  await for (final entity in directory.list(
+    recursive: true,
+    followLinks: false,
+  )) {
+    if (entity is File) {
+      files[_relativePath(directory, entity)] = entity;
+    }
+  }
+  return files;
+}
+
+/// Copies one generated Web runtime file only when its contents have changed.
+Future<void> _copyWebRuntimeFileIfChanged(File source, File destination) async {
+  if (destination.existsSync() &&
+      await _filesHaveSameContents(source, destination)) {
+    return;
+  }
+  await destination.parent.create(recursive: true);
+  await source.copy(destination.path);
+}
+
+/// Compares two files by size and SHA-256 content digest.
+Future<bool> _filesHaveSameContents(File first, File second) async {
+  final firstLength = await first.length();
+  if (firstLength != await second.length()) {
+    return false;
+  }
+  final firstDigest = await sha256.bind(first.openRead()).first;
+  final secondDigest = await sha256.bind(second.openRead()).first;
+  return firstDigest == secondDigest;
+}
+
+/// Writes generated text only when its current contents differ.
+Future<void> _writeTextFileIfChanged(File destination, String contents) async {
+  if (destination.existsSync() &&
+      await destination.readAsString() == contents) {
+    return;
+  }
+  await destination.parent.create(recursive: true);
+  await destination.writeAsString(contents, flush: true);
+}
+
+/// Stages the v86 emulator runtime and verified BIOS resources.
+Future<void> _stageV86RuntimeAssets(
+  Directory dependencies,
+  Directory webBuildDir,
+) async {
+  final v86BuildDir = Directory.fromUri(
+    dependencies.uri.resolve('node_modules/v86/build/'),
+  );
+  await _copyRequiredWebRuntimeAsset(
+    File.fromUri(v86BuildDir.uri.resolve('libv86.mjs')),
+    File.fromUri(webBuildDir.uri.resolve('v86/libv86.mjs')),
+  );
+  await _copyRequiredWebRuntimeAsset(
+    File.fromUri(v86BuildDir.uri.resolve('v86.wasm')),
+    File.fromUri(webBuildDir.uri.resolve('v86/v86.wasm')),
+  );
+  for (final asset in _v86GuestAssets) {
+    await _downloadVerifiedWebRuntimeAsset(
+      Uri.parse(asset.url),
+      File.fromUri(webBuildDir.uri.resolve(asset.relativePath)),
+      asset.sha256,
+    );
+  }
+}
+
+/// Copies one required browser runtime artifact into the generated bundle.
+Future<void> _copyRequiredWebRuntimeAsset(File source, File destination) async {
+  if (!source.existsSync()) {
+    throw StateError(
+      'Required web runtime asset does not exist: ${source.path}',
+    );
+  }
+  await destination.parent.create(recursive: true);
+  await source.copy(destination.path);
+}
+
+/// Downloads one browser runtime artifact and verifies its pinned SHA-256 digest.
+Future<void> _downloadVerifiedWebRuntimeAsset(
+  Uri url,
+  File destination,
+  String expectedSha256,
+) async {
+  final client = HttpClient();
+  try {
+    final request = await client.getUrl(url);
+    final response = await request.close();
+    if (response.statusCode != HttpStatus.ok) {
+      throw HttpException(
+        'Failed to download $url: HTTP ${response.statusCode}',
+        uri: url,
+      );
+    }
+    final content = await response.fold<BytesBuilder>(
+      BytesBuilder(copy: false),
+      (builder, chunk) => builder..add(chunk),
+    );
+    final bytes = content.takeBytes();
+    final actualSha256 = sha256.convert(bytes).toString();
+    if (actualSha256 != expectedSha256) {
+      throw StateError(
+        'Invalid SHA-256 for $url: expected $expectedSha256, got $actualSha256',
+      );
+    }
+    await destination.parent.create(recursive: true);
+    await destination.writeAsBytes(bytes, flush: true);
+  } finally {
+    client.close(force: true);
+  }
+}
+
+/// Removes generated web runtime artifacts before compiling their replacement.
+Future<void> _invalidateWebRuntimeArtifacts(
+  Iterable<Directory> directories,
+) async {
+  for (final directory in directories) {
+    for (final fileName in _generatedWebRuntimeFileNames) {
+      final file = File.fromUri(directory.uri.resolve(fileName));
+      if (file.existsSync()) {
+        await file.delete();
+      }
+    }
+  }
+}
+
+const Set<String> _webRuntimeArtifactNames = <String>{
+  'operit_runtime_bridge.js',
+  'operit_runtime_worker.js',
+  'operit_model_install_worker.js',
+  'v86_runtime_worker.js',
+  'operit_flutter_bridge.js',
+  'operit_flutter_bridge_worker.js',
+  'operit_messagepack.js',
+  'operit_flutter_bridge_bg.wasm',
+  'operit_flutter_bridge_bg.wasm.d.ts',
+  'operit_flutter_bridge.d.ts',
+  'sql-wasm.js',
+  'sql-wasm.wasm',
+};
+
+const Set<String> _generatedWebRuntimeFileNames = <String>{
+  ..._webRuntimeArtifactNames,
+  'libv86.mjs',
+  'v86.wasm',
+  'seabios.bin',
+  'vgabios.bin',
+};
 
 /// Computes a path relative to the copied Web Access bundle root.
 String _relativePath(Directory root, FileSystemEntity entity) {
@@ -497,10 +848,7 @@ String _targetOs(BuildInput input) {
     return targetOs;
   }
   final buildAssetTypes = config['build_asset_types'];
-  final linkingEnabled = config['linking_enabled'];
-  if (buildAssetTypes is List<Object?> &&
-      buildAssetTypes.isEmpty &&
-      linkingEnabled == true) {
+  if (buildAssetTypes is List<Object?> && buildAssetTypes.isEmpty) {
     return 'web';
   }
   throw StateError('Unsupported build hook target configuration: $config');
@@ -509,16 +857,18 @@ String _targetOs(BuildInput input) {
 Future<Map<String, String>> _wasmCargoEnvironment(Directory repoRoot) async {
   final environment = Map<String, String>.from(Platform.environment)
     ..['RUSTFLAGS'] = '-Awarnings';
-  if (!Platform.isWindows && !Platform.isMacOS) {
-    return environment;
-  }
 
   final toolsDir = Directory.fromUri(
     repoRoot.uri.resolve('target/operit-build-tools/'),
   );
-  final wasiSdkName = Platform.isWindows
-      ? 'wasi-sdk-20.0.m-mingw'
-      : 'wasi-sdk-20.0-macos';
+  final wasiSdkName = switch (Platform.operatingSystem) {
+    'windows' => 'wasi-sdk-20.0.m-mingw',
+    'macos' => 'wasi-sdk-20.0-macos',
+    'linux' => 'wasi-sdk-20.0-linux',
+    _ => throw StateError(
+      'Unsupported Web Access WASI SDK host: ${Platform.operatingSystem}',
+    ),
+  };
   final wasiSdk = Directory.fromUri(toolsDir.uri.resolve('$wasiSdkName/'));
   final clangName = Platform.isWindows ? 'clang.exe' : 'clang';
 
@@ -535,6 +885,11 @@ Future<Map<String, String>> _wasmCargoEnvironment(Directory repoRoot) async {
   final clangResourceDir = File.fromUri(
     wasiSdk.uri.resolve('lib/clang/16'),
   ).path.replaceAll(r'\', '/');
+  if (!Directory(clangResourceDir).existsSync()) {
+    throw StateError(
+      'WASI SDK Clang resource directory does not exist: $clangResourceDir',
+    );
+  }
   final bindgenClangArgs = '-resource-dir=$clangResourceDir';
   final wasiLibDir = Directory.fromUri(
     wasiSdk.uri.resolve('share/wasi-sysroot/lib/wasm32-wasi/'),
@@ -565,6 +920,8 @@ Future<Map<String, String>> _wasmCargoEnvironment(Directory repoRoot) async {
     '-l',
     'static=clang_rt.builtins-wasm32',
   ].join(' ');
+  environment['BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_unknown'] =
+      bindgenClangArgs;
   if (Platform.isWindows) {
     final libclangDir = Directory.fromUri(
       toolsDir.uri.resolve(
@@ -585,10 +942,25 @@ Future<Map<String, String>> _wasmCargoEnvironment(Directory repoRoot) async {
     );
     environment['LIBCLANG_PATH'] = libclangDir.path;
     environment['BINDGEN_EXTRA_CLANG_ARGS'] = bindgenClangArgs;
-    environment['BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_unknown'] =
-        bindgenClangArgs;
   }
   return environment;
+}
+
+/// Verifies that wasm-bindgen generated browser-resolvable imports.
+Future<void> _validateWasmBindgenImports(File bridgeScript) async {
+  if (!bridgeScript.existsSync()) {
+    throw StateError(
+      'wasm-bindgen bridge script does not exist: ${bridgeScript.path}',
+    );
+  }
+  final source = await bridgeScript.readAsString();
+  final invalidImport = RegExp(r'''from\s+["']env["']''').firstMatch(source);
+  if (invalidImport != null) {
+    throw StateError(
+      'wasm-bindgen generated an unresolved env import in ${bridgeScript.path}. '
+      'Check the Web Access WASI SDK link configuration.',
+    );
+  }
 }
 
 Future<void> _ensureExtractedArchive({

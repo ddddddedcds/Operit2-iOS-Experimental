@@ -7,9 +7,12 @@ project(runner LANGUAGES CXX)
 #
 # Any new source files that you add to the application should be added here.
 add_executable(${BINARY_NAME} WIN32
+  "crash_channel.cpp"
+  "engine_channel_lifetime.cpp"
   "flutter_window.cpp"
   "main.cpp"
   "operit_runtime_channel.cpp"
+  "system_audio_input_channel.cpp"
   "utils.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
@@ -34,6 +37,9 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # Add dependency libraries and include directories. Add any application-specific
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
+target_link_libraries(${BINARY_NAME} PRIVATE "ole32.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "propsys.lib" "shell32.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "wtsapi32.lib" "iphlpapi.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
@@ -53,14 +59,12 @@ find_program(OPERIT_CARGO_EXECUTABLE
   REQUIRED
 )
 add_custom_target(operit_flutter_bridge ALL
-  COMMAND ${CMAKE_COMMAND} -E env
-    "RUSTFLAGS=-Awarnings"
-    "CARGO_TERM_COLOR=never"
-    "${OPERIT_CARGO_EXECUTABLE}" build --quiet --manifest-path "${OPERIT_FLUTTER_BRIDGE_CRATE}/Cargo.toml" $<$<NOT:$<CONFIG:Debug>>:--release>
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${OPERIT_FLUTTER_BRIDGE_CRATE}/target/$<IF:$<CONFIG:Debug>,debug,release>/operit_flutter_bridge.dll"
-    "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/operit_flutter_bridge.dll"
-  WORKING_DIRECTORY "${OPERIT_FLUTTER_BRIDGE_CRATE}"
+  COMMAND ${CMAKE_COMMAND}
+    "-DOPERIT_BUILD_CONFIG=$<CONFIG>"
+    "-DOPERIT_CARGO_EXECUTABLE=${OPERIT_CARGO_EXECUTABLE}"
+    "-DOPERIT_FLUTTER_BRIDGE_CRATE=${OPERIT_FLUTTER_BRIDGE_CRATE}"
+    "-DOPERIT_OUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/operit_flutter_bridge_build.cmake"
 )
 add_dependencies(operit_flutter_bridge sync_operit_plugins)
 add_dependencies(${BINARY_NAME} operit_flutter_bridge)
