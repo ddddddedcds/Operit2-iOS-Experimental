@@ -145,7 +145,7 @@ final class NotifyServer: NSObject {
     do {
       let activity = try Activity<OperitLiveActivityAttributes>.request(
         attributes: OperitLiveActivityAttributes(name: "ai"),
-        contentState: state,
+        content: ActivityContent(state: state),
         pushType: nil
       )
       liveActivity = activity
