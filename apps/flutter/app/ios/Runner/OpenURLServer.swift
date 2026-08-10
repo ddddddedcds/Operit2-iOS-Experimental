@@ -53,20 +53,12 @@ final class OpenURLServer: NSObject {
   }
 
   private func dispatch(_ line: String, conn: NWConnection) {
-    // 协议兼容：Rust 端发 "open_url <url>"，剥掉命名空间前缀。
-    let stripped = line.hasPrefix("open_url ") ? String(line.dropFirst("open_url ".count)) : line
-    let parts = stripped.split(separator: " ", maxSplits: 1).map(String.init)
-    let cmd = parts.first ?? ""
-    let arg = parts.count > 1 ? parts[1] : ""
-    print("[OpenURLServer] received: \(line) → cmd=\(cmd) arg=\(arg)")
+    // 协议：Rust 端发 "open_url <url>"，剥掉前缀后整行就是 URL（URL 无空格）。
+    let url = line.hasPrefix("open_url ") ? String(line.dropFirst("open_url ".count)) : line
+    print("[OpenURLServer] received: \(line) → url=\(url)")
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-      switch cmd {
-      case "open":
-        self.open(rawURL: arg, conn: conn)
-      default:
-        self.reply(conn: conn, text: "ERR|unknown command: \(cmd)")
-      }
+      self.open(rawURL: url, conn: conn)
     }
   }
 
