@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <sys/select.h>
 #include <mach/mach_time.h>
+#include <notify.h>
 #include "operit_log.h"
 #import "roothide_compat.h"
 
@@ -1246,6 +1247,10 @@ static BOOL device_is_locked(void) {
             }
         } @catch (NSException *ex) {}
         @try {
+            id uiLocked = [mgr valueForKey:@"isUILocked"];
+            if (uiLocked) return [uiLocked boolValue];
+        } @catch (NSException *ex) {}
+        @try {
             id locked = [mgr valueForKey:@"isLocked"];
             if (locked) return [locked boolValue];
         } @catch (NSException *ex) {}
@@ -1313,8 +1318,37 @@ static void lock_monitor_tick(void) {
     }
 }
 
+// ---- 锁屏/解锁 Darwin 信号（iOS 16 可靠主信号；轮询 KVC 兜底保留）----
+// com.apple.springboard.lockstate 在锁屏/解锁时必广播，notify_get_state 直接给状态，
+// 不依赖私有 KVC key（SBLockScreenManager.isLocked 在 iOS 16.7 roothide 实测拿不到）。
+static BOOL g_notifLocked = NO;
+static time_t g_notifLockSince = 0;
+
+static void register_lockstate_notify(void) {
+    int token = 0;
+    notify_register_dispatch("com.apple.springboard.lockstate", &token, dispatch_get_main_queue(), ^(int t) {
+        uint64_t state = UINT64_MAX;
+        notify_get_state(t, &state);
+        BOOL locked = (state != 0);
+        if (state == UINT64_MAX) locked = device_is_locked(); // 通知未带状态 → KVC 兜底
+        if (locked != g_notifLocked) {
+            g_notifLocked = locked;
+            if (locked) {
+                g_notifLockSince = time(NULL);
+                oc_log("LOCKSTATE: locked (darwin)");
+            } else if (g_notifLockSince > 0) {
+                usage_record_session(g_notifLockSince, time(NULL));
+                g_notifLockSince = 0;
+                oc_log("LOCKSTATE: unlocked, session recorded (darwin)");
+            }
+        }
+    });
+    oc_log("LOCKSTATE: darwin notify registered");
+}
+
 static void lock_monitor_start(void) {
     if (g_lockTimer) return;
+    register_lockstate_notify();
     g_lockTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(g_lockTimer, dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC),
                               DISPATCH_TIME_FOREVER, 0);

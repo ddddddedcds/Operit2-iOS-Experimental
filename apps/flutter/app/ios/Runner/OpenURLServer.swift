@@ -72,19 +72,45 @@ final class OpenURLServer: NSObject {
 
   /// installed_apps —— 枚举已安装 app 的 bundle id + 可打开的自定义 URL scheme。
   /// 用公开 API LSApplicationWorkspace（非越狱可用）。AI 可据此判断某 scheme 是否可用。
+  /// 注意：iOS 16 的 KVC key 未必全部存在（曾因 value(forKey:"schemes") 崩 app：SIGABRT，
+  /// valueForUndefinedKey —— Swift do-catch 抓不住 NSException）。全部先 responds(to:) 探测
+  /// 再取值；任何一步失败只降级返回 ERR，绝不崩。
   private func installedApps(conn: NWConnection) {
     var lines: [String] = []
-    guard let ws = NSClassFromString("LSApplicationWorkspace"),
-      let workspace = ws.value(forKey: "defaultWorkspace") as? NSObject
+    guard let wsCls = NSClassFromString("LSApplicationWorkspace"),
+      (wsCls as AnyObject).responds(to: NSSelectorFromString("defaultWorkspace"))
     else {
       reply(conn: conn, text: "ERR|LSApplicationWorkspace unavailable")
       return
     }
-    let apps = workspace.value(forKey: "allApplications") as? [Any] ?? []
+    guard let workspace = (wsCls as AnyObject).perform(NSSelectorFromString("defaultWorkspace"))?
+      .takeUnretainedValue() as? NSObject,
+      workspace.responds(to: NSSelectorFromString("allApplications"))
+    else {
+      reply(conn: conn, text: "ERR|workspace unavailable")
+      return
+    }
+    guard let apps = workspace.perform(NSSelectorFromString("allApplications"))?
+      .takeUnretainedValue() as? [Any] else {
+      reply(conn: conn, text: "ERR|allApplications failed")
+      return
+    }
+    // iOS 16 上 scheme 属性的 KVC key 可能改名，逐候选探测，取第一个存在的。
+    let schemeKeys = ["schemes", "URLSchemes", "urlSchemes"]
     for app in apps {
-      let bid = (app as AnyObject).value(forKey: "bundleIdentifier") as? String ?? ""
-      if bid.isEmpty { continue }
-      let schemes = (app as AnyObject).value(forKey: "schemes") as? [String] ?? []
+      let obj = app as AnyObject
+      guard obj.responds(to: NSSelectorFromString("bundleIdentifier")),
+        let bid = obj.perform(NSSelectorFromString("bundleIdentifier"))?
+          .takeUnretainedValue() as? String,
+        !bid.isEmpty
+      else { continue }
+      var schemes: [String] = []
+      for key in schemeKeys where obj.responds(to: NSSelectorFromString(key)) {
+        if let s = obj.perform(NSSelectorFromString(key))?.takeUnretainedValue() as? [String] {
+          schemes = s
+          break
+        }
+      }
       if schemes.isEmpty { continue } // 只列有 URL scheme 的（深链相关）
       let joined = schemes.prefix(5).joined(separator: ",")
       lines.append("\(bid) [\(joined)]")
