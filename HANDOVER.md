@@ -305,3 +305,13 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 - [x] 交接文档（本文件）
 - [ ] 遗留 8.1-8.6 待后续开发者
 - [ ] 可选探索：AI 回复通知（BBServer action 回调 probe；AutoResponder 是 iOS 6-9 短信层先例）
+
+### 8.7 roothide 版整体未验证 🔴🔴（最高优先级）
+- **0.3.54 之后的所有版本（含 0.3.70）只在 Dopamine rootless 主测试机实测过，roothide deb 从未真机验证**
+- 具体风险（均为历史坑 + 未在最新版复核）：
+  1. postinst 重签/信任链（roothide 的 jbroot 签名机制 vs rootless 的 Dopamine trustcache；历史 ldid 路径坑 /usr/local/bin vs /usr/bin）
+  2. 双视图数据目录（app=jbroot 视图、daemon=真实根视图；.operit 属主、Siri 写 operit2.sqlite 的物理一致性）
+  3. detect_jailbreak 最新版在 roothide 实测
+  4. 设置面板/CC 模块在 roothide 的 jbroot 布局加载路径（无 /var/jb 前缀）
+  5. Siri AFConnection hook 在 roothide SpringBoard 是否触发
+- **交接者若有 roothide 设备，第一件事就是装最新 roothide deb 全量回归**（Siri/通知/锁屏/权限/设置面板/CC）
