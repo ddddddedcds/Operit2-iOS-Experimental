@@ -315,3 +315,136 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
   4. 设置面板/CC 模块在 roothide 的 jbroot 布局加载路径（无 /var/jb 前缀）
   5. Siri AFConnection hook 在 roothide SpringBoard 是否触发
 - **交接者若有 roothide 设备，第一件事就是装最新 roothide deb 全量回归**（Siri/通知/锁屏/权限/设置面板/CC）
+
+### 8.8 IPA 阉割版（nonjb / TrollStore / 自签）整体不可用 🔴
+- **本质**：nonjb 打包用 Runner-nonjb.entitlements（剥离 no-sandbox + container-required=false）→ app 落标准沙盒（data_root=$HOME/Documents/.operit），无 AppSync/amfid patch
+- **缺失的深度能力**（全部依赖越狱环境，nonjb 全无）：
+  1. tweak（operit-sb.dylib）不注入 → 通知拦截/记录、锁屏会话、应用锁、**Siri 集成全失效**
+  2. LaunchDaemon 不生效 → daemon 起不来 → 设备自动化（AI 操作手机）全失效
+  3. ios-mcp（com.witchan.ios-mcp）不装 → 设备操作无通道
+  4. 无完整权限（沙盒内）→ 部分 TCC 公开 API 可用但受容器限制
+- **nonjb 只剩**：AI 聊天 + app 手动打开时 Swift 服务（8891-8895）的部分能力（且 app 挂起即断）
+- **验证状态**：仅历史打包过（从未装机功能验证）；**不要对 nonjb 版有任何功能预期**
+
+---
+
+## 9. AI 接手快速启动指南（30 分钟上手）
+
+> 以下命令全部可直接复制执行。假设接手方是 AI 开发者。
+
+### 9.1 环境准备
+```bash
+# 仓库
+git clone git@github.com:ddddddedcds/Operit2.git -b feat/ios-jailbreak-preview4
+# 本机 Theos（编 tweak/CC 模块）已就绪；Xcode + iOS 16 SDK（swiftc typecheck 用）
+# 设备：Dopamine rootless iOS 16.7，SSH mobile@192.168.1.24 密码 1111（IP 可能变）
+```
+
+### 9.2 本机验证（不碰设备）
+```bash
+# tweak 编译（10 秒，验证 C/ObjC 改动）
+cd hosts/ios/tweak && make clean && make   # 产物 .theos/obj/debug/operit-sb.dylib
+
+# CC 模块编译 + 签名（⚠️ 必须手动 ldid，Makefile 的 CODESIGN_FLAGS 无效）
+cd hosts/ios/ccmodule && make clean && make && ldid -S .theos/obj/debug/OperitCC.bundle/OperitCC
+
+# Swift typecheck（改 Runner/*.swift 后必跑）
+cd apps/flutter/app/ios/Runner && \
+  xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 <改动的文件>.swift AppLockUI.swift
+
+# TS 工具 typecheck（改 buildin/*.ts 后）
+cd plugins/packages/buildin && \
+  NODE_PATH=/Users/mac/.workbuddy/binaries/node/workspace/node_modules \
+  /Users/mac/.workbuddy/binaries/node/workspace/node_modules/.bin/tsc --noEmit --skipLibCheck --lib es2015 <文件>.ts
+
+# Rust daemon 编译（改 hosts/ios/src 后）
+cd hosts/ios && cargo build --target aarch64-apple-ios --release 2>&1 | tail -5
+```
+
+### 9.3 打包 + 装机（改完 → 验证闭环）
+```bash
+# 1. 更新 deb 内容（新 dylib + 签名 CC 模块）
+cd hosts/ios
+cp tweak/.theos/obj/debug/operit-sb.dylib deb/files/Library/MobileSubstrate/DynamicLibraries/
+ldid -S ccmodule/.theos/obj/debug/OperitCC.bundle/OperitCC
+cp ccmodule/.theos/obj/debug/OperitCC.bundle/OperitCC deb/files/Library/CCSupport/OperitCC.bundle/
+
+# 2. 升版本号（Sileo 同版本不重装）
+sed -i '' 's/^Version: .*/Version: 0.3.71/' deb/DEBIAN/control
+
+# 3. 打包 rootless deb（主测试机）
+cd deb && OPERIT_PACK_SCHEME=rootless python3 packdeb.py
+
+# 4. 装机 + respring
+scp operit2-ios_0.3.71_iphoneos-arm64.deb mobile@192.168.1.24:/tmp/
+ssh mobile@192.168.1.24 'echo 1111 | sudo -S dpkg -i /tmp/operit2-ios_0.3.71_iphoneos-arm64.deb'
+ssh mobile@192.168.1.24 'echo 1111 | sudo -S killall -9 SpringBoard'
+```
+
+### 9.4 设备调试（SSH，不改代码）
+```bash
+# 看 tweak 日志（一切运行时行为的头号证据）
+ssh mobile@192.168.1.24 'tail -50 /var/jb/var/mobile/.operit/logs/tweak.log'
+# panic 日志（app 崩）
+ssh mobile@192.168.1.24 'cat /var/mobile/.operit_panic.log 2>/dev/null | tail -20'
+# daemon 状态
+ssh mobile@192.168.1.24 'ps aux | grep operit_agent; ls -la /var/jb/var/mobile/.operit/agent.log'
+# 设备操作（深链/前台/拉起 app，首选通道——不崩 SpringBoard）
+curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Protocol-Version: 2025-11-25' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"open_url","arguments":{"url":"weixin://"}}}'
+```
+
+### 9.5 探路方法论（新功能怎么下手）
+1. **有同类插件 → 逆向它**：拉 dylib → `strings`（Swift strip 后 selector 仍在）+ `otool -ov`（ObjC 类）→ 提取 hook 目标 → 查头文件 → 真机 probe（加日志 hook 候选方法验证触发）
+2. **hook 层选连接层**：UI 层方法"存在但不触发"时，找连接层（如 Siri：AFUISiriSession → AFConnection）
+3. **probe 先行**：不写死功能，先加无副作用日志 hook 确认触发和参数结构，再实现
+
+---
+
+## 10. 已知 bug 的可执行修法（代码级，给接手 AI）
+
+### 10.1 CCSupport 模块不显示（8.1）
+- 第一步（5 分钟）：对照 SiriPlus 的 CC bundle（设备上 `/var/jb/Library/CCSupport/*.bundle/Info.plist`）逐键 diff 我们的 Info.plist
+- 第二步：若键差异 → 改 hosts/ios/ccmodule/Info.plist + operit_cc.m 对齐
+- 第三步：若键相同 → CCSupport 可能拒绝非其签名模块；用 Frida/otool 逆向 CCSupport 的模块扫描函数（参考实现逆向方法论）
+- 验证：`ldid -S` 重签 → 重打包 → 装机 → respring → 控制中心编辑看"更多控件"
+
+### 10.2 背景选图崩溃（8.2）
+- 文件：apps/flutter/app/lib/features/settings/appearance/AppearanceSettingsPanel.dart（约 613 行 `_pickBackgroundImage`）
+- 改法：openFile 的 `XTypeGroup(label: ..., extensions: ...)` 改为带 uti：
+  ```dart
+  XTypeGroup(label: 'image', uniformTypeIdentifiers: ['public.image'], extensions: ['jpg','jpeg','png','heic'])
+  ```
+  （视频同理用 ['public.movie']）
+- 验证：编译（CI）→ 装机 → 设置→外观→背景→选图不崩
+
+### 10.3 super_admin 终端缺 sessionId（8.3）
+- 文件：core/crates/operit-tools/src/tools/defaultTool/standard/super_admin.rs
+- 改法：terminal 工具组加 `list_terminal_sessions`（读 daemon 会话列表，daemon 在 hosts/ios/src/bin/operit_agent_daemon.rs 维护 session map）或 `create_terminal_session`（自动建会话返回 id）
+- 验证：本地 cargo 编译 + 真机 AI 调 terminal 不再要用户手填 sessionId
+
+### 10.4 手动拨蜜终端 PATH 不全（8.4）
+- 文件：apps/flutter/app/lib/ui/features/manual_terminal/（终端实现）
+- 改法：spawn shell 前注入环境：
+  ```dart
+  environment: {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/usr/local/bin'}
+  ```
+- 验证：装机后终端输入 `uname` 不报 not found
+
+### 10.5 设置面板未显示（8.6）
+- 与 10.1 同法：先对照设备上正常工作的第三方面板（如 SiriPlus 的 Prefs bundle）的 Info.plist 键集合 diff
+- 确认 preferenceloader 是否整体工作：设置里有无其他第三方面板；无 → 查 preferenceloader 本身；有 → 查我们的 bundle
+
+### 10.6 roothide 全量回归（8.7）
+- 打包 roothide deb：`OPERIT_PACK_SCHEME=roothide python3 packdeb.py`（Architecture 自动 iphoneos-arm64e）
+- 装 roothide 设备 → 逐项回归：daemon 起（ps）、通知拦截、锁屏 sessions、Siri（说一句看卡片）、权限（contacts list）、设置面板、CC 模块
+- 任何一步挂 → 按 8.7 的 5 个风险点逐个排查
+
+---
+
+## 11. 交接状态（最终）
+- [x] 代码：feat/ios-jailbreak-preview4（11 commit）——Siri v14 / 权限全家桶 / 设置面板 / CC 模块 / 通知拦截记录 / 锁屏 / 应用锁 / screen_time 简化 / CI 修复 / 签名修复 / 文档
+- [x] 文档：本 HANDOVER.md（10 节工程手册 + 本 AI 指南）
+- [x] 方法论：jailbreak-ios-dev / roothide-ios-dev 技能
+- [ ] 遗留 bug：10.1-10.6（CC 模块 / 选图崩溃 / sessionId / PATH / 设置面板 / roothide 回归）
+- [ ] 可探索：AI 回复通知（BBServer action 回调；AutoResponder 是 iOS 6-9 短信层先例）
