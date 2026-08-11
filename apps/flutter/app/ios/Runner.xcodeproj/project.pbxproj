@@ -14,6 +14,7 @@
 		5A7F10032D000001005A7F10 /* ShortcutsServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F10042D000001005A7F10 /* ShortcutsServer.swift */; };
 		5A7F10052D000001005A7F10 /* NotifyServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F10062D000001005A7F10 /* NotifyServer.swift */; };
 		5A7F10072D000001005A7F10 /* OpenURLServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F10082D000001005A7F10 /* OpenURLServer.swift */; };
+		5A7F100B2D000001005A7F10 /* TCCServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F100C2D000001005A7F10 /* TCCServer.swift */; };
 		5A7F10092D000001005A7F10 /* AppLockUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7F100A2D000001005A7F10 /* AppLockUI.swift */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
@@ -69,6 +70,7 @@
 		5A7F10042D000001005A7F10 /* ShortcutsServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsServer.swift; sourceTree = "<group>"; };
 		5A7F10062D000001005A7F10 /* NotifyServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotifyServer.swift; sourceTree = "<group>"; };
 		5A7F10082D000001005A7F10 /* OpenURLServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenURLServer.swift; sourceTree = "<group>"; };
+		5A7F100C2D000001005A7F10 /* TCCServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCCServer.swift; sourceTree = "<group>"; };
 		5A7F100A2D000001005A7F10 /* AppLockUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLockUI.swift; sourceTree = "<group>"; };
 		3D2A10122D000001003D2A10 /* AppleSnapshotImportInputChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSnapshotImportInputChannel.swift; sourceTree = "<group>"; };
 		3D2A10022D000001003D2A10 /* OperitFlutterBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OperitFlutterBridge.h; sourceTree = "<group>"; };
@@ -187,6 +189,7 @@
 				5A7F10042D000001005A7F10 /* ShortcutsServer.swift */,
 				5A7F10062D000001005A7F10 /* NotifyServer.swift */,
 				5A7F10082D000001005A7F10 /* OpenURLServer.swift */,
+				5A7F100C2D000001005A7F10 /* TCCServer.swift */,
 				5A7F100A2D000001005A7F10 /* AppLockUI.swift */,
 
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
@@ -458,6 +461,7 @@
 				5A7F10032D000001005A7F10 /* ShortcutsServer.swift in Sources */,
 				5A7F10052D000001005A7F10 /* NotifyServer.swift in Sources */,
 				5A7F10072D000001005A7F10 /* OpenURLServer.swift in Sources */,
+				5A7F100B2D000001005A7F10 /* TCCServer.swift in Sources */,
 				5A7F10092D000001005A7F10 /* AppLockUI.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
