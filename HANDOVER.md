@@ -515,3 +515,30 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 | theapplewiki | 固件/文件系统结构 | 持续更新（类方法仍需提取）|
 | 设备运行时类枚举 | 活类清单 | 设备当前系统 |
 | 真机 probe（自己加日志）| 最终裁决 | 永远有效 |
+
+---
+
+## 13. 依赖插件清单（operit2 deb 完整依赖，2026-08-11 实测版本）
+
+### 13.1 control 声明依赖（Sileo 自动安装）
+| 包 | 实测版本 | 用途 | 缺失后果 |
+|---|---|---|---|
+| **com.witchan.ios-mcp** | 1.2.3 | 设备自动化后端（127.0.0.1:8090），AI 操作手机的核心通道 | 设备自动化全失效 |
+| **preferenceloader** | 2.2.8 | 设置面板（operitPrefs.bundle）加载框架 | 设置里无 Operit2 条目 |
+| **com.opa334.ccsupport** | 1.3.13-2 | 控制中心模块（OperitCC）加载框架 | 控制中心无 AI 模块 |
+
+### 13.2 实际运行需要（control 未声明，Dopamine/Procursus 通常自带，装机时确认）
+| 包 | 用途 | 缺失后果 |
+|---|---|---|
+| **ellekit** | tweak 注入运行时（TweakInject 加载 operit-sb.dylib 必需）| tweak 不加载，所有越狱功能失效 |
+| **AppSync Unified** | 安装 adhoc 签名 app（rootless 打包的 Runner.app 是 `codesign --sign -` 签名）| app 可能无法安装/启动 |
+| **ldid**（工具，非插件）| postinst 装机时重签 daemon + 注册 trustcache | daemon 被 AMFI 拒载（-9 / ExitCode 9）|
+
+### 13.3 roothide 差异
+- 不需要 AppSync Unified（roothide 用 ldid 签名机制，无 AppSync/amfid patch）
+- ellekit 同样需要（roothide 也用 TweakInject 体系）
+- ldid 路径：Procursus 装 /usr/bin/ldid，部分工具链装 /usr/local/bin/ldid（postinst 已做双路径探测）
+
+### 13.4 第三方原作出处（control Description 已声明）
+- Operit2 原作：github.com/AAswordman/Operit2（改编，非官方分支）
+- ios-mcp：github.com/witchan/ios-mcp（本 fork 用适配版：github.com/ddddddedcds/ios-mcp）
