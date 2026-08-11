@@ -134,3 +134,15 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 - screen_time picker 取消语义误判（0.3.68 → 已删选应用步骤，见第 3 节）
 - installed_apps KVC 崩溃（已修，responds 前置探测）
 - tweak launch 命令崩 SpringBoard（禁用，用 ios-mcp launch_app）
+
+### 9.4 super_admin 终端工具缺 sessionId 入口
+- 现象：AI 测试终端时反馈"input/get_screen/terminal_wait 都需要 sessionId，但我没有列出会话的入口"
+- 根因：super_admin 工具包只有"对已知 sessionId 操作"的工具（input/get_screen/terminal_wait），**缺 list_sessions / create_session 类入口**；AI 无法自助获得一个可用 sessionId
+- 修法方向：super_admin 工具层增加 list_terminal_sessions（读 daemon 持有的活跃会话列表）或 create_terminal_session（自动建一个空会话并返回 ID）
+- 排查位置：core/crates/operit-tools/src/tools/defaultTool/standard/super_admin.rs（terminal 相关 register）
+
+### 9.5 app 内"手动拨蜜"终端 PATH 不全（rootless）
+- 现象：app 内 WebView 终端能开（sh$ 提示符），输入 `uname` 报错 `/var/jb/usr/bin/sh: 8: uname: not found`
+- 根因：手动拨蜜终端启的 shell 环境 PATH 未包含 /usr/bin、/var/jb/usr/bin 等基础目录（与 0.3.66 修的 super_admin 终端是不同链路）
+- 修法方向：手动拨蜜终端启动前显式 `export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/usr/local/bin:$PATH`，或写入 shell rc
+- 排查位置：apps/flutter/app/lib/ui/features/manual_terminal/（手动拨蜜终端实现）
