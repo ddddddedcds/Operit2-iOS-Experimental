@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>title</key>
+    <string>Operit2</string>
+    <key>items</key>
+    <array>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>App 锁定</string>
+            <key>footerText</key>
+            <string>锁定名单由 AI 命令（applock/appunlock）管理，这里控制总开关。</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>defaults</key>
+            <string>com.operit</string>
+            <key>key</key>
+            <string>applockEnabled</string>
+            <key>label</key>
+            <string>启用 App 锁定</string>
+            <key>default</key>
+            <true/>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>通知</string>
+            <key>footerText</key>
+            <string>拦截名单由 AI 命令（notif_block/notif_unblock）管理。</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>defaults</key>
+            <string>com.operit</string>
+            <key>key</key>
+            <string>notifBlockEnabled</string>
+            <key>label</key>
+            <string>启用通知拦截</string>
+            <key>default</key>
+            <true/>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>剪贴板</string>
+            <key>footerText</key>
+            <string>监听复制内容供 AI 读取。默认关闭。</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>defaults</key>
+            <string>com.operit</string>
+            <key>key</key>
+            <string>clipboardEnabled</string>
+            <key>label</key>
+            <string>启用剪贴板监听</string>
+            <key>default</key>
+            <false/>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>前台感知</string>
+            <key>footerText</key>
+            <string>记录「什么时候用了什么 App」，AI 据此感知你的使用情况。</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>defaults</key>
+            <string>com.operit</string>
+            <key>key</key>
+            <string>usageEnabled</string>
+            <key>label</key>
+            <string>启用前台使用记录</string>
+            <key>default</key>
+            <true/>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>关于</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSTitleValueCell</string>
+            <key>label</key>
+            <string>数据目录</string>
+            <key>value</key>
+            <string>/var/mobile/.operit</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSTitleValueCell</string>
+            <key>label</key>
+            <string>设备自动化端口</string>
+            <key>value</key>
+            <string>8090 (ios-mcp) / 8890 (daemon)</string>
+        </dict>
+    </array>
+</dict>
+</plist>

@@ -38,11 +38,30 @@
 
 static NSString *g_lockPath = @"/var/mobile/.operit/app_lock.plist";
 
+// ---- 设置面板（PreferenceLoader：设置 → Operit2）总开关 ----
+// NSUserDefaults 域 com.operit；与 AI 命令的文件开关（app_lock.plist /
+// notif_block.plist / clipboard_enabled）并存：面板开关是总控，文件机制保留。
+static NSUserDefaults *operit_cfg(void) {
+    static NSUserDefaults *d = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        d = [[NSUserDefaults alloc] initWithSuiteName:@"com.operit"];
+    });
+    return d;
+}
+
+static BOOL operit_cfg_bool(NSString *key, BOOL def) {
+    id v = [operit_cfg() objectForKey:key];
+    return v ? [v boolValue] : def;
+}
+
 static NSDictionary *lock_load(void) {
     return [NSDictionary dictionaryWithContentsOfFile:g_lockPath] ?: @{};
 }
 
 static NSDictionary *lock_cfg_for(NSString *bid) {
+    // 面板总开关：关 = 锁定功能整体停（拦截 + 通知联动）
+    if (!operit_cfg_bool(@"applockEnabled", YES)) return nil;
     if (!bid || bid.length == 0) return nil;
     return lock_load()[bid];
 }
@@ -1287,6 +1306,12 @@ static void lock_monitor_tick(void) {
                                           DISPATCH_TIME_FOREVER, 0);
                 return; // 锁屏：不枚举，睡 5s
             }
+            if (!operit_cfg_bool(@"usageEnabled", YES)) {
+                // 面板关前台感知：不记录 usage、monitor 兜底锁定也停（手势 hook 仍在），低频轮询省电
+                dispatch_source_set_timer(g_lockTimer, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC),
+                                          DISPATCH_TIME_FOREVER, 0);
+                return;
+            }
             NSString *bid = usage_tick(); // 前台记录 + 返回当前前台（主线程直跑，无阻塞）
             if (bid && bid.length) {
                 if (![bid isEqualToString:g_lastFront]) {
@@ -1555,6 +1580,7 @@ static NSString *g_notifBlockPath = @"/var/mobile/.operit/notif_block.plist";
 static NSDictionary *g_notifBlockCache = nil;
 
 static BOOL notif_blocked_for(NSString *bid) {
+    if (!operit_cfg_bool(@"notifBlockEnabled", YES)) return NO; // 面板总开关
     if (!bid || bid.length == 0) return NO;
     @try {
         if (!g_notifBlockCache) {
@@ -1651,6 +1677,8 @@ static NSString *g_clipboardPath = @"/var/mobile/.operit/clipboard.json";
 static NSString *g_clipboardEnablePath = @"/var/mobile/.operit/clipboard_enabled";
 
 static BOOL clipboard_is_enabled(void) {
+    // 面板开关（com.operit clipboardEnabled）或 AI 文件开关（clipboard_enabled 存在）任一开 = 开
+    if (operit_cfg_bool(@"clipboardEnabled", NO)) return YES;
     return [[NSFileManager defaultManager] fileExistsAtPath:g_clipboardEnablePath];
 }
 

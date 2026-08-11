@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.operit.prefs</string>
+    <key>CFBundleName</key>
+    <string>Operit2</string>
+    <key>CFBundleDisplayName</key>
+    <string>Operit2</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <!-- PreferenceLoader 注入设置 App 的判据：package = 宿主 deb 包名 -->
+    <key>package</key>
+    <string>ai.operit</string>
+</dict>
+</plist>
