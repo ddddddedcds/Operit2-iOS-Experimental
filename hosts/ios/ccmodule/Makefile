@@ -11,5 +11,8 @@ OperitCC_FILES = operit_cc.m
 # 不链接 ControlCenterUIKit（私有框架运行时类，动态派发）。
 OperitCC_INSTALL_PATH = /Library/CCSupport
 OperitCC_FRAMEWORKS = UIKit ControlCenterUIKit
+# 🔴 必须签名：Dopamine rootless 下 dlopen 未签名 bundle 会被 AMFI 拒（模块不加载）。
+# ldid 签名（Theos 自动用 ldid -S；无 entitlements 即可）。
+OperitCC_CODESIGN_FLAGS = -S
 
 include $(THEOS_MAKE_PATH)/bundle.mk

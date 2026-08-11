@@ -110,3 +110,27 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 - **参考实现逆向优先**：目标功能有同类插件 → 逆向它是最高效路径（strings 扫 Swift dylib 的 selector、otool -ov 看 ObjC 类）
 - **hook 层选择**：连接层 > UI 层（AFConnection > AFUISiriSession）
 - **证据 > 推理**：真机日志/SSH 取证是第一手事实，别先读源码猜
+
+## 9. 已知遗留问题（2026-08-11 用户实测，交接者必读）
+
+### 9.1 控制中心模块（OperitCC）不显示——CCSupport 兼容性未解决 🔴
+- 现象：OperitCC.bundle 已正确安装（/var/jb/Library/CCSupport/OperitCC.bundle）+ 依赖 com.opa334.ccsupport 1.3.13-2 已装 + respring 已做，但控制中心"更多控件"列表里**没有 OperitCC**（同期 SiriPlus 的 CC 模块正常显示）
+- 已排除：bundle 路径/结构、依赖、respring、**二进制签名**（0.3.69 起已用 ldid -S 签名，`Identifier=OperitCC` 非 .unsigned）
+- 未定位根因：疑似 CCSupport 1.3.13 对模块的**验证逻辑**（NSPrincipalClass 解析 / Info.plist 特定键 / 类方法签名）与我们实现不符；CCSupport 闭源无法直接确认
+- **交接研究方向**：
+  1. 对照已知正常工作的 CCSupport 模块（如 SiriPlus 的 CC bundle、M4cs/EzCC-Modules）的 Info.plist 键集合 + 类实现逐项对比
+  2. 确认 `_CCModuleSizePROTOTYPE` 是否为 1.3.13 认可键（可能需 `_CCModuleSize`）
+  3. 考虑 hook 或 dump CCSupport 的模块扫描逻辑（参考实现逆向优先方法论）
+  4. 备选：放弃 CCSupport，用 tweak 直接注入 ControlCenter 模块（自研 CC 模块，不依赖 ccsupport）
+
+### 9.2 设置-背景选择图片崩溃——file_selector XTypeGroup 缺 uniformTypeIdentifiers 🔴
+- 现象：设置 → 外观与交互 → 背景 → 选择图片（选择视频）崩溃
+- 错误：`Invalid argument(s): The provided type group instance of 'XTypeGroup' should either allow all files, or have a non-empty 'uniformTypeIdentifiers'`（FileSelectoriOS._allowedUtilListFromTypeGroups，file_selector_ios.dart:69）
+- 位置：AppearanceSettingsPanel._pickBackgroundImage（apps/flutter/app/lib/features/settings/appearance/AppearanceSettingsPanel.dart 约 613 行）调 file_selector.openFile 时 XTypeGroup 未带 uniformTypeIdentifiers
+- **修法**：给 XTypeGroup 加 `uniformTypeIdentifiers: ['public.image']`（图片）或 `['public.movie']`（视频），或 allowAll=true；iOS 备选路径用 ios_path_picker.dart 的 `promptPathInput()` 兜底
+- 注意：这是 iOS 端 file_selector 行为变更（非越狱 app 也有此 bug），Flutter 包升级后需复核
+
+### 9.3 其他实测反馈（历史，已修或已记录）
+- screen_time picker 取消语义误判（0.3.68 → 已删选应用步骤，见第 3 节）
+- installed_apps KVC 崩溃（已修，responds 前置探测）
+- tweak launch 命令崩 SpringBoard（禁用，用 ios-mcp launch_app）
