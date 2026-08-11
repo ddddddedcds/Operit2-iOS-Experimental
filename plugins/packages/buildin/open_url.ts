@@ -29,6 +29,14 @@
                     "required": true
                 }
             ]
+        },
+        {
+            "name": "installed_apps",
+            "description": {
+                "zh": "列出本机已安装且带 URL scheme 的 App（bundle id + 可用的 scheme 前缀）。用于：AI 想唤起某个 App 前先确认它装没装、用哪个 scheme；避免拿未安装 App 的 scheme 白试。例：com.tencent.mqq [mqqapi] 表示 QQ 已装，可走 mqqapi://。",
+                "en": "List installed apps that declare custom URL schemes (bundle id + scheme prefixes). Use before deep-linking: confirm the app is installed and which scheme to use, so you don't try schemes of apps that aren't there. E.g. com.tencent.mqq [mqqapi] means QQ is installed and mqqapi:// works."
+            },
+            "parameters": []
         }
     ]
 }*/
@@ -85,5 +93,16 @@ async function open_url(params: OpenUrlParams = {}) {
     }
 }
 
+// 复用 openUrl 通道发 installed_apps 命令（Swift OpenURLServer 识别该命令返回已装 app 列表）
+async function installed_apps() {
+    try {
+        // @ts-ignore
+        return await Tools.Net.openUrl({ url: "installed_apps" });
+    } catch (e) {
+        return `查询已装 App 失败：${String(e)}。native 桥 Tools.Net.openUrl 尚未注册。`;
+    }
+}
+
 exports.open_url = open_url;
+exports.installed_apps = installed_apps;
 exports.main = open_url;

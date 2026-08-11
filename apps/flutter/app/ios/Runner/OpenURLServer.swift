@@ -53,13 +53,43 @@ final class OpenURLServer: NSObject {
   }
 
   private func dispatch(_ line: String, conn: NWConnection) {
-    // 协议：Rust 端发 "open_url <url>"，剥掉前缀后整行就是 URL（URL 无空格）。
+    // 协议：Rust 端发 "open_url <url>" / "installed_apps"，剥掉前缀后整行就是 URL。
+    if line.hasPrefix("installed_apps") {
+      print("[OpenURLServer] received: installed_apps")
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.installedApps(conn: conn)
+      }
+      return
+    }
     let url = line.hasPrefix("open_url ") ? String(line.dropFirst("open_url ".count)) : line
     print("[OpenURLServer] received: \(line) → url=\(url)")
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       self.open(rawURL: url, conn: conn)
     }
+  }
+
+  /// installed_apps —— 枚举已安装 app 的 bundle id + 可打开的自定义 URL scheme。
+  /// 用公开 API LSApplicationWorkspace（非越狱可用）。AI 可据此判断某 scheme 是否可用。
+  private func installedApps(conn: NWConnection) {
+    var lines: [String] = []
+    guard let ws = NSClassFromString("LSApplicationWorkspace"),
+      let workspace = ws.value(forKey: "defaultWorkspace") as? NSObject
+    else {
+      reply(conn: conn, text: "ERR|LSApplicationWorkspace unavailable")
+      return
+    }
+    let apps = workspace.value(forKey: "allApplications") as? [Any] ?? []
+    for app in apps {
+      let bid = (app as AnyObject).value(forKey: "bundleIdentifier") as? String ?? ""
+      if bid.isEmpty { continue }
+      let schemes = (app as AnyObject).value(forKey: "schemes") as? [String] ?? []
+      if schemes.isEmpty { continue } // 只列有 URL scheme 的（深链相关）
+      let joined = schemes.prefix(5).joined(separator: ",")
+      lines.append("\(bid) [\(joined)]")
+    }
+    reply(conn: conn, text: lines.isEmpty ? "OK|(none with URL schemes)" : "OK|\n" + lines.joined(separator: "\n"))
   }
 
   private func reply(conn: NWConnection, text: String) {
