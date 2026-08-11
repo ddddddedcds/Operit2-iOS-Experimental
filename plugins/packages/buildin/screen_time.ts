@@ -6,8 +6,8 @@
         "en": "Screen Time (lock apps)"
     },
     "description": {
-        "zh": "用苹果官方屏幕使用时间（FamilyControls）锁定/解锁应用，iOS 16+。首次使用：先 screenTimeAuthorize 授权、再 screenTimePick 弹系统选择器（建议全选），之后可按 bundle id 自由锁/解锁。需配套 native 桥 Tools.Net.screenTimeAuthorize / screenTimePick / screenTimeLock / screenTimeUnlock（连 127.0.0.1:8891 驱动 App 内 Swift ScreenTimeServer）。",
-        "en": "Lock/unlock apps via Apple's official Screen Time (FamilyControls) API, iOS 16+. First use: screenTimeAuthorize to grant access, then screenTimePick to show the system picker (select all recommended); afterwards lock/unlock by bundle id freely. Requires companion native bridge Tools.Net.screenTimeAuthorize / screenTimePick / screenTimeLock / screenTimeUnlock (talking to 127.0.0.1:8891 to drive the in-app Swift ScreenTimeServer)."
+        "zh": "用苹果官方屏幕使用时间（FamilyControls）锁定/解锁应用，iOS 16+。AI 可直接按 bundle id 锁/解锁任意应用（无需选应用授权）。需配套 native 桥 Tools.Net.screenTimeAuthorize / screenTimeLock / screenTimeUnlock（连 127.0.0.1:8891 驱动 App 内 Swift ScreenTimeServer）。",
+        "en": "Lock/unlock apps via Apple's official Screen Time (FamilyControls) API, iOS 16+. AI can lock/unlock any app directly by bundle id (no picker needed). Requires companion native bridge Tools.Net.screenTimeAuthorize / screenTimeLock / screenTimeUnlock (talking to 127.0.0.1:8891 to drive the in-app Swift ScreenTimeServer)."
     },
     "enabledByDefault": true,
     "category": "System",
@@ -17,14 +17,6 @@
             "description": {
                 "zh": "请求屏幕使用时间授权（首次使用必须调用一次；系统会弹出授权，用户允许后 AI 才能锁应用）。",
                 "en": "Request Screen Time authorization (must be called once before locking; the system shows a consent prompt)."
-            },
-            "parameters": []
-        },
-        {
-            "name": "screen_time_pick",
-            "description": {
-                "zh": "弹出原生选择列表，让用户一次性授权 AI 可自由管理的应用（不锁定）。之后 AI 可随时 screen_time_lock/unlock 这些应用，无需再打扰用户。",
-                "en": "Show a native picker so the user grants the AI management over apps (not locked yet). The AI can then freely lock/unlock these apps without prompting again."
             },
             "parameters": []
         },
@@ -148,15 +140,6 @@ async function screen_time_authorize() {
     }
 }
 
-async function screen_time_pick() {
-    try {
-        // @ts-ignore
-        return await Tools.Net.screenTimePick({});
-    } catch (e) {
-        return `选择器调用失败：${String(e)}。native 桥 Tools.Net.screenTimePick 尚未注册或 iOS < 16。`;
-    }
-}
-
 async function screen_time_lock(params: ScreenTimeLockParams = {}) {
     const bundle_id = (params.bundle_id ?? "").trim();
     if (!bundle_id) {
@@ -217,7 +200,6 @@ async function screen_time_usage() {
 }
 
 exports.screen_time_authorize = screen_time_authorize;
-exports.screen_time_pick = screen_time_pick;
 exports.screen_time_lock = screen_time_lock;
 exports.screen_time_unlock = screen_time_unlock;
 exports.screen_time_monitor_start = screen_time_monitor_start;

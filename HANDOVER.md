@@ -48,7 +48,7 @@ plugins/packages/buildin/
 - **锁屏会话**：Darwin 通知 `com.apple.springboard.lockstate`（notify_get_state）→ usage.json sessions
 - **应用锁 / 剪贴板监听 / 前台感知**（文件 + NSUserDefaults 双开关）
 - **深链唤起**：微信裸 scheme、支付宝全系（alipay://platformapi/startapp?appId=10000007/20000056/200011235）
-- **屏幕使用时间 / 吃醋巡检 / 快捷指令接入**（iOS 16 FamilyControls/DeviceActivityMonitor）—— **仅授权步骤跑通，选应用 picker 回调与锁定都未真机端到端验证**（2026-08-11 用户反馈"选应用闪退"，SSH 实地检查无崩溃证据，疑为 picker cancel 回调未把"用户取消"语义传回，AI 端误判为"未锁定"）
+- **屏幕使用时间 / 吃醋巡检 / 快捷指令接入**（iOS 16 FamilyControls/DeviceActivityMonitor）—— **锁应用主路径 = tweak 前台拦截（写 /var/mobile/.operit/app_lock.plist），任意 bundleId 直接可锁，无需 FamilyControls 授权/选应用**。`screen_time_pick`（选应用）已删除（2026-08-11 用户反馈 picker 流程卡"未锁定"；SSH 无崩溃证据，根因是 Swift lock 的 managedApps 名单检查 + picker 取消语义）；**若后续开发者要恢复"仅限用户 pick 过的 app"，在 ScreenTimeServer.swift lock() 恢复 managedApps() 检查 + 重新加回 screen_time_pick 工具即可**
 
 ### 🟡 已 push 未装机验证（等 CI 出包后验证）
 - **权限全家桶**：TCCServer 8895（通讯录/日历/提醒/照片/健康/定位）+ system_io.ts 9 工具 + HealthKit entitlement

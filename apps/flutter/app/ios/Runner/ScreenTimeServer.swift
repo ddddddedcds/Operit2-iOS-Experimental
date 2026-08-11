@@ -189,14 +189,8 @@ final class ScreenTimeServer: NSObject {
       reply(conn: conn, text: "ERR|missing bundle id")
       return
     }
-    // 只能锁用户授权过的 app（pick 选过的）。不在名单 → 提示 AI 先 pick。
-    if !Self.managedApps().contains(appId) {
-      reply(
-        conn: conn,
-        text: "ERR|\(appId) 不在 AI 可管理名单——先让用户 screen_time_pick 添加"
-      )
-      return
-    }
+    // 全应用直接可锁（不再要求先 pick 选应用）——tweak 前台拦截对任意 bundleId 生效。
+    // 若后续开发者想恢复"仅限用户 pick 过的 app"，恢复 managedApps() 检查即可。
     // 解析 AI 生成的自定义屏蔽页文案（可选）。
     let title = fields.count > 1 ? fields[1] : "休息一下"
     let subtitle = fields.count > 2 ? fields[2] : "这个应用已被 Operit 锁定"
