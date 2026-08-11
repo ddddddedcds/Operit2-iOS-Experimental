@@ -1199,6 +1199,35 @@ static NSString *usage_tick(void) {
     return bid;
 }
 
+// 锁屏/解锁会话记录：usage.json 的 sessions 数组 [{lock, unlock}, ...] 新在前。
+// AI 可据此知道"几点锁屏、几点解锁、中间用了多久"（手机使用时段）。
+static void usage_record_session(time_t lockTs, time_t unlockTs) {
+    @try {
+        if (lockTs <= 0 || unlockTs <= lockTs) return;
+        NSMutableDictionary *root = [NSMutableDictionary new];
+        NSData *d = [NSData dataWithContentsOfFile:g_usagePath];
+        if (d) {
+            id obj = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+            if ([obj isKindOfClass:[NSDictionary class]]) root = [obj mutableCopy];
+        }
+        NSMutableArray *sess = [NSMutableArray new];
+        id s = root[@"sessions"];
+        if ([s isKindOfClass:[NSArray class]]) sess = [s mutableCopy];
+        [sess insertObject:@{
+            @"lock": @((long long)lockTs),
+            @"unlock": @((long long)unlockTs),
+        } atIndex:0];
+        if (sess.count > 200) [sess removeObjectsInRange:NSMakeRange(200, sess.count - 200)];
+        root[@"sessions"] = sess;
+        NSData *out = [NSJSONSerialization dataWithJSONObject:root options:0 error:nil];
+        if (out) [out writeToFile:g_usagePath atomically:YES];
+        oc_log("SESSION: locked %lld → unlocked %lld (%llds)", (long long)lockTs,
+               (long long)unlockTs, (long long)(unlockTs - lockTs));
+    } @catch (NSException *ex) {
+        oc_log("usage_record_session threw: %s", ex.reason.UTF8String ?: "");
+    }
+}
+
 // ---- 锁屏检测（fail-open：拿不到就视为未锁屏，继续轮询，绝不误停）----
 // iOS 16 SpringBoard 的 SBLockScreenManager + lockScreenController.isLocked。
 // 全部探测失败 → 返回 NO（不锁屏），宁可多轮询也不漏拦截。
@@ -1235,10 +1264,17 @@ static time_t g_lastBlockAt = 0;
 static void lock_monitor_tick(void) {
     @autoreleasepool {
         @try {
-            static BOOL g_wasLocked = NO; // 锁屏状态变化时才打日志（状态切换即打一次）
+            static BOOL g_wasLocked = NO;      // 锁屏状态（状态切换时记会话）
+            static time_t g_lockSince = 0;     // 本次锁屏开始时间
             BOOL locked = device_is_locked();
             if (locked != g_wasLocked) {
                 oc_log("LOCKSCREEN: %s", locked ? "device locked, monitor sleeping 5s" : "device unlocked, monitor active");
+                if (locked) {
+                    g_lockSince = time(NULL);   // 锁屏：记开始时间
+                } else if (g_lockSince > 0) {
+                    usage_record_session(g_lockSince, time(NULL)); // 解锁：写完整会话
+                    g_lockSince = 0;
+                }
                 g_wasLocked = locked;
             }
             if (locked) {

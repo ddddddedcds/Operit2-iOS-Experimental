@@ -110,6 +110,7 @@ pub const JS_TOOL_BINDINGS: &[JsToolBinding] = &[
     JsToolBinding { namespace: "Net", method: "notificationsBlock", tool: BuiltinToolName::NotificationsBlock },
     JsToolBinding { namespace: "Net", method: "notificationsUnblock", tool: BuiltinToolName::NotificationsUnblock },
     JsToolBinding { namespace: "Net", method: "notificationsBlocked", tool: BuiltinToolName::NotificationsBlocked },
+    JsToolBinding { namespace: "Net", method: "appUsageReport", tool: BuiltinToolName::AppUsageReport },
     JsToolBinding { namespace: "Net", method: "openUrl", tool: BuiltinToolName::OpenUrl },
     JsToolBinding { namespace: "Net.cookies", method: "clear", tool: BuiltinToolName::ManageCookies },
     JsToolBinding { namespace: "Net.cookies", method: "get", tool: BuiltinToolName::ManageCookies },

@@ -585,6 +585,14 @@ pub struct NetHostNotificationsBlockOptions {
     pub bundle_id: String,
 }
 
+/// Options for `Net.appUsageReport` — reads the foreground-app usage log
+/// captured by the SpringBoard tweak into usage.json.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetHostAppUsageReportOptions {
+    /// Maximum number of history entries to return (default 20, max 100).
+    pub limit: Option<u32>,
+}
+
 pub trait NetHost: Send + Sync {
     ///
     ///Perform HTTP GET request
@@ -773,6 +781,8 @@ pub trait NetHost: Send + Sync {
     fn notificationsUnblock(&self, options: NetHostNotificationsBlockOptions) -> JsFuture<String>;
     /// Lists app bundle ids currently having notifications blocked.
     fn notificationsBlocked(&self) -> JsFuture<String>;
+    /// Reads the foreground-app usage log (current front app + usage history).
+    fn appUsageReport(&self, options: NetHostAppUsageReportOptions) -> JsFuture<String>;
 }
 /// Declares browser session and userscript APIs reserved for a future runtime capability.
 pub trait NetFutureHost: Send + Sync {

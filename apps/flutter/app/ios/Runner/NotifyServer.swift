@@ -88,6 +88,8 @@ final class NotifyServer: NSObject {
         self.notifBlock(args: rest, conn: conn, block: false)
       case "notif_blocked":
         self.notifBlocked(conn: conn)
+      case "usage_report":
+        self.usageReport(args: rest, conn: conn)
       default:
         self.reply(conn: conn, text: "ERR|unknown command: \(cmd)")
       }
@@ -258,6 +260,77 @@ final class NotifyServer: NSObject {
     }
     let ids = dict.keys.sorted()
     reply(conn: conn, text: "OK|" + ids.joined(separator: ", "))
+  }
+
+  /// usage_report [limit] —— 读 tweak 采集的前台使用记录（usage.json）：
+  /// 当前前台 app + 最近使用历史（时间倒序）+ 各 app 累计时长（秒）。
+  /// 数据源：SpringBoard tweak 的 usage_tick 每 150ms/1s/5s（锁屏）写一次。
+  private func usageReport(args: String, conn: NWConnection) {
+    let limit = Int(args.trimmingCharacters(in: .whitespaces)) ?? 20
+    guard let data = FileManager.default.contents(atPath: usagePath) else {
+      reply(conn: conn, text: "ERR|no usage data yet")
+      return
+    }
+    guard
+      let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    else {
+      reply(conn: conn, text: "ERR|bad usage.json")
+      return
+    }
+    var lines: [String] = []
+    // 当前前台
+    if let active = root["active"] as? [String: Any],
+      let bid = active["bid"] as? String, !bid.isEmpty
+    {
+      let since = (active["since"] as? Int64) ?? 0
+      let dur = since > 0 ? max(0, Int64(Date().timeIntervalSince1970) - since) : 0
+      lines.append("当前前台: \(bid)（已用 \(dur)s）")
+    }
+    // 历史（时间倒序）
+    if let hist = root["history"] as? [[String: Any]], !hist.isEmpty {
+      var agg: [String: Int64] = [:]  // 各 app 累计秒
+      let items = Array(hist.prefix(max(1, min(limit, 100))))
+      lines.append("最近使用:")
+      for it in items {
+        let bid = it["bid"] as? String ?? "?"
+        let start = it["start"] as? Int64 ?? 0
+        let end = it["end"] as? Int64 ?? 0
+        let dur = max(0, end - start)
+        let date = start > 0
+          ? DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval(start)), dateStyle: .none, timeStyle: .short)
+          : "?"
+        lines.append("  \(date) \(bid) \(dur)s")
+        agg[bid, default: 0] += dur
+      }
+      lines.append("累计:")
+      for (bid, dur) in agg.sorted(by: { $0.value > $1.value }) {
+        lines.append("  \(bid) \(dur)s")
+      }
+    } else {
+      lines.append("(无使用记录)")
+    }
+    // 锁屏/解锁会话（手机使用时段）
+    if let sessions = root["sessions"] as? [[String: Any]], !sessions.isEmpty {
+      lines.append("使用时段(锁屏/解锁):")
+      let items = Array(sessions.prefix(min(max(1, limit), 30)))
+      let fmt = DateFormatter()
+      fmt.dateFormat = "HH:mm"
+      for s in items {
+        let lock = (s["lock"] as? Int64) ?? 0
+        let unlock = (s["unlock"] as? Int64) ?? 0
+        let dur = max(0, unlock - lock)
+        let lockStr = lock > 0 ? fmt.string(from: Date(timeIntervalSince1970: TimeInterval(lock))) : "?"
+        let unlockStr = unlock > 0 ? fmt.string(from: Date(timeIntervalSince1970: TimeInterval(unlock))) : "?"
+        let durStr = dur >= 3600 ? String(format: "%dh%dm", dur / 3600, (dur % 3600) / 60) : "\(dur / 60)m\(dur % 60)s"
+        lines.append("  \(lockStr) 锁屏 → \(unlockStr) 解锁（锁了 \(durStr)）")
+      }
+    }
+    reply(conn: conn, text: "OK|\n" + lines.joined(separator: "\n"))
+  }
+
+  /// usage.json 路径（tweak 采集）。
+  private var usagePath: String {
+    "/var/mobile/.operit/usage.json"
   }
 
   // MARK: - 工具

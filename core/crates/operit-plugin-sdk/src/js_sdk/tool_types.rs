@@ -151,6 +151,7 @@ pub struct ToolResultMap {
     pub notifications_block: String,
     pub notifications_unblock: String,
     pub notifications_blocked: String,
+    pub app_usage_report: String,
     pub open_url: String,
 }
 

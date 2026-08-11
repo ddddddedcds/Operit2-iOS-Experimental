@@ -171,6 +171,24 @@
                 "en": "List bundle ids of all apps whose notifications are currently blocked."
             },
             "parameters": []
+        },
+        {
+            "name": "app_usage_report",
+            "description": {
+                "zh": "读取前台 app 使用情况：当前正在用哪个 app（用了多久）+ 最近使用历史 + 各 app 累计时长。可用于感知用户在干什么、提醒休息、统计使用习惯。",
+                "en": "Read foreground-app usage: which app is currently in use (and for how long) + recent usage history + per-app total time. Lets the AI know what the user is doing, remind breaks, or track habits."
+            },
+            "parameters": [
+                {
+                    "name": "limit",
+                    "description": {
+                        "zh": "返回最近多少条使用记录（默认 20，最多 100）。",
+                        "en": "Number of recent usage entries to return (default 20, max 100)."
+                    },
+                    "type": "number",
+                    "required": false
+                }
+            ]
         }
     ]
 }*/
@@ -275,6 +293,16 @@ async function notifications_blocked() {
     }
 }
 
+async function app_usage_report(params: { limit?: number } = {}) {
+    const limit = params.limit ?? 20;
+    try {
+        // @ts-ignore
+        return await Tools.Net.appUsageReport({ limit });
+    } catch (e) {
+        return `读取使用情况失败：${String(e)}。native 桥 Tools.Net.appUsageReport 尚未注册。`;
+    }
+}
+
 exports.notify = notify;
 exports.live_activity_start = live_activity_start;
 exports.live_activity_update = live_activity_update;
@@ -283,4 +311,5 @@ exports.notifications_list = notifications_list;
 exports.notifications_block = notifications_block;
 exports.notifications_unblock = notifications_unblock;
 exports.notifications_blocked = notifications_blocked;
+exports.app_usage_report = app_usage_report;
 exports.main = notify;

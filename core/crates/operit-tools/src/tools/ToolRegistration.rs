@@ -652,6 +652,21 @@ fn registerNotifyTools(handler: &mut AIToolHandler) {
         }),
         ToolRegistrationVisibility::PUBLIC,
     );
+    handler.registerBuiltinTool(
+        BuiltinToolName::AppUsageReport,
+        Box::new(FnToolExecutor {
+            effect: ToolEffect::READ,
+            validate: Arc::new(|_| ToolValidationResult {
+                valid: true,
+                errorMessage: String::new(),
+            }),
+            invoke: Arc::new(|tool| {
+                let limit = tool.parameters.iter().find(|p| p.name == "limit").and_then(|p| p.value.parse::<u32>().ok()).unwrap_or(20);
+                result_for(tool, notify_socket_command(&format!("usage_report {limit}")))
+            }),
+        }),
+        ToolRegistrationVisibility::PUBLIC,
+    );
 }
 
 /// Sends one open-url line-command to the in-app Swift `OpenURLServer` over
