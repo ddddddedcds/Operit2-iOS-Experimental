@@ -1,8 +1,0 @@
----
-triple:          'arm64-apple-darwin'
-binary-path:     '/Users/mac/WorkBuddy/2026-07-22-14-44-29/operit2-fork-src/hosts/ios/ccmodule/.theos/obj/debug/arm64/OperitCC.bundle/OperitCC'
-relocations:
-  - { offset: 0x1E, size: 0x8, addend: 0x0, symName: '-[OperitCCModule iconGlyph]', symObjAddr: 0x0, symBinAddr: 0x4000, symSize: 0x68 }
-  - { offset: 0x28E, size: 0x8, addend: 0x0, symName: '-[OperitCCModule iconGlyph]', symObjAddr: 0x0, symBinAddr: 0x4000, symSize: 0x68 }
-  - { offset: 0x2C4, size: 0x8, addend: 0x0, symName: '-[OperitCCModule applicationIdentifier]', symObjAddr: 0x68, symBinAddr: 0x4068, symSize: 0x1C }
-...
