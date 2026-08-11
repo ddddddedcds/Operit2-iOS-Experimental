@@ -53,7 +53,12 @@ final class OpenURLServer: NSObject {
   }
 
   private func dispatch(_ line: String, conn: NWConnection) {
-    // 协议：Rust 端发 "open_url <url>" / "installed_apps"，剥掉前缀后整行就是 URL。
+    // 协议：Rust 端发 "open_url <url>" / "installed_apps" / "tcc <cmd>"，剥掉前缀后整行就是 URL。
+    if line.hasPrefix("tcc ") {
+      // 权限全家桶：转发给 TCCServer（8895 逻辑走同一通道，AI 无需感知端口）
+      TCCServer.shared.dispatch(String(line.dropFirst(4)), conn: conn)
+      return
+    }
     if line.hasPrefix("installed_apps") {
       print("[OpenURLServer] received: installed_apps")
       DispatchQueue.main.async { [weak self] in

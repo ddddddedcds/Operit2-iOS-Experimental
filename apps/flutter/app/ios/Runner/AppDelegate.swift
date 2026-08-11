@@ -69,6 +69,8 @@ import UserNotifications
         bootLog("AFTER_NOTIFY_SERVER")
         OpenURLServer.shared.start()
         bootLog("AFTER_OPEN_URL_SERVER")
+        TCCServer.shared.start()
+        bootLog("AFTER_TCC_SERVER")
       } else {
         bootLog("NO_FLUTTER_VIEWCONTROLLER")
       }
