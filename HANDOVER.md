@@ -212,10 +212,10 @@ OPERIT_PACK_SCHEME=rootless bash build_deb.sh   # 或直接 python3 packdeb.py
 ### 5.3 装机（SSH）
 ```bash
 scp operit2-ios_X_iphoneos-arm64.deb mobile@<ip>:/tmp/
-echo '1111' | sudo -S dpkg -i /tmp/operit2-ios_X_iphoneos-arm64.deb
-echo '1111' | sudo -S killall -9 SpringBoard   # respring
+echo '<PASSWORD>' | sudo -S dpkg -i /tmp/operit2-ios_X_iphoneos-arm64.deb
+echo '<PASSWORD>' | sudo -S killall -9 SpringBoard   # respring
 ```
-设备 SSH：mobile@192.168.1.xx 密码 1111（IP 可能因 DHCP 变动）
+设备 SSH：mobile@192.168.1.xx <密码，安装时向设备所有者询问>（IP 可能因 DHCP 变动）
 
 ---
 
@@ -337,7 +337,7 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 # 仓库
 git clone git@github.com:ddddddedcds/Operit2.git -b feat/ios-jailbreak-preview4
 # 本机 Theos（编 tweak/CC 模块）已就绪；Xcode + iOS 16 SDK（swiftc typecheck 用）
-# 设备：Dopamine rootless iOS 16.7，SSH mobile@192.168.1.xx 密码 1111（IP 可能变）
+# 设备：Dopamine rootless iOS 16.7，SSH mobile@192.168.1.xx <密码，安装时向设备所有者询问>（IP 可能变）
 ```
 
 ### 9.2 本机验证（不碰设备）
@@ -377,8 +377,8 @@ cd deb && OPERIT_PACK_SCHEME=rootless python3 packdeb.py
 
 # 4. 装机 + respring
 scp operit2-ios_0.3.71_iphoneos-arm64.deb mobile@192.168.1.xx:/tmp/
-ssh mobile@192.168.1.xx 'echo 1111 | sudo -S dpkg -i /tmp/operit2-ios_0.3.71_iphoneos-arm64.deb'
-ssh mobile@192.168.1.xx 'echo 1111 | sudo -S killall -9 SpringBoard'
+ssh mobile@192.168.1.xx 'echo <PASSWORD> | sudo -S dpkg -i /tmp/operit2-ios_0.3.71_iphoneos-arm64.deb'
+ssh mobile@192.168.1.xx 'echo <PASSWORD> | sudo -S killall -9 SpringBoard'
 ```
 
 ### 9.4 设备调试（SSH，不改代码）
