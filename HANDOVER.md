@@ -215,7 +215,7 @@ scp operit2-ios_X_iphoneos-arm64.deb mobile@<ip>:/tmp/
 echo '1111' | sudo -S dpkg -i /tmp/operit2-ios_X_iphoneos-arm64.deb
 echo '1111' | sudo -S killall -9 SpringBoard   # respring
 ```
-设备 SSH：mobile@192.168.1.24 密码 1111（IP 可能因 DHCP 变动）
+设备 SSH：mobile@192.168.1.xx 密码 1111（IP 可能因 DHCP 变动）
 
 ---
 
@@ -337,7 +337,7 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 # 仓库
 git clone git@github.com:ddddddedcds/Operit2.git -b feat/ios-jailbreak-preview4
 # 本机 Theos（编 tweak/CC 模块）已就绪；Xcode + iOS 16 SDK（swiftc typecheck 用）
-# 设备：Dopamine rootless iOS 16.7，SSH mobile@192.168.1.24 密码 1111（IP 可能变）
+# 设备：Dopamine rootless iOS 16.7，SSH mobile@192.168.1.xx 密码 1111（IP 可能变）
 ```
 
 ### 9.2 本机验证（不碰设备）
@@ -376,19 +376,19 @@ sed -i '' 's/^Version: .*/Version: 0.3.71/' deb/DEBIAN/control
 cd deb && OPERIT_PACK_SCHEME=rootless python3 packdeb.py
 
 # 4. 装机 + respring
-scp operit2-ios_0.3.71_iphoneos-arm64.deb mobile@192.168.1.24:/tmp/
-ssh mobile@192.168.1.24 'echo 1111 | sudo -S dpkg -i /tmp/operit2-ios_0.3.71_iphoneos-arm64.deb'
-ssh mobile@192.168.1.24 'echo 1111 | sudo -S killall -9 SpringBoard'
+scp operit2-ios_0.3.71_iphoneos-arm64.deb mobile@192.168.1.xx:/tmp/
+ssh mobile@192.168.1.xx 'echo 1111 | sudo -S dpkg -i /tmp/operit2-ios_0.3.71_iphoneos-arm64.deb'
+ssh mobile@192.168.1.xx 'echo 1111 | sudo -S killall -9 SpringBoard'
 ```
 
 ### 9.4 设备调试（SSH，不改代码）
 ```bash
 # 看 tweak 日志（一切运行时行为的头号证据）
-ssh mobile@192.168.1.24 'tail -50 /var/jb/var/mobile/.operit/logs/tweak.log'
+ssh mobile@192.168.1.xx 'tail -50 /var/jb/var/mobile/.operit/logs/tweak.log'
 # panic 日志（app 崩）
-ssh mobile@192.168.1.24 'cat /var/mobile/.operit_panic.log 2>/dev/null | tail -20'
+ssh mobile@192.168.1.xx 'cat /var/mobile/.operit_panic.log 2>/dev/null | tail -20'
 # daemon 状态
-ssh mobile@192.168.1.24 'ps aux | grep operit_agent; ls -la /var/jb/var/mobile/.operit/agent.log'
+ssh mobile@192.168.1.xx 'ps aux | grep operit_agent; ls -la /var/jb/var/mobile/.operit/agent.log'
 # 设备操作（深链/前台/拉起 app，首选通道——不崩 SpringBoard）
 curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Protocol-Version: 2025-11-25' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"open_url","arguments":{"url":"weixin://"}}}'
