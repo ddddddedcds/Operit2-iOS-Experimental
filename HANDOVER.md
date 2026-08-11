@@ -448,3 +448,70 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 - [x] 方法论：jailbreak-ios-dev / roothide-ios-dev 技能
 - [ ] 遗留 bug：10.1-10.6（CC 模块 / 选图崩溃 / sessionId / PATH / 设置面板 / roothide 回归）
 - [ ] 可探索：AI 回复通知（BBServer action 回调；AutoResponder 是 iOS 6-9 短信层先例）
+
+---
+
+## 12. 私有 API 专题（本项目方法论核心，官方/越狱开发者/AI 通用）
+
+### 12.1 本项目用到的私有 API 全景（实测，iOS 16.7）
+
+| 领域 | 框架/类 | 方法/API | 用途 | 可靠性 |
+|---|---|---|---|---|
+| Siri 识别 | AssistantServices `AFConnection` | `_tellSpeechDelegateSpeechRecognized:` | 拿 Siri 语音识别文本（arg 为 SASSpeechRecognized）| ✅ 稳定触发 |
+| Siri 回答 | AssistantServices `AFConnection` | `_handleCommand:reply:` | 拦截 Siri 回答命令（SAUIAddViews）| ✅ 稳定触发 |
+| Siri 文本提取 | SAObjects `SASSpeechRecognized` | `af_bestTextInterpretation` | 识别文本最佳结果 | ✅ |
+| Siri 视图宿主 | AssistantUI `AFUISiriViewController` | `viewDidAppear:` / viewWillDisappear: | 挂自绘回答卡片 | ✅ |
+| 通知拦截/记录 | BulletinBoard `BBObserver` | `_queue_updateBulletin:withReply:` / `updateBulletin:withReply:` | 通知源头拦截 + 内容读取 | ✅ |
+| 通知参数结构 | BulletinBoard `BBBulletinUpdateTransaction` | `.bulletinUpdate.bulletin`（三层）| iOS 16 取 sectionID/title/message | ✅ 实测 |
+| 通知历史清除 | BulletinBoard `BBObserver` | `clearSection:` | 锁定 app 时清历史通知 | ✅ |
+| 锁屏检测 | Darwin notify（非私有）| `com.apple.springboard.lockstate` + notify_get_state | 锁屏/解锁状态 | ✅ 官方通知 |
+| 应用锁 | SpringBoard 前台检测 + 自绘屏蔽页 | tweak 内实现 | 拦截 app 前台 | ✅ |
+| installed_apps | LSApplicationWorkspace（公开但部分 key 私有）| `defaultWorkspace` / `allApplications` | 枚举 app | ⚠️ `schemes` key iOS 16 不存在会崩 |
+| 截图 | CARenderServer / SB 截图管理 | ios-mcp 内部 | 设备截图 | ⚠️ iOS 版本差异大 |
+
+### 12.2 私有 API 发现方法（效率排序，均经本项目验证）
+
+1. **参考实现逆向优先**（最快）：目标功能有同类插件 → 拉 dylib → `strings`（Swift strip 后 selector 字符串仍在 __cstring 段）+ `otool -ov`（ObjC 类/方法）→ 直接得到"已验证的 hook 目标"
+2. **class-dump / 社区头文件**：nst/iOS-Runtime-Headers（只到 iOS 14，方法名可能过时）、Theos SDK 自带 iPhoneOS*.sdk（有 .tbd 但头文件不全）
+3. **运行时 dump**（Frida / objc_getClassList + class_copyMethodList）：设备 iOS 16.7 的活清单，含 Swift 类暴露的 ObjC 部分
+4. **真机 probe**（最终裁决）：hook 候选方法 + 日志，验证"是否触发 + 参数实际结构"——**方法存在 ≠ 可靠 hook 点**（本项目最大教训）
+
+### 12.3 私有 API 使用准则（防崩溃，全部血泪教训）
+
+1. **KVC 安全**：裸 `value(forKey:)` 对不存在的 key 抛 NSException（Swift do-catch 抓不住）→ SIGABRT。一律 `responds(to:)` 前置 + `perform` 取值
+2. **@try 保护**：所有私有 API 调用包 @try/@catch（NSException）
+3. **hook 层选择**：连接层 > UI 层。UI 层方法"存在但不触发"时换连接层（Siri：AFUISiriSession → AFConnection 一次成功）
+4. **禁用手动 swizzle**：`method_setImplementation` + `imp_implementationWithBlock` + 延迟原调 → 野指针崩 SpringBoard（进安全模式）。用 Logos `%hook` 同步 `%orig`
+5. **probe 先行**：不写死功能，先加无副作用日志 hook 确认触发 + 参数结构，再实现
+6. **强引用 + 主线程**：异步 block 里捕获的对象要 strong；UI 操作回主线程
+7. **参数结构以真机 dump 为准**：社区头文件过时（iOS 16 的 BBBulletinUpdateTransaction 三层就是 probe 发现的）
+
+### 12.4 iOS 16.7 私有 API 差异（实测清单，对比社区头文件）
+
+| 差异 | 社区头文件（iOS 14）| iOS 16.7 实测 |
+|---|---|---|
+| Siri 回答 hook | 用 AFUISiriSession（UI 层）| **AFConnection（连接层）才触发** |
+| Siri TTS | `speechSynthesis` getter | **不存在**（unrecognized selector）|
+| Siri 气泡 | 改 `SAUIAssistantUtteranceView.text` | 可改但**跨进程（SiriViewService）不刷新** |
+| 锁屏 KVC | SBLockScreenManager.isLocked | **失效** → 用 Darwin notify |
+| 通知参数 | 传 BBBulletin | **BBBulletinUpdateTransaction（三层）** |
+| installed_apps | `schemes` key 可用 | **key 不存在 → 裸 KVC 崩** |
+| 截图 | SBScreenshotManager 多方法 | iOS 15.7 实测只有 `saveScreenshotsWithCompletion:` |
+
+### 12.5 稳定性风险（给官方/维护者的评估）
+
+- **每个 iOS 小版本都可能变**：本项目 21 天里至少 5 处被 iOS 16.7 打脸（上表全是）
+- **iOS 16 vs 17 差异更大**：私有框架改名/重构频繁，17 的 Siri/通知层可能与 16 完全不同
+- **参考实现是"版本适配活教材"**：SiriPlus（Siri）/ Axon+Senri（通知）的每个版本更新都在教你该版本的私有 API 正确用法
+- **非越狱无私有 API**：App Store 分发不能用（会被拒）；越狱分发（Sileo/自签）无此限制
+- **合规**：本项目为学习研究用途；如产品化需自行评估法律/政策风险
+
+### 12.6 私有 API 知识来源汇总（速查）
+| 来源 | 用途 | 时效 |
+|---|---|---|
+| 设备上的同类插件 dylib | strings/otool 逆向 | 当前版本 |
+| nst/iOS-Runtime-Headers（GitHub）| class-dump 头文件 | iOS 14 左右，过时 |
+| Theos SDK iPhoneOS*.sdk | .tbd + 部分头 | 本机 16.5 |
+| theapplewiki | 固件/文件系统结构 | 持续更新（类方法仍需 dump）|
+| Frida（设备运行时）| 活类清单 | 设备当前系统 |
+| 真机 probe（自己加日志）| 最终裁决 | 永远有效 |
