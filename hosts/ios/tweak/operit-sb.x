@@ -1609,56 +1609,79 @@ static BOOL notif_clear_section(NSString *bid) {
 }
 %end
 
+// ---- 剪贴板监听（默认关闭，隐私功能）----
+// 开关：/var/mobile/.operit/clipboard_enabled（存在=开）。AI 用文件工具切换。
+// 开启时监听 UIPasteboardChangedNotification，把复制内容写 clipboard.json（AI 读取）。
+// 只记文本；非文本（图片等）跳过。最多 100 条。
+static NSString *g_clipboardPath = @"/var/mobile/.operit/clipboard.json";
+static NSString *g_clipboardEnablePath = @"/var/mobile/.operit/clipboard_enabled";
+
+static BOOL clipboard_is_enabled(void) {
+    return [[NSFileManager defaultManager] fileExistsAtPath:g_clipboardEnablePath];
+}
+
+static void clipboard_record(NSString *text) {
+    if (!text || text.length == 0) return;
+    NSString *clean = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (clean.length == 0 || clean.length > 2000) return; // 空 / 超长（可能是图片 base64）跳过
+    @try {
+        NSMutableArray *arr = [NSMutableArray new];
+        NSData *d = [NSData dataWithContentsOfFile:g_clipboardPath];
+        if (d) {
+            id obj = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+            if ([obj isKindOfClass:[NSArray class]]) arr = [obj mutableCopy];
+        }
+        // 去重：与上一条相同则只更新时间
+        NSDictionary *last = arr.firstObject;
+        if (last && [last[@"text"] isEqualToString:clean]) {
+            NSMutableDictionary *m = [last mutableCopy];
+            m[@"ts"] = @((long long)time(NULL));
+            [arr replaceObjectAtIndex:0 withObject:m];
+        } else {
+            [arr insertObject:@{
+                @"ts": @((long long)time(NULL)),
+                @"text": clean,
+                @"app": @"(剪贴板)",
+            } atIndex:0];
+        }
+        if (arr.count > 100) [arr removeObjectsInRange:NSMakeRange(100, arr.count - 100)];
+        NSData *out = [NSJSONSerialization dataWithJSONObject:arr options:0 error:nil];
+        if (out) [out writeToFile:g_clipboardPath atomically:YES];
+        oc_log("CLIP: recorded %lu chars", (unsigned long)clean.length);
+    } @catch (NSException *ex) {
+        oc_log("CLIP: record threw %s", ex.reason.UTF8String ?: "");
+    }
+}
+
+static void clipboard_start(void) {
+    @try {
+        // 始终注册监听；回调里检查开关文件 → AI 随时创建/删除开关即生效，无需重启
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIPasteboardChangedNotification
+                                                          object:nil queue:nil
+                                                      usingBlock:^(NSNotification *note) {
+            @try {
+                if (!clipboard_is_enabled()) return;
+                UIPasteboard *pb = [UIPasteboard generalPasteboard];
+                if (pb.hasStrings) clipboard_record(pb.string);
+            } @catch (NSException *ex) {
+                oc_log("CLIP: notif threw %s", ex.reason.UTF8String ?: "");
+            }
+        }];
+        oc_log("CLIP: listener registered (%s)", clipboard_is_enabled() ? "enabled" : "disabled");
+    } @catch (NSException *ex) {
+        oc_log("CLIP: start threw %s", ex.reason.UTF8String ?: "");
+    }
+}
+
+
 %ctor {
     // @try 保护：dylib 初始化抛异常不让 SpringBoard 进 safe mode
     @try {
         g_sockpath = operit_env_path(@"/var/jb/var/mobile/.operit/operit.sock");
         start_server();
         lock_monitor_start();
+        clipboard_start();
         oc_log("operit-sb loaded, lockPath=%s, roothide=%d", g_lockPath.UTF8String, operit_is_roothide());
-        // 诊断（临时）：穷举 FBSceneManager delegate/observer 回调方法名，确认后删
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 6 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            @try {
-                Class fsm = objc_getClass("FBSceneManager");
-                if (!fsm) { oc_log("EVT: FBSceneManager class missing"); return; }
-                unsigned int c = 0;
-                Method *ms = class_copyMethodList(fsm, &c);
-                for (unsigned int i = 0; i < c; i++) {
-                    const char *n = sel_getName(method_getName(ms[i]));
-                    if (strstr(n, "sceneManager") || strstr(n, "didUpdateScene")
-                        || strstr(n, "didActivateScene") || strstr(n, "willActivateScene")
-                        || strstr(n, "deactivateScene") || strstr(n, "didDeactivateScene")
-                        || strstr(n, "activateScene") || strstr(n, "observer")) {
-                        oc_log("EVT[FBSceneManager]: %s", n);
-                    }
-                }
-                if (ms) free(ms);
-            } @catch (NSException *ex) {
-                oc_log("EVT: fsm dump threw %s", ex.reason.UTF8String ?: "");
-            }
-            @try {
-                // SpringBoard 侧可能的 delegate/observer 类
-                const char *cands[] = {"SBMainWorkspace", "SBSceneManager", "SBApplicationSceneManager",
-                                       "SBLayoutStateManager", "FBSceneObserver"};
-                for (int i = 0; i < 5; i++) {
-                    Class cls = objc_getClass(cands[i]);
-                    if (!cls) { oc_log("EVT[%s]: class missing", cands[i]); continue; }
-                    unsigned int c2 = 0;
-                    Method *ms2 = class_copyMethodList(cls, &c2);
-                    for (unsigned int j = 0; j < c2; j++) {
-                        const char *n = sel_getName(method_getName(ms2[j]));
-                        if (strstr(n, "sceneManager") || strstr(n, "didUpdateScene")
-                            || strstr(n, "didActivateScene") || strstr(n, "willActivateScene")
-                            || strstr(n, "deactivateScene") || strstr(n, "didDeactivateScene")) {
-                            oc_log("EVT[%s]: %s", cands[i], n);
-                        }
-                    }
-                    if (ms2) free(ms2);
-                }
-            } @catch (NSException *ex) {
-                oc_log("EVT: cand dump threw %s", ex.reason.UTF8String ?: "");
-            }
-        });
     } @catch (NSException *ex) {
         oc_log("ctor threw: %s", ex.reason.UTF8String ?: "");
     }
