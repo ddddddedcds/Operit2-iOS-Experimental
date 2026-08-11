@@ -2,7 +2,7 @@
 
 > **项目定位**：**POC（概念验证）**——验证"越狱 iOS + AI 深度集成"这条路是否可行。结论：**可行，但 Operit2 的 Flutter+Rust 架构硬移植进越狱 iOS 不划算（bug 链式暴露），接手前应先评估架构重做**。本手册记录全部架构、运行原理、坑与遗留问题，供 operit 官方 / 越狱社区开发者接手。
 >
-> **目标平台**：Dopamine rootless（iOS 16.7，主测试机 iPhone13,4 / A15）+ roothide；非越狱（TrollStore/自签 IPA 降级支持）
+> **目标平台**：Dopamine rootless（iOS 16.7，主测试机 iPhone13,4（iPhone 12 Pro Max）/ A14）+ roothide；非越狱（TrollStore/自签 IPA 降级支持）
 > **主分支**：`feat/ios-jailbreak-preview4`（截至 2026-08-11 共 10 commit）
 
 ---
