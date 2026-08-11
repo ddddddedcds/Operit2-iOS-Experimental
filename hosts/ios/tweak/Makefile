@@ -18,6 +18,7 @@ TWEAK_NAME := operit-sb operit-app
 operit-sb_FILES := operit-sb.x
 operit-sb_CFLAGS := -fobjc-arc -Wno-unused-function -Wno-arc-performSelector-leaks
 operit-sb_FRAMEWORKS := CoreGraphics UIKit
+operit-sb_LIBRARIES := sqlite3
 # 尝试让 tweak 以可信 AX 客户端身份运行（旁白同款 entitlement）。
 operit-sb_CODESIGN_FLAGS := -Sentitlements.plist
 

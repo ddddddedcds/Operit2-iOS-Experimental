@@ -26,6 +26,7 @@
 #include <sys/select.h>
 #include <mach/mach_time.h>
 #include <notify.h>
+#include <sqlite3.h>
 #include "operit_log.h"
 #import "roothide_compat.h"
 
@@ -1736,6 +1737,7 @@ static void clipboard_start(void) {
 }
 
 
+
 %ctor {
     // @try 保护：dylib 初始化抛异常不让 SpringBoard 进 safe mode
     @try {
@@ -1748,4 +1750,480 @@ static void clipboard_start(void) {
         oc_log("ctor threw: %s", ex.reason.UTF8String ?: "");
     }
 }
+
+// ========== SIRI 集成 v1（probe）：识别 → AI → Siri 朗读 ==========
+// 链路已验证：AFUISiriSession 识别回调拿文本 → DeepSeek 回答。
+// 本轮：回答到达后主动调 AFUISpeechSynthesis.enqueueText: 朗读 + hook _handleText: 拦截替换。
+
+// ========== Siri ↔ operit2 会话同步（sqlite） ==========
+// operit2 会话库：runtime/data/database/operit2.sqlite（直接写主表，app 可读，已验证）。
+// 当前会话 id：runtime/state/current_chat_id.preferences.json
+
+static NSString *siri_db_path(void) {
+    return @"/var/mobile/.operit/operit2/runtime/data/database/operit2.sqlite";
+}
+
+static NSString *siri_current_chat_id(void) {
+    NSString *p = @"/var/mobile/.operit/operit2/runtime/state/current_chat_id.preferences.json";
+    NSData *d = [NSData dataWithContentsOfFile:p];
+    if (!d) return nil;
+    NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+    NSString *cid = j[@"current_chat_id"];
+    return (cid.length ? cid : nil);
+}
+
+// 读最近 limit 条 markdown 文本消息（旧→新），返回 {sender, content} 字典数组（跳过工具消息）
+static NSArray *siri_load_history(NSString *cid, int limit) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2([siri_db_path() UTF8String], &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) return @[];
+    const char *sql = "SELECT m.sender, p.content FROM messages m JOIN message_parts p ON m.chatId=p.chatId AND m.timestamp=p.messageTimestamp "
+                      "WHERE m.chatId=? AND p.kind='markdown' AND p.sequence=0 AND m.sender IN ('user','ai') ORDER BY m.timestamp DESC LIMIT ?";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) { sqlite3_close(db); return @[]; }
+    sqlite3_bind_text(stmt, 1, [cid UTF8String], -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, limit);
+    NSMutableArray *rows = [NSMutableArray array];
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *sender = (const char *)sqlite3_column_text(stmt, 0);
+        const char *content = (const char *)sqlite3_column_text(stmt, 1);
+        if (sender && content) {
+            [rows addObject:@{@"sender": @(sender), @"content": @(content)}];
+        }
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return [[rows reverseObjectEnumerator] allObjects]; // 旧→新
+}
+
+// 写一条消息（messages + message_parts），sender: user/ai
+static BOOL siri_insert_message(NSString *cid, NSString *sender, NSString *content, NSString *modelName) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2([siri_db_path() UTF8String], &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) return NO;
+    long long now = (long long)([[NSDate date] timeIntervalSince1970] * 1000);
+    const char *sql = "INSERT INTO messages (chatId,sender,timestamp,orderIndex,roleName,selectedVariantIndex,provider,modelName,inputTokens,outputTokens,cachedInputTokens,sentAt,outputDurationMs,waitDurationMs,completedAt,displayMode,isFavorite) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) { sqlite3_close(db); return NO; }
+    sqlite3_bind_text(stmt, 1, [cid UTF8String], -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, [sender UTF8String], -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, now);
+    sqlite3_bind_int(stmt, 4, 0);
+    NSString *role = [sender isEqualToString:@"ai"] ? @"Operit" : @"user";
+    sqlite3_bind_text(stmt, 5, [role UTF8String], -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 6, 0);
+    sqlite3_bind_text(stmt, 7, "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, [modelName UTF8String], -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 9, 0);   // inputTokens
+    sqlite3_bind_int64(stmt, 10, 0);  // outputTokens
+    sqlite3_bind_int64(stmt, 11, 0);  // cachedInputTokens
+    sqlite3_bind_int64(stmt, 12, now); // sentAt
+    sqlite3_bind_int64(stmt, 13, 0);  // outputDurationMs
+    sqlite3_bind_int64(stmt, 14, 0);  // waitDurationMs
+    sqlite3_bind_int64(stmt, 15, 0);  // completedAt
+    sqlite3_bind_text(stmt, 16, "NORMAL", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 17, 0);    // isFavorite
+    BOOL ok = (sqlite3_step(stmt) == SQLITE_DONE);
+    sqlite3_finalize(stmt);
+    if (ok) {
+        const char *sql2 = "INSERT INTO message_parts (chatId,messageTimestamp,variantIndex,partId,sequence,kind,content,toolCallId,toolName,attributesJson) VALUES (?,?,?,?,?,?,?,?,?,?)";
+        sqlite3_stmt *s2 = NULL;
+        if (sqlite3_prepare_v2(db, sql2, -1, &s2, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(s2, 1, [cid UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(s2, 2, now);
+            sqlite3_bind_int(s2, 3, 0);
+            sqlite3_bind_text(s2, 4, "part-0", -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(s2, 5, 0);
+            sqlite3_bind_text(s2, 6, "markdown", -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(s2, 7, [content UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(s2, 8, "", -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(s2, 9, "", -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(s2, 10, "{}", -1, SQLITE_TRANSIENT);
+            ok = (sqlite3_step(s2) == SQLITE_DONE);
+            sqlite3_finalize(s2);
+        } else {
+            ok = NO;
+        }
+    }
+    sqlite3_close(db);
+    return ok;
+}
+
+// Markdown → Siri 纯文本：Siri 气泡只支持纯文本/emoji/换行，
+// 表格转 "a | b"、标题去 #、代码块保留内容、加粗/链接/列表去标记。
+static NSString *siri_clean_md(NSString *md) {
+    if (!md.length) return md;
+    NSMutableString *out = [NSMutableString string];
+    BOOL inCode = NO;
+    for (NSString *raw in [md componentsSeparatedByString:@"\n"]) {
+        NSString *line = raw;
+        if ([line hasPrefix:@"```"]) { inCode = !inCode; continue; }
+        if (inCode) { [out appendFormat:@"%@\n", line]; continue; }
+        // 表格分隔行（|---|）丢弃
+        NSString *noPipes = [line stringByReplacingOccurrencesOfString:@"[|\\s:-]+" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        if ([line containsString:@"|"] && noPipes.length == 0) continue;
+        // 表格行：去空单元格，保留 | 分隔
+        if ([line containsString:@"|"]) {
+            NSMutableArray *cells = [NSMutableArray array];
+            for (NSString *c in [line componentsSeparatedByString:@"|"]) {
+                NSString *t = [c stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                if (t.length) [cells addObject:t];
+            }
+            [out appendFormat:@"%@\n", [cells componentsJoinedByString:@" | "]];
+            continue;
+        }
+        line = [line stringByReplacingOccurrencesOfString:@"^(#{1,6})\\s*" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        line = [line stringByReplacingOccurrencesOfString:@"^([\\s]*)[-*+]\\s+" withString:@"$1• " options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        line = [line stringByReplacingOccurrencesOfString:@"^\\s*>\\s?" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        line = [line stringByReplacingOccurrencesOfString:@"\\*\\*([^*]+)\\*\\*" withString:@"$1" options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        line = [line stringByReplacingOccurrencesOfString:@"\\*([^*]+)\\*" withString:@"$1" options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        line = [line stringByReplacingOccurrencesOfString:@"`([^`]*)`" withString:@"$1" options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        line = [line stringByReplacingOccurrencesOfString:@"!\\[([^\\]]*)\\]\\([^)]*\\)" withString:@"$1" options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        line = [line stringByReplacingOccurrencesOfString:@"\\[([^\\]]+)\\]\\([^)]*\\)" withString:@"$1" options:NSRegularExpressionSearch range:NSMakeRange(0, line.length)];
+        [out appendFormat:@"%@\n", line];
+    }
+    return [out stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+// 读 operit2 角色卡 + 记忆，构造与 operit2 一致的 system prompt
+//（角色 intro = characterSetting + otherContentChat + advancedCustomPrompt，\n\n 连接；
+//   记忆 = 该角色的 USER.md，拼在末尾 "USER.md:\n<内容>"，与 ConversationService 一致）
+static NSString *siri_build_system_prompt(void) {
+    NSString *prefsPath = @"/var/mobile/.operit/operit2/runtime/config/preferences/character_cards.preferences.json";
+    NSDictionary *cards = [NSDictionary dictionaryWithContentsOfFile:prefsPath];
+    if (!cards) return @"你是 Operit，一个全能 AI 助手。";
+    NSString *activeId = cards[@"active_character_card_id"];
+    if (![activeId isKindOfClass:[NSString class]] || !activeId.length) activeId = @"default_character";
+    NSMutableArray *parts = [NSMutableArray array];
+    NSString *setting = cards[[NSString stringWithFormat:@"character_card_%@_character_setting", activeId]];
+    if (setting.length) [parts addObject:setting];
+    NSString *chat = cards[[NSString stringWithFormat:@"character_card_%@_other_content_chat", activeId]];
+    if (chat.length) [parts addObject:chat];
+    NSString *adv = cards[[NSString stringWithFormat:@"character_card_%@_advanced_custom_prompt", activeId]];
+    if (adv.length) [parts addObject:adv];
+    NSString *intro = parts.count ? [parts componentsJoinedByString:@"\n\n"] : @"你是 Operit，一个全能 AI 助手。";
+    NSString *mdPath = [NSString stringWithFormat:@"/var/mobile/.operit/operit2/runtime/data/memory/characters/%@/USER.md", activeId];
+    NSString *md = [NSString stringWithContentsOfFile:mdPath encoding:NSUTF8StringEncoding error:nil];
+    if (md.length) {
+        return [intro stringByAppendingFormat:@"\n\nUSER.md:\n%@", md];
+    }
+    return intro;
+}
+
+// 调 operit2 的 AI 后端（config.plist 凭证 + 角色记忆 system prompt + 会话历史）
+static NSString *siri_ask_ai(NSString *prompt, NSArray *history) {
+    NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/.operit/config.plist"];
+    NSString *key = cfg[@"apiKey"];
+    NSString *base = cfg[@"apiBaseUrl"];
+    NSString *model = cfg[@"apiModel"] ?: @"deepseek-chat";
+    if (!key.length || !base.length) return @"ERR|no ai config in /var/mobile/.operit/config.plist";
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:base]];
+    req.HTTPMethod = @"POST";
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [req setValue:[NSString stringWithFormat:@"Bearer %@", key] forHTTPHeaderField:@"Authorization"];
+    NSString *sys = siri_build_system_prompt();
+    // 历史（operit2 会话最近消息，旧→新）：保证上下文一致
+    NSMutableArray *messages = [NSMutableArray arrayWithObject:@{@"role": @"system", @"content": sys}];
+    for (NSDictionary *h in history) {
+        NSString *role = [h[@"sender"] isEqualToString:@"ai"] ? @"assistant" : @"user";
+        [messages addObject:@{@"role": role, @"content": h[@"content"]}];
+    }
+    [messages addObject:@{@"role": @"user", @"content": prompt}];
+    NSDictionary *body = @{
+        @"model": model,
+        @"messages": messages,
+        @"max_tokens": @800,
+    };
+    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    req.timeoutInterval = 30;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block NSString *out = nil;
+    [[NSURLSession.sharedSession dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        if (d.length) {
+            NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+            NSArray *choices = j[@"choices"];
+            out = choices.count ? choices[0][@"message"][@"content"] : [NSString stringWithFormat:@"ERR|no choices: %@", j];
+        } else {
+            out = [NSString stringWithFormat:@"ERR|%s", e.localizedDescription.UTF8String ?: "unknown"];
+        }
+        dispatch_semaphore_signal(sem);
+    }] resume];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 35 * NSEC_PER_SEC));
+    return out ?: @"ERR|timeout";
+}
+
+static NSString *g_siriAIAnswer = nil;
+static BOOL g_siriAISpoken = NO;
+
+// %hook 前向声明：允许编译期调用 [self speechSynthesis]
+@interface AFUISiriSession : NSObject
+- (id)speechSynthesis;
+@end
+
+// ========== AFConnection（连接层）hook —— 识别与命令回调在 SpringBoard 进程实测触发 ==========
+// AFConnection（AssistantServices 连接层）的识别/命令回调是可靠 hook 点：
+//   - _tellSpeechDelegateSpeechRecognized:  识别文本回调（17:35 实测触发）
+//   - _handleCommand:reply:                 Siri 命令处理（SAUIAddViews 回答命令实测触发）
+// 替换逻辑：收到 SAUIAddViews → 强引用保存 + 同步放行 → AI 回答到达 → 改 text → 重调 _handleCommand: 重新渲染。
+static id g_siriAFConn = nil;   // AFConnection 实例（strong）
+static id g_lastAddViews = nil; // 最近 SAUIAddViews 命令（strong）— AI 回答到达后改文本重渲染
+
+// ---- AI 回答显示卡片（addSubview 到 Siri VC 视图层级）：先占位后更新 ----
+static UIView *g_siriAnswerView = nil;   // 全屏覆盖卡片（strong）
+static UILabel *g_siriBodyLabel = nil;   // 卡片内容 label（strong，回答到达后更新）
+static id g_siriVC = nil;                // AFUISiriViewController 实例（strong）
+
+static void siri_dismiss_card(void) {
+    if (g_siriAnswerView.superview) [g_siriAnswerView removeFromSuperview];
+    g_siriAnswerView = nil;
+    g_siriBodyLabel = nil;
+}
+
+// 显示/更新全屏覆盖卡片：已有卡片则只更新文字；没有则创建（全屏不透明，完全盖住 Siri）
+static void siri_show_cover_card(NSString *bodyText) {
+    if (!g_siriVC || !bodyText.length) return;
+    UIView *host = ((UIViewController *)g_siriVC).view;
+    if (!host) return;
+    // 已有卡片：只更新内容
+    if (g_siriAnswerView && g_siriBodyLabel) {
+        g_siriBodyLabel.text = bodyText;
+        oc_log("SIRI_CARD_UPDATE len=%ld", (long)bodyText.length);
+        return;
+    }
+    // 底部卡片：左右各 20 边距，底部 80（避开 Siri 麦克风条），高度自适应（v14 稳定版）
+    UIView *card = [[UIView alloc] init];
+    card.backgroundColor = [UIColor colorWithWhite:0.10 alpha:0.95];
+    card.layer.cornerRadius = 16;
+    card.layer.masksToBounds = YES;
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    // 标题（居中）
+    UILabel *title = [[UILabel alloc] init];
+    title.text = @"Operit";
+    title.font = [UIFont boldSystemFontOfSize:15];
+    title.textColor = [UIColor whiteColor];
+    title.textAlignment = NSTextAlignmentCenter;
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    // 内容（占位或 AI 回答，多行左对齐）
+    UILabel *body = [[UILabel alloc] init];
+    body.text = bodyText;
+    body.font = [UIFont systemFontOfSize:14];
+    body.textColor = [UIColor whiteColor];
+    body.numberOfLines = 0;
+    body.textAlignment = NSTextAlignmentLeft;
+    body.translatesAutoresizingMaskIntoConstraints = NO;
+    g_siriBodyLabel = body;
+    // 关闭按钮
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    [close setTitle:@"关闭" forState:UIControlStateNormal];
+    [close setTitleColor:[UIColor colorWithRed:0.35 green:0.65 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
+    close.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    close.translatesAutoresizingMaskIntoConstraints = NO;
+    __weak UIView *weakCard = card;
+    [close addAction:[UIAction actionWithHandler:^(UIAction *a) {
+        if (weakCard.superview) [weakCard removeFromSuperview];
+        g_siriAnswerView = nil;
+        g_siriBodyLabel = nil;
+    }] forControlEvents:UIControlEventTouchUpInside];
+    // 垂直排列（宽度受卡片约束）
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, body, close]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 10;
+    stack.alignment = UIStackViewAlignmentFill;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:stack];
+    [host addSubview:card];
+    g_siriAnswerView = card;
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:14],
+        [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14],
+        [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14],
+        [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14],
+        [card.leadingAnchor constraintEqualToAnchor:host.leadingAnchor constant:20],
+        [card.trailingAnchor constraintEqualToAnchor:host.trailingAnchor constant:-20],
+        [card.bottomAnchor constraintEqualToAnchor:host.bottomAnchor constant:-80],
+        [card.topAnchor constraintGreaterThanOrEqualToAnchor:host.topAnchor constant:80],
+    ]];
+    oc_log("SIRI_CARD_SHOWN len=%ld", (long)bodyText.length);
+}
+
+%hook AFConnection
+
+- (void)_tellSpeechDelegateSpeechRecognized:(id)arg1 {
+    oc_log("AF_RECOG %s", [NSString stringWithFormat:@"%@", arg1].UTF8String);
+    %orig;
+}
+
+- (void)_handleCommand:(id)arg1 reply:(id)arg2 {
+    if ([arg1 isKindOfClass:NSClassFromString(@"SAUIAddViews")]) {
+        g_lastAddViews = arg1;  // strong：AI 回答到达后改文本 + 重渲染
+        g_siriAFConn = self;
+        oc_log("SIRI_GOT_ADDVIEWS_AF");
+    }
+    %orig;
+}
+
+%end
+
+// ---- Siri 视图控制器：保存实例（AI 回答卡片 addSubview 的宿主）+ 会话结束清卡片 ----
+%hook AFUISiriViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    g_siriVC = self;
+    oc_log("SIRI_VC_APPEAR");
+    %orig;
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    siri_dismiss_card();
+    g_siriVC = nil;
+    oc_log("SIRI_VC_DISAPPEAR");
+    %orig;
+}
+
+%end
+
+%hook AFUISiriSession
+
+// ---- Siri 回答替换 v5（安全版）：强引用 + 重渲染，无手动 swizzle/无野指针 ----
+// 收到 SAUIAddViews（Siri 回答气泡）→ 强引用保存 → 同步放行（先正常显示）；
+// AI 回答到达（主线程）→ 修改保存命令的 text → 再次调 _handleRequestUpdateViewsCommand:
+//   （completion 传空 block 防 nil 崩溃）→ Siri 重新渲染，气泡换成 AI 回答。
+static id g_siriSelf = nil;        // AFUISiriSession 实例（strong）
+
+// 收到 SAUIAddViews：iOS 16.7 hook 此方法不生效（v8/v9 实测；原因待查）— v6+ 回答替换实验暂停
+- (void)assistantConnection:(id)arg1 receivedCommand:(id)arg2 completion:(id)arg3 {
+    %orig;
+}
+
+- (void)_handleRequestUpdateViewsCommand:(id)arg1 completion:(id)arg2 {
+    %orig;
+}
+
+- (void)assistantConnection:(id)arg1 speechRecognized:(id)arg2 {
+    %orig;
+    if (!operit_cfg_bool(@"siriEnabled", YES)) return; // 设置面板总开关
+    NSString *text = nil;
+    @try {
+        id best = [arg2 performSelector:NSSelectorFromString(@"af_bestTextInterpretation")];
+        if (best) text = [NSString stringWithFormat:@"%@", best];
+    } @catch (NSException *ex) {
+        oc_log("PROBE_ERR af_best %s", ex.reason.UTF8String ?: "?");
+    }
+    if (!text.length) {
+        @try {
+            id rec = [arg2 valueForKey:@"recognition"];
+            id phrases = [rec valueForKey:@"phrases"];
+            if ([phrases isKindOfClass:[NSArray class]] && [phrases count]) {
+                id textObj = [phrases[0] valueForKey:@"text"];
+                if (textObj) text = [NSString stringWithFormat:@"%@", textObj];
+            }
+        } @catch (NSException *ex) {
+            oc_log("PROBE_ERR phrases %s", ex.reason.UTF8String ?: "?");
+        }
+    }
+    oc_log("PROBE_TEXT=%s", (text ?: @"(empty)").UTF8String);
+    NSString *q = [text copy];
+    g_siriAIAnswer = nil;
+    g_siriAISpoken = NO;
+    g_lastAddViews = nil;       // 新一轮：清旧命令
+    g_siriSelf = self;          // strong：AI 到达后重渲染要用（在异步块外主线程设置）
+    // 立即显示全屏占位卡片（盖住 Siri，让用户看到 AI 在响应；回答到了再更新）
+    dispatch_async(dispatch_get_main_queue(), ^{
+        siri_show_cover_card(@"思考中…");
+    });
+    // ① 先把用户的话写入 operit2 会话（同步 operit2 → Siri）
+    // 限频：3 秒内重复写入同一 chat 跳过（防 Flutter ChatArea 状态堆积崩溃）
+    static NSString *lastWriteCid = nil;
+    static NSTimeInterval lastWriteTime = 0;
+    NSString *cid = siri_current_chat_id();
+    NSTimeInterval now_ts = [[NSDate date] timeIntervalSince1970];
+    if (cid.length && q.length) {
+        BOOL rateLimited = (cid == lastWriteCid || [cid isEqualToString:lastWriteCid]) && (now_ts - lastWriteTime) < 3.0;
+        if (rateLimited) {
+            oc_log("SIRI_SYNC_USER rate-limited");
+        } else {
+            siri_insert_message(cid, @"user", q, @"");
+            oc_log("SIRI_SYNC_USER ok");
+            lastWriteCid = cid;
+            lastWriteTime = now_ts;
+        }
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // ② 读 operit2 会话历史（含刚写入的 user）→ 带上下文调 AI
+        NSArray *history = cid.length ? siri_load_history(cid, 20) : @[];
+        NSString *ans = siri_ask_ai(q.length ? q : @"你好", history);
+        g_siriAIAnswer = ans;
+        oc_log("PROBE_AI_ANSWER=%s", ans.UTF8String);
+        // ③ AI 回答写回 operit2 会话（同步 Siri → operit2）
+        if (cid.length && ans.length) {
+            NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/.operit/config.plist"];
+            siri_insert_message(cid, @"ai", ans, cfg[@"apiModel"] ?: @"deepseek-chat");
+            oc_log("SIRI_SYNC_AI ok");
+        }
+        // ④ 主线程：更新全屏卡片内容为 AI 回答（识别时已显示"思考中…"占位）
+            dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+                NSString *clean = siri_clean_md(ans);
+                oc_log("SIRI_CLEAN=%s", clean.UTF8String);
+                if (clean.length) {
+                    siri_show_cover_card(clean);
+                } else {
+                    oc_log("SIRI_CARD_SKIP empty");
+                }
+            } @catch (NSException *ex) {
+                oc_log("SIRI_CARD_ERR %s", ex.reason.UTF8String ?: "?");
+            }
+            // ⑤ 尝试朗读（speechSynthesis 不存在则无害）
+            @try {
+                id synth = [self speechSynthesis];
+                if (synth) {
+                    SEL sel = NSSelectorFromString(@"enqueueText:identifier:completion:");
+                    if ([synth respondsToSelector:sel]) {
+                        NSMethodSignature *sig = [synth methodSignatureForSelector:sel];
+                        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                        inv.target = synth;
+                        inv.selector = sel;
+                        __unsafe_unretained NSString *txt = ans;
+                        [inv setArgument:&txt atIndex:2];
+                        __unsafe_unretained NSString *ident = @"operit.ai";
+                        [inv setArgument:&ident atIndex:3];
+                        __unsafe_unretained id nilBlock = nil;
+                        [inv setArgument:&nilBlock atIndex:4];
+                        [inv invoke];
+                        g_siriAISpoken = YES;
+                        oc_log("PROBE_TTS_ENQUEUED class=%s", NSStringFromClass([synth class]).UTF8String);
+                    } else {
+                        oc_log("PROBE_TTS_NO_ENQUEUE");
+                    }
+                } else {
+                    oc_log("PROBE_TTS_NO_SYNTH");
+                }
+            } @catch (NSException *ex) {
+                oc_log("PROBE_TTS_ERR %s", ex.reason.UTF8String ?: "?");
+            }
+        });
+    });
+}
+
+- (id)speechSynthesis {
+    id s = %orig;
+    oc_log("PROBE_TTS_CLASS %s", s ? NSStringFromClass([s class]).UTF8String : "nil");
+    return s;
+}
+
+%end
+
+%hook AFUISpeechSynthesis
+
+// Siri 默认朗读入口：有 AI 回答时替换文本（双保险）
+- (void)_handleText:(id)arg1 completion:(id)arg2 {
+    if (g_siriAIAnswer.length && !g_siriAISpoken) {
+        arg1 = g_siriAIAnswer;
+        g_siriAISpoken = YES;
+        oc_log("PROBE_TTS_REPLACED");
+    } else {
+        oc_log("PROBE_TTS_TEXT %s", [NSString stringWithFormat:@"%@", arg1].UTF8String);
+    }
+    %orig;
+}
+
+%end
 

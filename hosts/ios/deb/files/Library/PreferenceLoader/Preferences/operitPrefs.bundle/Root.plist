@@ -90,6 +90,26 @@
             <key>cell</key>
             <string>PSGroupCell</string>
             <key>label</key>
+            <string>Siri 接入</string>
+            <key>footerText</key>
+            <string>对 Siri 说话，由 operit2 的 AI（当前角色 + 记忆）回答，回答与 operit2 内一致。</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>defaults</key>
+            <string>com.operit</string>
+            <key>key</key>
+            <string>siriEnabled</string>
+            <key>label</key>
+            <string>启用 Siri 接入 AI</string>
+            <key>default</key>
+            <true/>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
             <string>关于</string>
         </dict>
         <dict>
