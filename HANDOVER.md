@@ -268,7 +268,7 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 ### 8.1 控制中心模块（OperitCC）不显示 🔴
 - OperitCC.bundle 正确安装 + com.opa334.ccsupport 1.3.13-2 已装 + respring + **ldid 签名**（0.3.69 起），但控制中心"更多控件"没有 OperitCC（SiriPlus CC 模块正常）
 - 疑似 CCSupport 1.3.13 模块验证逻辑（NSPrincipalClass/Info.plist 键/方法签名）不符；CCSupport 闭源
-- **研究方向**：对照 SiriPlus CC bundle / M4cs EzCC-Modules 的 Info.plist 键 + 类实现；确认 `_CCModuleSizePROTOTYPE` 是否为 1.3.13 认可键（可能需 `_CCModuleSize`）；或 dump CCSupport 扫描逻辑（参考实现逆向方法论）；备选：tweak 直接注入 ControlCenter 模块
+- **研究方向**：对照 SiriPlus CC bundle / M4cs EzCC-Modules 的 Info.plist 键 + 类实现；确认 `_CCModuleSizePROTOTYPE` 是否为 1.3.13 认可键（可能需 `_CCModuleSize`）；或 分析 CCSupport 加载机制（参考已有实现）；备选：tweak 直接注入 ControlCenter 模块
 
 ### 8.2 设置-背景选图崩溃 🔴
 - `Invalid argument(s): XTypeGroup ... should either allow all files, or have a non-empty 'uniformTypeIdentifiers'`（file_selector_ios.dart:69）
@@ -291,7 +291,7 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 
 ## 9. 方法论（沉淀于技能 jailbreak-ios-dev / roothide-ios-dev）
 
-1. **参考实现逆向优先**：目标功能有同类插件 → 逆向它是最高效路径（SiriPlus/Axon/Senri 三连验证）。strings 扫 Swift dylib（strip 后 selector 仍在 __cstring 段）、otool -ov 看 ObjC 类
+1. **参考实现优先**：目标功能有同类插件 → 研究已有实现是最高效路径（SiriPlus/Axon/Senri 三连验证）。strings 查字符串（strip 后 selector 仍在 __cstring 段）、otool -ov 看 ObjC 类
 2. **hook 层选择**：连接层 > UI 层（AFConnection > AFUISiriSession）
 3. **证据 > 推理**：真机日志/SSH 取证是第一手事实，别先读源码猜
 4. **roothide 双视图**：/var/jb 污染不可信；跨视图通信用 TCP loopback
@@ -395,7 +395,7 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 ```
 
 ### 9.5 探路方法论（新功能怎么下手）
-1. **有同类插件 → 逆向它**：拉 dylib → `strings`（Swift strip 后 selector 仍在）+ `otool -ov`（ObjC 类）→ 提取 hook 目标 → 查头文件 → 真机 probe（加日志 hook 候选方法验证触发）
+1. **有同类插件 → 研究其实现**：拉 dylib → `strings`（strip 后 selector 仍在）+ `otool -ov`（ObjC 类）→ 提取 hook 目标 → 查头文件 → 真机 probe（加日志 hook 候选方法验证触发）
 2. **hook 层选连接层**：UI 层方法"存在但不触发"时，找连接层（如 Siri：AFUISiriSession → AFConnection）
 3. **probe 先行**：不写死功能，先加无副作用日志 hook 确认触发和参数结构，再实现
 
@@ -406,7 +406,7 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 ### 10.1 CCSupport 模块不显示（8.1）
 - 第一步（5 分钟）：对照 SiriPlus 的 CC bundle（设备上 `/var/jb/Library/CCSupport/*.bundle/Info.plist`）逐键 diff 我们的 Info.plist
 - 第二步：若键差异 → 改 hosts/ios/ccmodule/Info.plist + operit_cc.m 对齐
-- 第三步：若键相同 → CCSupport 可能拒绝非其签名模块；用 Frida/otool 逆向 CCSupport 的模块扫描函数（参考实现逆向方法论）
+- 第三步：若键相同 → CCSupport 可能拒绝非其签名模块；分析 CCSupport 的模块加载机制（对照已有实现）
 - 验证：`ldid -S` 重签 → 重打包 → 装机 → respring → 控制中心编辑看"更多控件"
 
 ### 10.2 背景选图崩溃（8.2）
@@ -471,9 +471,9 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 
 ### 12.2 私有 API 发现方法（效率排序，均经本项目验证）
 
-1. **参考实现逆向优先**（最快）：目标功能有同类插件 → 拉 dylib → `strings`（Swift strip 后 selector 字符串仍在 __cstring 段）+ `otool -ov`（ObjC 类/方法）→ 直接得到"已验证的 hook 目标"
-2. **class-dump / 社区头文件**：nst/iOS-Runtime-Headers（只到 iOS 14，方法名可能过时）、Theos SDK 自带 iPhoneOS*.sdk（有 .tbd 但头文件不全）
-3. **运行时 dump**（Frida / objc_getClassList + class_copyMethodList）：设备 iOS 16.7 的活清单，含 Swift 类暴露的 ObjC 部分
+1. **参考实现优先**（最快）：目标功能有同类插件 → 拉 dylib → `strings`（Swift strip 后 selector 字符串仍在 __cstring 段）+ `otool -ov`（ObjC 类/方法）→ 直接得到"已验证的 hook 目标"
+2. **社区公开头文件**：nst/iOS-Runtime-Headers（只到 iOS 14，方法名可能过时）、Theos SDK 自带 iPhoneOS*.sdk（有 .tbd 但头文件不全）
+3. **运行时类清单**（objc_getClassList + class_copyMethodList）：设备 iOS 16.7 的活清单，含 Swift 类暴露的 ObjC 部分
 4. **真机 probe**（最终裁决）：hook 候选方法 + 日志，验证"是否触发 + 参数实际结构"——**方法存在 ≠ 可靠 hook 点**（本项目最大教训）
 
 ### 12.3 私有 API 使用准则（防崩溃，全部血泪教训）
@@ -484,7 +484,7 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 4. **禁用手动 swizzle**：`method_setImplementation` + `imp_implementationWithBlock` + 延迟原调 → 野指针崩 SpringBoard（进安全模式）。用 Logos `%hook` 同步 `%orig`
 5. **probe 先行**：不写死功能，先加无副作用日志 hook 确认触发 + 参数结构，再实现
 6. **强引用 + 主线程**：异步 block 里捕获的对象要 strong；UI 操作回主线程
-7. **参数结构以真机 dump 为准**：社区头文件过时（iOS 16 的 BBBulletinUpdateTransaction 三层就是 probe 发现的）
+7. **参数结构以真机实测为准**：社区头文件过时（iOS 16 的 BBBulletinUpdateTransaction 三层就是 probe 发现的）
 
 ### 12.4 iOS 16.7 私有 API 差异（实测清单，对比社区头文件）
 
@@ -509,9 +509,9 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 ### 12.6 私有 API 知识来源汇总（速查）
 | 来源 | 用途 | 时效 |
 |---|---|---|
-| 设备上的同类插件 dylib | strings/otool 逆向 | 当前版本 |
-| nst/iOS-Runtime-Headers（GitHub）| class-dump 头文件 | iOS 14 左右，过时 |
+| 设备上的同类插件 dylib | strings/otool 分析 | 当前版本 |
+| nst/iOS-Runtime-Headers（GitHub）| 公开头文件 | iOS 14 左右，过时 |
 | Theos SDK iPhoneOS*.sdk | .tbd + 部分头 | 本机 16.5 |
-| theapplewiki | 固件/文件系统结构 | 持续更新（类方法仍需 dump）|
-| Frida（设备运行时）| 活类清单 | 设备当前系统 |
+| theapplewiki | 固件/文件系统结构 | 持续更新（类方法仍需提取）|
+| 设备运行时类枚举 | 活类清单 | 设备当前系统 |
 | 真机 probe（自己加日志）| 最终裁决 | 永远有效 |
