@@ -236,8 +236,8 @@ echo '1111' | sudo -S killall -9 SpringBoard   # respring
 - 控制中心模块（OperitCC）——**用户实测未显示**（见 9.1）
 - installed_apps 修复（responds 探测）
 
-### ❌ 探明不可行 / 放弃
-- Siri 气泡文本替换（SAUIAssistantUtteranceView.text 可改但跨进程不刷新）
+### ⏳ POC 暂时无法验证（欢迎大佬挑战）
+- Siri 气泡文本替换（SAUIAssistantUtteranceView.text 可改但跨进程不刷新）——POC 阶段未找到刷新方法，不代表无解
 - Siri TTS 朗读（AFUISiriSession.speechSynthesis getter iOS 16.7 不存在）
 - 手动 method_setImplementation + 延迟原调（野指针崩 SpringBoard 进安全模式）——**禁止**
 - weixin://dl/*（微信 iOS 不响应 path）
