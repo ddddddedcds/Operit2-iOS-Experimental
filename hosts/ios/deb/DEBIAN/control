@@ -20,5 +20,5 @@ Description: Operit2（iOS 越狱版）— 改编自 AAswordman/Operit2 的非�
 Maintainer: operit2-ios <local@example.com>
 Author: operit2-ios
 Section: Utilities
-Depends: com.witchan.ios-mcp, preferenceloader
+Depends: com.witchan.ios-mcp, preferenceloader, com.omnitas.ccsupport
 Tag: cydia::compatible::ios15
