@@ -49,7 +49,10 @@
 # 5. sudo dpkg -i + respring
 ```
 
-环境要求：Mac（Theos + Xcode iOS SDK + Rust iOS target）+ Dopamine rootless iOS 16.7 设备。
+**已经过测试的环境要求**（其他环境请自行尝试）：
+
+- Mac（Theos + Xcode iOS SDK + Rust iOS target）
+- Dopamine rootless iOS 16.7 设备（iPhone13,4 / A14）
 
 ---
 
