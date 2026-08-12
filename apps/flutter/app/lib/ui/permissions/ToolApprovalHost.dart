@@ -31,8 +31,11 @@ class _ToolApprovalHostState extends State<ToolApprovalHost> {
   @override
   void initState() {
     super.initState();
+    // 审批轮询从 160ms 放宽到 1s：160ms = 每秒 6 次 Flutter↔Rust 通道往返，且本组件
+    // 挂在全局 OperitTheme 常驻（2026-08-12 诊断：trace.log CHANNEL_CALL 高频源之一）。
+    // 工具审批是用户交互（点允许/拒绝），1s 轮询完全足够。
     _pollTimer = Timer.periodic(
-      const Duration(milliseconds: 160),
+      const Duration(seconds: 1),
       (_) => _pollRequest(),
     );
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
