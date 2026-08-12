@@ -598,3 +598,37 @@ cd hosts/ios/deb && OPERIT_PACK_SCHEME=rootless THEOS_MODE=release APP_SRC="<CI�
 - Theos 的 release 产物目录是 `.theos/obj/`（根），**不是 obj/release**——build_deb.sh 的 THEOS_MODE 已按此映射
 - 切换模式前先 `make clean`（增量缓存会把旧模式产物混进来——本项目 7/28 的老坑）
 - debug/release 只影响 tweak/CC；Flutter 始终 release（CI 固定），daemon 始终 release
+
+---
+
+## 15. 冷启动 60 秒性能专题（2026-08-12 设备实锤，接手者必读）
+
+### 15.1 现象
+- 冷启动（进程被杀后重开）**60 秒**界面才出来；热启动（切后台回前台）**秒开**
+- 微信同设备冷启动 5 秒（对照组）
+
+### 15.2 根因（fs_usage 实锤，非推断）
+- Runner 冷启动时 dyld 要处理 **726 个动态库**（Flutter 引擎 + 全量插件 framework：webview/video/audio/print/record 等十几个）
+- fs_usage 抓取：启动后一个线程持续 **78 秒**做 dyld 缓存操作（每秒 ~429 次文件操作：反复打开 `dyld_shared_cache_arm64e` + fsgetpath + getfsstat64）
+- **Dopamine rootless 的 dyld 对每个库做映射/验证 → 726 库的处理从秒级放大到 60 秒级**
+- 对照：微信库少（几十个）→ 5 秒
+
+### 15.3 已排除项（避免接手者重复踩坑，全部真机验证过）
+| 假设 | 验证结果 |
+|---|---|
+| Impeller shader 编译 | ❌ 禁用（Skia）反而更慢 62s；Impeller 缓存 data 能写（08-51 更新过）|
+| Metal 缓存失效 | ❌ 删缓存 data 没用 |
+| 网络等待 | ❌ 飞行模式仍 60s（只排除外网；localhost 无启动连接）|
+| daemon(8890) 等待 | ❌ daemon 在跑也 60s |
+| MCP 插件启动 | ❌ 无部署插件 |
+| Rust 初始化 | ❌ 数据仅 23MB；Dart 启动 30ms |
+| Dart 初始化 | ❌ DART_MAIN_START→STARTUP_DONE 30ms |
+| dyld 自身 <1s（早期误测）| ❌ 修正：FRONT→DART 实测 22-34s |
+
+### 15.4 修复方向（已验证可行：软移植）
+- **软移植已验证**（2026-08-12）：SwiftUI 壳 + Rust core C ABI 静态链接，`apps/ios-mini/OperitMini` 真机跑通（初始化 + 聊天链路）
+  - Rust core 已有完整 C ABI：`operit-flutter-bridge/src/BridgeExports.rs`（19 个 extern "C" 导出）+ `OperitFlutterBridge.h` + `native_call` 统一入口（MessagePack `[requestId, pathSegments, methodName, args]` 4 元组）
+  - 关键坑：crate-type 加 "staticlib"（否则 ld 选 dylib 崩）；OTHER_LDFLAGS 用 .a 绝对路径；iOS 上 `defaultHostSecretStoreOption` 返回 None（adboc keychain 读写不稳）；数据残留会致 preferences keyId mismatch（清 operit2 数据根即通）
+- **软移植收益**：消灭 Flutter 引擎 → 726→~200 库 → 冷启动 5-10 秒；包/插件/技能/MCP/记忆全在 Rust core 100% 保留
+- **软移植成本**：Flutter UI 层 228 文件/10.7 万行 Dart 需重写为 SwiftUI（3-6 周工程）
+- 替代（不根治）：裁 Flutter 插件（726→~550，可能省 30-40%，功能阉割）
