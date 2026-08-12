@@ -53,7 +53,10 @@ class _AgentInputMenuPopupState extends State<AgentInputMenuPopup> {
   }
 
   void _startPluginChangeObserver() {
-    _pluginChangeTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
+    // 插件变更轮询从 250ms 放宽到 10s：250ms 导致每秒 4 次 Flutter↔Rust 通道往返，
+    // 通道被刷爆拖慢启动/UI（2026-08-12 诊断：trace.log CHANNEL_CALL 每秒 2.3 条）。
+    // 插件变更不是实时需求，10s 轮询足够感知变化。
+    _pluginChangeTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       _checkPluginChangeVersion();
     });
   }
