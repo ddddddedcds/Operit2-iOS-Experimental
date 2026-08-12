@@ -6,15 +6,14 @@
     <string>ai.operit.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/operit_agent_daemon</string>
+        <string>/var/jb/usr/bin/operit_agent_daemon</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
 	<key>KeepAlive</key>
-	<dict>
-		<key>SuccessfulExit</key>
-		<false/>
-	</dict>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
     <key>UserName</key>
     <string>mobile</string>
     <key>WorkingDirectory</key>
