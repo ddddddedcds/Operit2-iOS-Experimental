@@ -193,21 +193,29 @@ TS 工具（buildin/*.ts）→ Rust ToolRegistration → Tools.Net.* 桥
 - 产物：UNSIGNED Runner.app（artifact `operit2-app-ios-arm64.zip`）
 - **新增 iOS .swift 文件必须注册进 project.pbxproj 4 处**（PBXBuildFile/PBXFileReference/group children/Sources phase），否则 CI 报 `Cannot find XXX in scope`（本机 swiftc typecheck 单文件通过不代表进工程！）
 
-### 5.2 本地打包（Mac）
+### 5.2 本地打包（Mac）——**必须用 build_deb.sh，不要单独跑 packdeb.py**
+
 ```bash
-cd hosts/ios/deb
-# 1. 替换 app（CI 新包）
-# 2. 确保 dylib 最新：cp ../tweak/.theos/obj/debug/operit-sb.dylib files/Library/MobileSubstrate/DynamicLibraries/
-# 3. 确保 OperitCC 已签名：ldid -S files/Library/CCSupport/OperitCC.bundle/OperitCC
-# 4. 升版本：sed -i '' 's/^Version: X/Y/' DEBIAN/control
-# 5. 打包：
-OPERIT_PACK_SCHEME=rootless bash build_deb.sh   # 或直接 python3 packdeb.py
+# 0. 前置①：daemon 必须先编译（build_deb.sh 找不到 release 产物直接报错退出）
+cd hosts/ios && cargo build --target aarch64-apple-ios --release
+# 1. 前置②：tweak 必须先编译（build_deb.sh 从 .theos 复制 dylib）
+cd hosts/ios/tweak && make clean && make   # 产出必须是 FAT（arm64+arm64e）——A12+ 设备是 arm64e，arm64-only 注入会崩
+# 2. 前置③：CC 模块签名（build_deb.sh 不处理 ccmodule）
+cd hosts/ios/ccmodule && make clean && make && ldid -S .theos/obj/debug/OperitCC.bundle/OperitCC
+cp .theos/obj/debug/OperitCC.bundle/OperitCC ../deb/files/Library/CCSupport/OperitCC.bundle/
+# 3. 升版本（build_deb.sh 从 control 的 Version 自动生成 deb/ipa 文件名）
+sed -i '' 's/^Version: .*/Version: 0.3.71/' deb/DEBIAN/control
+# 4. 打包（build_deb.sh 自动完成全部 staging：daemon 预签 + entitlements + 两个 dylib/plist +
+#    app 重签 + 3 个 app extension 嵌入签名 + IPA 生成 + ar 打包）
+cd hosts/ios/deb && OPERIT_PACK_SCHEME=rootless APP_SRC="/Users/mac/Downloads/<CI新包>.app" bash build_deb.sh
 ```
-- **rootless**：data 带 var/jb/ 前缀，Architecture `iphoneos-arm64`；**roothide**：裸布局，Architecture **必须 `iphoneos-arm64e`**（Sileo 识别唯一判据）
+
+- **⚠️ 为什么不能单独跑 `python3 packdeb.py`**：packdeb.py 只做最后的 ar 打包，**不做 staging**——daemon 复制+预签、entitlements 复制、operit-sb/operit-app 两个 dylib+plist 复制、app 重签、3 个 app extension（ScreenTimeMonitor/LiveActivityWidget/OperitShieldConfig）嵌入签名、IPA 生成，全在 build_deb.sh 里。单独跑会打出**缺 daemon/缺 app/缺 extension 的残废包**。只有 files/ 已被 build_deb.sh 完整 staging 过、且只改了 files/ 里的文件时，才可跳过 build_deb.sh 直接 packdeb.py
+- **rootless**：data 带 var/jb/ 前缀，Architecture `iphoneos-arm64`；**roothide**：裸布局，Architecture **必须 `iphoneos-arm64e`**（Sileo 识别唯一判据）；roothide 走 build_deb.sh 自动换 Runner.roothide.entitlements（platform-application 等 4 项）
 - **绝不用 `dpkg --root=/var/jb`**（会双前缀），用 `sudo dpkg -i` / Sileo
 - 依赖：com.witchan.ios-mcp, preferenceloader, com.opa334.ccsupport（rootless 还建议 AppSync Unified）
 - daemon 预签 + postinst 装机时 ldid 重签 + trustcache 注册（关键，否则 -9）
-- 本机**无法** `flutter build ios`（缺 Python xcframework），全量编译只能靠 CI
+- 本机**无法** `flutter build ios`（缺 Python xcframework），全量编译只能靠 CI：先手动 dispatch ios-flutter-build 选分支 → 下载 UNSIGNED Runner.app 到 Downloads → 打包时用 APP_SRC 指向它
 
 ### 5.3 装机（SSH）
 ```bash
@@ -363,17 +371,21 @@ cd hosts/ios && cargo build --target aarch64-apple-ios --release 2>&1 | tail -5
 
 ### 9.3 打包 + 装机（改完 → 验证闭环）
 ```bash
-# 1. 更新 deb 内容（新 dylib + 签名 CC 模块）
+# 0. 前置①：CI 出 UNSIGNED Runner.app（手动 dispatch ios-flutter-build 选分支 → 下载到 Downloads）
+# 0. 前置②：daemon 已编译（cargo build --target aarch64-apple-ios --release，见 9.2）
+# 0. 前置③：tweak 已编译（make，见 9.2）
+
+# 1. 签名 CC 模块 + 放入 deb（build_deb.sh 不处理 ccmodule）
 cd hosts/ios
-cp tweak/.theos/obj/debug/operit-sb.dylib deb/files/Library/MobileSubstrate/DynamicLibraries/
 ldid -S ccmodule/.theos/obj/debug/OperitCC.bundle/OperitCC
 cp ccmodule/.theos/obj/debug/OperitCC.bundle/OperitCC deb/files/Library/CCSupport/OperitCC.bundle/
 
 # 2. 升版本号（Sileo 同版本不重装）
 sed -i '' 's/^Version: .*/Version: 0.3.71/' deb/DEBIAN/control
 
-# 3. 打包 rootless deb（主测试机）
-cd deb && OPERIT_PACK_SCHEME=rootless python3 packdeb.py
+# 3. 打包 rootless deb —— ⚠️ 必须 build_deb.sh（自动 staging daemon/app/extension/签名），
+#    不要单独跑 packdeb.py（那只会 ar 打包，会打出缺 daemon/缺 app 的残废包）
+cd deb && OPERIT_PACK_SCHEME=rootless APP_SRC="/Users/mac/Downloads/<CI新包>.app" bash build_deb.sh
 
 # 4. 装机 + respring
 scp operit2-ios_0.3.71_iphoneos-arm64.deb mobile@192.168.1.xx:/tmp/
