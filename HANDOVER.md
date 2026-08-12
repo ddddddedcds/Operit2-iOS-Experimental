@@ -448,7 +448,7 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 - 确认 preferenceloader 是否整体工作：设置里有无其他第三方面板；无 → 查 preferenceloader 本身；有 → 查我们的 bundle
 
 ### 10.6 roothide 全量回归（8.7）
-- 打包 roothide deb：`OPERIT_PACK_SCHEME=roothide python3 packdeb.py`（Architecture 自动 iphoneos-arm64e）
+- 打包 roothide deb：`OPERIT_PACK_SCHEME=roothide bash build_deb.sh`（Architecture 自动 iphoneos-arm64e；不要单独跑 packdeb.py）
 - 装 roothide 设备 → 逐项回归：daemon 起（ps）、通知拦截、锁屏 sessions、Siri（说一句看卡片）、权限（contacts list）、设置面板、CC 模块
 - 任何一步挂 → 按 8.7 的 5 个风险点逐个排查
 
