@@ -558,3 +558,43 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 ### 13.4 第三方原作出处（control Description 已声明）
 - Operit2 原作：github.com/AAswordman/Operit2（改编，非官方分支）
 - ios-mcp：github.com/witchan/ios-mcp（本 fork 用适配版：github.com/ddddddedcds/ios-mcp）
+
+---
+
+## 14. Debug / Release 构建切换（2026-08-12 实测）
+
+### 现状速查
+| 组件 | 当前模式 | 说明 |
+|---|---|---|
+| Flutter app（CI）| **release** | `flutter build ios --release`（build_flutter_ios.py 固定）|
+| tweak dylib | debug（可切）| Theos `make` 默认 debug；`make FINALPACKAGE=1` 出 release |
+| CC 模块 | debug（可切）| 同上 |
+| daemon（Rust）| **release** | `cargo build --target aarch64-apple-ios --release` |
+
+### 为什么切 release
+- tweak dylib：release 307KB vs debug 470KB（**小 35%**，-O2 + strip 符号）
+- debug 带 JIT/断言开销 → 运行慢；release 更快更小
+
+### 切换方法（Theos 注意：没有 `make release`，用 FINALPACKAGE=1）
+```bash
+# tweak release（产物在 .theos/obj/，注意不是 obj/release！）
+cd hosts/ios/tweak && make clean && make FINALPACKAGE=1
+# CC 模块 release
+cd hosts/ios/ccmodule && make clean && make FINALPACKAGE=1 && ldid -S .theos/obj/OperitCC.bundle/OperitCC
+cp .theos/obj/OperitCC.bundle/OperitCC ../deb/files/Library/CCSupport/OperitCC.bundle/
+
+# 切回 debug（产物在 .theos/obj/debug/）
+make clean && make
+```
+
+### 打包时选择
+```bash
+# 用 release dylib 打包（THEOS_MODE=release → 读 .theos/obj/）
+cd hosts/ios/deb && OPERIT_PACK_SCHEME=rootless THEOS_MODE=release APP_SRC="<CI包>" bash build_deb.sh
+# 默认（THEOS_MODE 不设）→ 用 debug dylib（.theos/obj/debug/）
+```
+
+### ⚠️ 坑
+- Theos 的 release 产物目录是 `.theos/obj/`（根），**不是 obj/release**——build_deb.sh 的 THEOS_MODE 已按此映射
+- 切换模式前先 `make clean`（增量缓存会把旧模式产物混进来——本项目 7/28 的老坑）
+- debug/release 只影响 tweak/CC；Flutter 始终 release（CI 固定），daemon 始终 release

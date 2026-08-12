@@ -36,10 +36,15 @@ DAEMON="$IOS/target/aarch64-apple-ios/release/operit_agent_daemon"
 # --- sanity: tweak dylibs must exist ---
 # Copy the FAT (arm64+arm64e) dylib, NOT the per-arch slice — A12+ devices are arm64e,
 # an arm64-only dylib injected into an arm64e process (e.g. SpringBoard) fails / crashes.
-SB="$TWEAK/.theos/obj/debug/operit-sb.dylib"
-APP="$TWEAK/.theos/obj/debug/operit-app.dylib"
-[ -f "$SB" ] || { echo "ERROR: operit-sb.dylib not built (fat)"; exit 1; }
-[ -f "$APP" ] || { echo "ERROR: operit-app.dylib not built (fat)"; exit 1; }
+# Build mode: THEOS_MODE=release → .theos/obj/（`make FINALPACKAGE=1` 产物，-O2+strip，体积小 35%）
+#             默认 debug → .theos/obj/debug/（`make` 默认产物，带符号，方便调试）
+THEOS_MODE="${THEOS_MODE:-debug}"
+[ "$THEOS_MODE" = "release" ] && OBJ_DIR=".theos/obj" || OBJ_DIR=".theos/obj/debug"
+echo "   [build_deb] tweak dylib mode: $THEOS_MODE (${OBJ_DIR}/)"
+SB="$TWEAK/$OBJ_DIR/operit-sb.dylib"
+APP="$TWEAK/$OBJ_DIR/operit-app.dylib"
+[ -f "$SB" ] || { echo "ERROR: operit-sb.dylib not built (fat) at ${OBJ_DIR}/"; exit 1; }
+[ -f "$APP" ] || { echo "ERROR: operit-app.dylib not built (fat) at ${OBJ_DIR}/"; exit 1; }
 
 # --- stage files into rootless layout (relative to /var/jb) ---
 # Standalone agent daemon (restored 0.3.65): stage the binary, pre-sign it on
