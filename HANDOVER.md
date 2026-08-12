@@ -455,6 +455,10 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 ---
 
 ## 11. 交接状态（最终）
+
+- **接续方已明确**：operit2 官方（有意愿、有能力接续越狱版；当前因非越狱版排期忙不过来，越狱版**暂存待取**——官方有余力时，按本手册可直接续上）
+- **本 POC 定位**：探明"越狱 iOS + AI 深度集成"可行性 + 交付完整交接手册；不是可产品化代码，是"暂存待取"的知识+代码封存
+- **官方可吸收**：功能清单（第 6 节）+ 合规子集（TCCServer 的公开 API 部分可直接复用）+ 方法论（第 9/12 节）
 - [x] 代码：feat/ios-jailbreak-preview4（11 commit）——Siri v14 / 权限全家桶 / 设置面板 / CC 模块 / 通知拦截记录 / 锁屏 / 应用锁 / screen_time 简化 / CI 修复 / 签名修复 / 文档
 - [x] 文档：本 HANDOVER.md（10 节工程手册 + 本 AI 指南）
 - [x] 方法论：jailbreak-ios-dev / roothide-ios-dev 技能
