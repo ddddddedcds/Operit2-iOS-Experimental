@@ -629,6 +629,7 @@ Future<void> _pickBackgroundImage(
 Future<void> _pickBackgroundVideo(OperitThemeController themeController) async {
   const videoGroup = XTypeGroup(
     label: 'video',
+    uniformTypeIdentifiers: <String>['public.movie'],
     extensions: <String>['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi'],
   );
   final file = await openFile(acceptedTypeGroups: <XTypeGroup>[videoGroup]);
@@ -671,6 +672,7 @@ Future<ThemeAssetImport?> _pickCroppedThemeImage(
 }) async {
   const imageGroup = XTypeGroup(
     label: 'image',
+    uniformTypeIdentifiers: <String>['public.image'],
     extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
   );
   final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
@@ -962,6 +964,7 @@ Rect _themeImageCropRect(
 Future<void> _pickCustomFont(OperitThemeController themeController) async {
   const fontGroup = XTypeGroup(
     label: 'font',
+    uniformTypeIdentifiers: <String>['public.font'],
     extensions: <String>['ttf', 'otf', 'ttc'],
   );
   final file = await openFile(acceptedTypeGroups: <XTypeGroup>[fontGroup]);
@@ -1006,6 +1009,7 @@ Future<void> _showBubbleFontDialog(
           Future<void> pickFontFile() async {
             const fontGroup = XTypeGroup(
               label: 'font',
+              uniformTypeIdentifiers: <String>['public.font'],
               extensions: <String>['ttf', 'otf', 'ttc'],
             );
             final file = await openFile(
@@ -1131,6 +1135,7 @@ Future<void> _pickBubbleImage(
 }) async {
   const imageGroup = XTypeGroup(
     label: 'image',
+    uniformTypeIdentifiers: <String>['public.image'],
     extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'],
   );
   final file = await openFile(acceptedTypeGroups: <XTypeGroup>[imageGroup]);
