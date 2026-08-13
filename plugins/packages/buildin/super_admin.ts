@@ -101,6 +101,11 @@ type PersistedTerminalOutput = {
                     "required": false
                 }
             ]
+        },
+        {
+            "name": "create_terminal_session",
+            "description": { "zh": "在宿主默认终端中创建（或复用）一个交互式会话并返回 sessionId。这是 terminal_wait / get_screen / input 的前提——它们都需要 sessionId，而此前 AI 没有创建会话的入口。同一对话内会话上下文连贯，无需重复创建。", "en": "Creates (or reuses) an interactive session in the host's default terminal and returns its sessionId. This is the prerequisite for terminal_wait / get_screen / input, which all require a sessionId but previously had no creation entry point for the AI. Session context persists within the same conversation, so repeated creation is unnecessary." },
+            "parameters": []
         }
     ],
     "states": [
@@ -482,13 +487,38 @@ const superAdmin = (function () {
             throw error;
         }
     }
+    /**
+     * Creates (or reuses) the host default terminal session and returns its ID.
+     * Unblocks terminal_wait / get_screen / input, which all require a sessionId.
+     */
+    async function create_terminal_session(_params: SuperAdminParams) {
+        try {
+            const session = await Tools.System.terminal.create();
+            const terminalEnvironment = await Tools.System.terminal.info();
+            return {
+                sessionId: session.sessionId,
+                sessionName: session.sessionName,
+                platform: session.platform,
+                terminal: session.terminal,
+                terminalType: session.terminalType,
+                terminalEnvironment,
+                hint: "会话已就绪。后续 terminal_wait / get_screen / input 都使用该 sessionId；同一对话会话上下文连贯，无需重复创建。"
+            };
+        }
+        catch (error) {
+            console.error(`[create_terminal_session] 错误: ${error.message}`);
+            console.error(error.stack);
+            throw error;
+        }
+    }
     return {
         powershell,
         bash,
         shell,
         terminal_wait,
         get_screen,
-        input
+        input,
+        create_terminal_session
     };
 })();
 // 逐个导出
@@ -498,3 +528,4 @@ exports.shell = superAdmin.shell;
 exports.terminal_wait = superAdmin.terminal_wait;
 exports.get_screen = superAdmin.get_screen;
 exports.input = superAdmin.input;
+exports.create_terminal_session = superAdmin.create_terminal_session;
