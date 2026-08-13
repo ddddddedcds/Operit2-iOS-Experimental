@@ -190,7 +190,8 @@ TS 工具（buildin/*.ts）→ Rust ToolRegistration → Tools.Net.* 桥
 ### 5.1 CI（GitHub Actions）
 - workflow：`.github/workflows/ios-flutter-build.yml`
 - **无 on: push**，只能手动 dispatch，**分支必须手动选 `feat/ios-jailbreak-preview4`**（默认编 main）
-- 产物：UNSIGNED Runner.app（artifact `operit2-app-ios-arm64.zip`）
+- 产物：UNSIGNED Runner.app（artifact 名 `operit2-ios-<sha>`，其中 zip 为 `tools/release/dist/operit2-app-ios-arm64.zip`，保留 14 天）
+- 2026-08-13 已修复：workflow 里重复的 "Build and package unsigned iOS app" + "Save TypeScript compiler" 步骤（每次 dispatch 重复构建一次，浪费约一倍时间）
 - **新增 iOS .swift 文件必须注册进 project.pbxproj 4 处**（PBXBuildFile/PBXFileReference/group children/Sources phase），否则 CI 报 `Cannot find XXX in scope`（本机 swiftc typecheck 单文件通过不代表进工程！）
 
 ### 5.2 本地打包（Mac）——**必须用 build_deb.sh，不要单独跑 packdeb.py**
@@ -278,18 +279,20 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 - 疑似 CCSupport 1.3.13 模块验证逻辑（NSPrincipalClass/Info.plist 键/方法签名）不符；CCSupport 闭源
 - **研究方向**：对照 SiriPlus CC bundle / M4cs EzCC-Modules 的 Info.plist 键 + 类实现；确认 `_CCModuleSizePROTOTYPE` 是否为 1.3.13 认可键（可能需 `_CCModuleSize`）；或 分析 CCSupport 加载机制（参考已有实现）；备选：tweak 直接注入 ControlCenter 模块
 
-### 8.2 设置-背景选图崩溃 🔴
+### 8.2 设置-背景选图崩溃 ✅ 已修复（1ee25d57）
 - `Invalid argument(s): XTypeGroup ... should either allow all files, or have a non-empty 'uniformTypeIdentifiers'`（file_selector_ios.dart:69）
-- 位置：AppearanceSettingsPanel._pickBackgroundImage（apps/flutter/app/lib/features/settings/appearance/AppearanceSettingsPanel.dart ~613）
-- **修法**：XTypeGroup 加 `uniformTypeIdentifiers: ['public.image']` / `['public.movie']`，或 allowAll=true；iOS 备选 ios_path_picker.dart 的 promptPathInput() 兜底
+- 真实位置：`apps/flutter/app/lib/ui/features/settings/appearance/AppearanceSettingsPanel.dart`（原文档漏了 `ui/` 段）；同类 XTypeGroup 共 5 处（背景视频/背景图+头像/气泡图/自定义字体×2），已全部补 UTI：`public.movie` / `public.image` / `public.font`
+- 注意：`SnapshotImportUploader.dart` 里也有无 UTI 的 XTypeGroup，但只在桌面/Web 走（iOS 走原生 method channel），不需要修
 
-### 8.3 super_admin 终端工具缺 sessionId 入口 🔴
-- input/get_screen/terminal_wait 都要 sessionId，但 AI 无"列出会话"入口
-- **修法**：super_admin 增加 list_terminal_sessions / create_terminal_session（core/crates/operit-tools/src/tools/defaultTool/standard/super_admin.rs）
+### 8.3 super_admin 终端工具缺 sessionId 入口 ✅ 已修复（7d88a488）
+- 修法落地：super_admin.ts 增加基座工具 `create_terminal_session`（无参数、全平台）——调 `System.terminal.create()` 复用宿主主终端会话并返回 sessionId；同一对话上下文连贯
+- 结构勘误：原文档写的 `core/crates/operit-tools/src/tools/defaultTool/standard/super_admin.rs` 不存在。真实结构：TS 插件 `plugins/packages/buildin/super_admin.ts` + Rust 侧 `StandardTerminalTools.rs`（`createOrGetSession`/`getTerminalInfo` 原本就有，缺口只在 TS 工具元数据）
+- 注意：`plugins/packages/buildin/*.ts` 的编译产物 `core/crates/operit-runtime/assets/plugins/buildin/*.js` 是 gitignore 的构建产物，由 Flutter 构建 hook（`plugins/tools/sync_plugin_packages.py`）自动同步，勿手改/勿提交
 
-### 8.4 app 手动拨蜜终端 PATH 不全 🔴
+### 8.4 app 手动拨蜜终端 PATH 不全 ✅ 已修复（fff9e88b）
 - `uname: not found`（/var/jb/usr/bin/sh: 8）
-- **修法**：启动前 export 完整 PATH（含 /usr/bin、/var/jb/usr/bin 等）；位置 apps/flutter/app/lib/ui/features/manual_terminal/
+- 根因：iOS 终端 host 在 `hosts/ios/src/terminal.rs` 的 `probeSystemShell` 里 `environment: Vec::new()`，/bin/sh 完全依赖父进程继承的 PATH。已改为显式注入完整 PATH（系统目录 + /var/jb 全系）
+- 结构勘误：原文档写的 `apps/flutter/app/lib/ui/features/manual_terminal/` 不存在且方向有误——Flutter 侧只是桥（`lib/ui/features/chat/components/workspace/terminal/WorkspacePtyProcess.dart`），真正的 shell spawn 在 Rust：`hosts/ios/src/terminal.rs` → `hosts/common/operit-host-native-terminal/src/lib.rs`（`posixPtyCommand`）
 
 ### 8.5 screen_time picker 取消语义误判（已删选应用步骤，见 6）
 ### 8.6 设置面板未显示 🟡
@@ -360,10 +363,12 @@ cd hosts/ios/ccmodule && make clean && make && ldid -S .theos/obj/debug/OperitCC
 cd apps/flutter/app/ios/Runner && \
   xcrun swiftc -typecheck -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios16.0 <改动的文件>.swift AppLockUI.swift
 
-# TS 工具 typecheck（改 buildin/*.ts 后）
+# TS 工具 typecheck（改 buildin/*.ts 后）——用仓库自带 tsconfig 全量检查
 cd plugins/packages/buildin && \
   NODE_PATH=/Users/mac/.workbuddy/binaries/node/workspace/node_modules \
-  /Users/mac/.workbuddy/binaries/node/workspace/node_modules/.bin/tsc --noEmit --skipLibCheck --lib es2015 <文件>.ts
+  /Users/mac/.workbuddy/binaries/node/workspace/node_modules/.bin/tsc -p tsconfig.json --noEmit
+# （原单文件命令 tsc --noEmit --skipLibCheck --lib es2015 <文件>.ts 会因缺
+#  exports/console 声明误报，且缺 --module commonjs；用 tsconfig 最准）
 
 # Rust daemon 编译（改 hosts/ios/src 后）
 cd hosts/ios && cargo build --target aarch64-apple-ios --release 2>&1 | tail -5
@@ -380,16 +385,16 @@ cd hosts/ios
 ldid -S ccmodule/.theos/obj/debug/OperitCC.bundle/OperitCC
 cp ccmodule/.theos/obj/debug/OperitCC.bundle/OperitCC deb/files/Library/CCSupport/OperitCC.bundle/
 
-# 2. 升版本号（Sileo 同版本不重装）
-sed -i '' 's/^Version: .*/Version: 0.3.71/' deb/DEBIAN/control
+# 2. 升版本号（Sileo 同版本不重装；control 当前已 0.3.72，示例按下次升 0.3.73）
+sed -i '' 's/^Version: .*/Version: 0.3.73/' deb/DEBIAN/control
 
 # 3. 打包 rootless deb —— ⚠️ 必须 build_deb.sh（自动 staging daemon/app/extension/签名），
 #    不要单独跑 packdeb.py（那只会 ar 打包，会打出缺 daemon/缺 app 的残废包）
 cd deb && OPERIT_PACK_SCHEME=rootless APP_SRC="/Users/mac/Downloads/<CI新包>.app" bash build_deb.sh
 
 # 4. 装机 + respring
-scp operit2-ios_0.3.71_iphoneos-arm64.deb mobile@192.168.1.xx:/tmp/
-ssh mobile@192.168.1.xx 'echo <PASSWORD> | sudo -S dpkg -i /tmp/operit2-ios_0.3.71_iphoneos-arm64.deb'
+scp operit2-ios_0.3.73_iphoneos-arm64.deb mobile@192.168.1.xx:/tmp/
+ssh mobile@192.168.1.xx 'echo <PASSWORD> | sudo -S dpkg -i /tmp/operit2-ios_0.3.73_iphoneos-arm64.deb'
 ssh mobile@192.168.1.xx 'echo <PASSWORD> | sudo -S killall -9 SpringBoard'
 ```
 
@@ -401,9 +406,10 @@ ssh mobile@192.168.1.xx 'tail -50 /var/jb/var/mobile/.operit/logs/tweak.log'
 ssh mobile@192.168.1.xx 'cat /var/mobile/.operit_panic.log 2>/dev/null | tail -20'
 # daemon 状态
 ssh mobile@192.168.1.xx 'ps aux | grep operit_agent; ls -la /var/jb/var/mobile/.operit/agent.log'
-# 设备操作（深链/前台/拉起 app，首选通道——不崩 SpringBoard）
-curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Protocol-Version: 2025-11-25' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"open_url","arguments":{"url":"weixin://"}}}'
+# 设备操作（深链/前台/拉起 app，首选通道——不崩 SpringBoard）。
+# ⚠️ ios-mcp 监听在设备的 127.0.0.1:8090，必须包在 ssh 里执行（在 Mac 上裸跑 curl 打不到设备）
+ssh mobile@192.168.1.xx 'curl -s http://127.0.0.1:8090/mcp -H "Content-Type: application/json" -H "MCP-Protocol-Version: 2025-11-25" \
+  -d '"'"'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"open_url","arguments":{"url":"weixin://"}}}'"'"''
 ```
 
 ### 9.5 探路方法论（新功能怎么下手）
@@ -421,27 +427,20 @@ curl -s http://127.0.0.1:8090/mcp -H 'Content-Type: application/json' -H 'MCP-Pr
 - 第三步：若键相同 → CCSupport 可能拒绝非其签名模块；分析 CCSupport 的模块加载机制（对照已有实现）
 - 验证：`ldid -S` 重签 → 重打包 → 装机 → respring → 控制中心编辑看"更多控件"
 
-### 10.2 背景选图崩溃（8.2）
-- 文件：apps/flutter/app/lib/features/settings/appearance/AppearanceSettingsPanel.dart（约 613 行 `_pickBackgroundImage`）
-- 改法：openFile 的 `XTypeGroup(label: ..., extensions: ...)` 改为带 uti：
-  ```dart
-  XTypeGroup(label: 'image', uniformTypeIdentifiers: ['public.image'], extensions: ['jpg','jpeg','png','heic'])
-  ```
-  （视频同理用 ['public.movie']）
-- 验证：编译（CI）→ 装机 → 设置→外观→背景→选图不崩
+### 10.2 背景选图崩溃（8.2）✅ 已修复（1ee25d57）
+- 文件（真实路径，含 ui/ 段）：apps/flutter/app/lib/ui/features/settings/appearance/AppearanceSettingsPanel.dart
+- 已改：5 处 XTypeGroup 全部补 uniformTypeIdentifiers（背景视频 public.movie、背景图/头像/气泡图 public.image、字体×2 public.font），extensions 保留
+- 待验证：编译（CI）→ 装机 → 设置→外观→背景/头像/字体→选图不崩
 
-### 10.3 super_admin 终端缺 sessionId（8.3）
-- 文件：core/crates/operit-tools/src/tools/defaultTool/standard/super_admin.rs
-- 改法：terminal 工具组加 `list_terminal_sessions`（读 daemon 会话列表，daemon 在 hosts/ios/src/bin/operit_agent_daemon.rs 维护 session map）或 `create_terminal_session`（自动建会话返回 id）
-- 验证：本地 cargo 编译 + 真机 AI 调 terminal 不再要用户手填 sessionId
+### 10.3 super_admin 终端缺 sessionId（8.3）✅ 已修复（7d88a488）
+- 文件勘误：原文档写的 `super_admin.rs` 不存在；真实位置 `plugins/packages/buildin/super_admin.ts`
+- 已改：增加基座工具 `create_terminal_session`（无参数、全平台），调 `System.terminal.create()` 返回 sessionId + 终端信息；Rust 侧 `StandardTerminalTools.createOrGetSession`/`getTerminalInfo` 原本就有
+- 待验证：真机 AI 调 create_terminal_session → 拿 sessionId 再调 terminal_wait/get_screen/input 全链路
 
-### 10.4 手动拨蜜终端 PATH 不全（8.4）
-- 文件：apps/flutter/app/lib/ui/features/manual_terminal/（终端实现）
-- 改法：spawn shell 前注入环境：
-  ```dart
-  environment: {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/usr/local/bin'}
-  ```
-- 验证：装机后终端输入 `uname` 不报 not found
+### 10.4 手动拨蜜终端 PATH 不全（8.4）✅ 已修复（fff9e88b）
+- 文件勘误：原文档写的 `apps/flutter/app/lib/ui/features/manual_terminal/` 不存在且方向有误；真实 spawn 点在 Rust：`hosts/ios/src/terminal.rs`（`probeSystemShell`）
+- 已改：`environment` 从 `Vec::new()` 改为显式 PATH（/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin + /var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/usr/local/bin）+ SHELL=/bin/sh；该 host 同时服务 PTY/隐藏命令/createOrGetSession 三链路，一处修复全生效
+- 待验证：装机后终端输入 `uname` 不报 not found
 
 ### 10.5 设置面板未显示（8.6）
 - 与 10.1 同法：先对照设备上正常工作的第三方面板（如 SiriPlus 的 Prefs bundle）的 Info.plist 键集合 diff
