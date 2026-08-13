@@ -58,6 +58,8 @@ class WorkspaceBrowserViewStore extends ChangeNotifier {
       <String, StreamSubscription<BrowserSessionEvent>>{};
   final Set<String> _closedSurfaceInteractionDropLogged = <String>{};
   final ValueNotifier<int> sessionCount = ValueNotifier<int>(0);
+  /// 浏览器后端不可用（如 macOS 上 host interaction 超时）时置 true，UI 可降级提示。
+  final ValueNotifier<bool> browserUnavailable = ValueNotifier<bool>(false);
   Future<void>? _loadFuture;
   WorkspaceBrowserViewDelegate? _delegate;
   int _selectedIndex = 0;
@@ -387,8 +389,9 @@ class WorkspaceBrowserViewStore extends ChangeNotifier {
         await _attachSession(session, select: session.active);
       }
     } catch (error, stackTrace) {
+      browserUnavailable.value = true;
       ClientLogger.w(
-        'Failed to list browser sessions: $error',
+        'Failed to list browser sessions: $error (browser disabled)',
         tag: _logTag,
         error: error,
         stackTrace: stackTrace,

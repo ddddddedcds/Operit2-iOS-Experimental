@@ -179,6 +179,17 @@ void main(List<String> arguments) async {
             stackTrace: stackTrace,
           );
         }
+        final errorText = error.toString();
+        // 可恢复错误不致命化：host interaction 通道的超时/丢失（COMMAND_ERROR、
+        // host interaction、request not found）在 macOS 上会因某个模块未实现而
+        // 反复触发；单个功能超时不应杀死整个 app。只记录日志，UI 继续运行。
+        final isRecoverableCommandError = errorText.contains('COMMAND_ERROR') ||
+            errorText.contains('host interaction') ||
+            errorText.contains('request not found');
+        if (isRecoverableCommandError) {
+          _writeLaunchLog('RECOVERABLE_ZONE_ERROR_SKIPPED: $errorText');
+          return;
+        }
         UnhandledErrorReporter.report(
           source: 'Zone',
           error: error,
@@ -251,6 +262,16 @@ void _installClientLogHooks() {
       error: details.exception,
       stackTrace: details.stack,
     );
+    // 可恢复错误不 presentError：release 模式 presentError 会弹 fatal 对话框
+    // 并终止 app（与 zone handler 的可恢复错误策略保持一致）。
+    final errorText = details.exceptionAsString();
+    final isRecoverableCommandError = errorText.contains('COMMAND_ERROR') ||
+        errorText.contains('host interaction') ||
+        errorText.contains('request not found');
+    if (isRecoverableCommandError) {
+      _writeLaunchLog('RECOVERABLE_FLUTTER_ERROR_SKIPPED: $errorText');
+      return;
+    }
     FlutterError.presentError(details);
   };
 

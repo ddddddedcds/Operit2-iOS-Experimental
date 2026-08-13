@@ -93,15 +93,13 @@ class RuntimeHostInteractionSubscriber {
         .listen(
           (event) => unawaited(_handleEvent(event)),
           onError: (Object error, StackTrace stackTrace) {
-            FlutterError.reportError(
-              FlutterErrorDetails(
-                exception: error,
-                stack: stackTrace,
-                library: 'runtime host interaction subscriber',
-                context: ErrorDescription(
-                  'listening owner host interaction stream',
-                ),
-              ),
+            // 不致命化：host interaction 流错误（如 macOS 上响应超时导致
+            // "request not found"）只记录日志，避免升级为全局 fatal 页面。
+            ClientLogger.w(
+              'Owner host interaction stream error: $error',
+              tag: 'RuntimeHostInteractionSubscriber',
+              error: error,
+              stackTrace: stackTrace,
             );
           },
         );
