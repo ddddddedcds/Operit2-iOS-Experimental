@@ -13,6 +13,24 @@ const PLATFORM: &str = "ios";
 const SYSTEM_SHELL_TERMINAL: &str = "shell";
 const NATIVE_TERMINAL: &str = "native";
 
+/// Full PATH injected into every spawned shell. Covers both the stock system
+/// dirs and the rootless (/var/jb/*) jailbreak dirs, so ordinary commands like
+/// `uname` resolve regardless of whether the process sees the jbroot view or
+/// the real root (HANDOVER 8.4: inherited app PATH was missing /usr/bin etc.
+/// and `uname` failed with "not found").
+const IOS_SHELL_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:\
+/sbin:/bin:/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/usr/local/bin";
+
+/// Minimal deterministic environment for iOS shells. PATH is mandatory
+/// (do not rely on the parent's inherited PATH), SHELL matches the /bin/sh
+/// program the host probes.
+fn iosShellEnvironment() -> Vec<(String, String)> {
+    vec![
+        ("PATH".to_string(), IOS_SHELL_PATH.to_string()),
+        ("SHELL".to_string(), "/bin/sh".to_string()),
+    ]
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IosTerminalBackend {
     SystemShell,
@@ -60,7 +78,7 @@ impl IosTerminalHost {
                 description: format!("Privileged system {program} terminal"),
                 processWorkingDirectory: "session".to_string(),
                 defaultSessionWorkingDirectory: "process-current".to_string(),
-                environment: Vec::new(),
+                environment: iosShellEnvironment(),
                 sessionWorkingDirectoryEnvironment: "none".to_string(),
             });
             if let Ok(shell) = shell {
