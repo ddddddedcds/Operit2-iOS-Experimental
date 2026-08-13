@@ -134,4 +134,25 @@ export interface ToolResultMap {
   update_memory_link: MemoryLinkQueryResultData;
   delete_memory_link: string;
   update_user_preferences: string;
+  device_agent_start: string;
+  device_agent_stop: string;
+  device_agent_status: string;
+  screen_time_authorize: string;
+  screen_time_pick: string;
+  screen_time_lock: string;
+  screen_time_unlock: string;
+  screen_time_monitor_start: string;
+  screen_time_monitor_stop: string;
+  screen_time_usage: string;
+  shortcut_run: string;
+  notify: string;
+  live_activity_start: string;
+  live_activity_update: string;
+  live_activity_end: string;
+  notifications_list: string;
+  notifications_block: string;
+  notifications_unblock: string;
+  notifications_blocked: string;
+  app_usage_report: string;
+  open_url: string;
 }

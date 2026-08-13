@@ -108,17 +108,51 @@ const BROWSER_AUTOMATION_BUILTIN_TOOLS: &[BuiltinToolName] = &[
 pub fn registerAllTools(handler: &mut AIToolHandler, context: &HostManager) {
     registerPublicTools(handler, context);
     #[cfg(target_os = "ios")]
-    registerDeviceAgentTools(handler);
-    #[cfg(target_os = "ios")]
-    registerScreenTimeTools(handler);
-    #[cfg(target_os = "ios")]
-    registerShortcutTools(handler);
-    #[cfg(target_os = "ios")]
-    registerNotifyTools(handler);
-    #[cfg(target_os = "ios")]
-    registerOpenUrlTools(handler);
+    {
+        registerDeviceAgentTools(handler);
+        registerScreenTimeTools(handler);
+        registerShortcutTools(handler);
+        registerNotifyTools(handler);
+        registerOpenUrlTools(handler);
+    }
+    // 非 iOS 平台（macOS/Windows/Linux/Android）：这些工具不注册，必须标记
+    // unavailable，否则 registerDefaultTools 的 "registered xor unavailable"
+    // 不变式断言会 panic（macOS 冷启动实测踩到：FATAL_CORE_PANIC ... device_agent_start）。
+    #[cfg(not(target_os = "ios"))]
+    handler.markBuiltinToolsUnavailable(
+        &IOS_ONLY_BUILTIN_TOOLS,
+        "iOS-only tool: unavailable on this platform",
+    );
     registerInternalTools(handler, context);
 }
+
+/// Built-in tools registered only on iOS (device agent, screen time, shortcuts,
+/// notifications, open URL). Every other platform must mark them unavailable so
+/// the "registered xor unavailable" invariant in registerDefaultTools holds.
+#[cfg(not(target_os = "ios"))]
+const IOS_ONLY_BUILTIN_TOOLS: &[BuiltinToolName] = &[
+    BuiltinToolName::AppUsageReport,
+    BuiltinToolName::DeviceAgentStart,
+    BuiltinToolName::DeviceAgentStatus,
+    BuiltinToolName::DeviceAgentStop,
+    BuiltinToolName::LiveActivityEnd,
+    BuiltinToolName::LiveActivityStart,
+    BuiltinToolName::LiveActivityUpdate,
+    BuiltinToolName::NotificationsBlock,
+    BuiltinToolName::NotificationsBlocked,
+    BuiltinToolName::NotificationsList,
+    BuiltinToolName::NotificationsUnblock,
+    BuiltinToolName::Notify,
+    BuiltinToolName::OpenUrl,
+    BuiltinToolName::ScreenTimeAuthorize,
+    BuiltinToolName::ScreenTimeLock,
+    BuiltinToolName::ScreenTimeMonitorStart,
+    BuiltinToolName::ScreenTimeMonitorStop,
+    BuiltinToolName::ScreenTimePick,
+    BuiltinToolName::ScreenTimeUnlock,
+    BuiltinToolName::ScreenTimeUsage,
+    BuiltinToolName::ShortcutRun,
+];
 
 /// Sends one line-command to the on-device `operit-agent` daemon over loopback
 /// TCP (127.0.0.1:8890) and returns the daemon's textual response. iOS only —

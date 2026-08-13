@@ -2,9 +2,6 @@
 
 import type { HttpResponseData, VisitWebResultData } from "./results";
 
-/**
- * Performs HTTP requests and controls the browser automation tools available at runtime.
- */
 export namespace Net {
   /**
    * Accepts either a textual payload or a JSON value for a simple HTTP POST request.
@@ -716,6 +713,120 @@ export namespace Net {
   export type CookieManagerSetCookies = string | Record<string, string>;
 
   /**
+   * Performs HTTP requests and controls the browser automation tools available at runtime.
+   * Options for `Net.deviceAgentStart` — launches the on-device automation agent
+   * (AutoGLM subagent) with a natural-language goal the agent loop drives to completion.
+   */
+  export interface HostDeviceAgentStartOptions {
+    /**
+     * Natural-language goal the on-device automation agent should accomplish.
+     */
+    goal: string;
+  }
+
+  /**
+   * Options for `Net.screenTimeLock` — shields one app by Bundle ID via Apple's
+   * Screen Time (FamilyControls) API (iOS 16+).
+   */
+  export interface HostScreenTimeLockOptions {
+    /**
+     * Bundle ID of the app to lock, e.g. "com.tencent.xin".
+     */
+    bundle_id: string;
+  }
+
+  /**
+   * Options for `Net.screenTimeMonitorStart` — registers per-app overuse
+   * monitoring (DeviceActivityMonitor extension) with a daily cumulative threshold.
+   */
+  export interface HostScreenTimeMonitorStartOptions {
+    /**
+     * Comma-separated bundle IDs to monitor, e.g. "com.tencent.xin,com.ss.iphone.ugc.Aweme".
+     */
+    bundle_ids: string;
+    /**
+     * Daily cumulative usage threshold in minutes; the monitor fires when exceeded.
+     */
+    minutes: number;
+  }
+
+  /**
+   * Options for `Net.runShortcut` — runs a user's iOS Shortcuts automation by name.
+   */
+  export interface HostShortcutRunOptions {
+    /**
+     * Name of the shortcut to run, e.g. "打开勿扰模式".
+     */
+    name: string;
+  }
+
+  /**
+   * Options for `Net.openUrl` — opens a URL/scheme through Apple's UIApplication
+   * (universal links auto-open apps; schemes require the app installed).
+   */
+  export interface HostOpenUrlOptions {
+    /**
+     * URL to open, e.g. "https://example.com" or "weixin://".
+     */
+    url: string;
+  }
+
+  /**
+   * Options for `Net.notify` / `Net.liveActivityStart` / `Net.liveActivityUpdate`.
+   */
+  export interface HostNotifyOptions {
+    /**
+     * Notification / live activity title.
+     */
+    title: string;
+    /**
+     * Notification / live activity body.
+     */
+    body: string;
+    /**
+     * Optional delay in seconds (notification only; live activities start immediately).
+     */
+    delay_seconds?: number;
+  }
+
+  /**
+   * Options for `Net.notificationsList` — reads recent device notifications
+   * captured by the SpringBoard tweak into notifications.json.
+   */
+  export interface HostNotificationsListOptions {
+    /**
+     * Maximum number of notifications to return (default 20).
+     */
+    limit?: number;
+  }
+
+  /**
+   * Options for `Net.notificationsBlock` / `Net.notificationsUnblock` —
+   * controls which app's notifications the tweak hides (independent of app lock).
+   */
+  export interface HostNotificationsBlockOptions {
+    /**
+     * App bundle identifier, e.g. "com.tencent.mqq".
+     */
+    bundle_id: string;
+  }
+
+  /**
+   * Options for `Net.appUsageReport` — reads the foreground-app usage log
+   * captured by the SpringBoard tweak into usage.json.
+   */
+  export interface HostAppUsageReportOptions {
+    /**
+     * Maximum number of history entries to return (default 20, max 100).
+     */
+    limit?: number;
+  }
+
+  /**
+   * Reads the foreground-app usage log (current front app + usage history).
+   */
+  function appUsageReport(options: HostAppUsageReportOptions): Promise<string>;
+  /**
    * Click an element by snapshot ref or selector.
    * Only accepts one options object.
    */
@@ -826,6 +937,18 @@ export namespace Net {
    */
   function browserWaitFor(options: HostBrowserWaitForOptions): Promise<string>;
   /**
+   * Launches the on-device automation agent (AutoGLM subagent) with a goal.
+   */
+  function deviceAgentStart(options: HostDeviceAgentStartOptions): Promise<string>;
+  /**
+   * Reports whether the on-device automation agent is idle or running.
+   */
+  function deviceAgentStatus(): Promise<string>;
+  /**
+   * Stops a running on-device automation agent loop.
+   */
+  function deviceAgentStop(): Promise<string>;
+  /**
    * Enhanced HTTP request with flexible options
    * @param options - HTTP request options
    */
@@ -841,6 +964,74 @@ export namespace Net {
    * @param data - Data to post
    */
   function httpPost(url: string, body: HostHttpPostBody, ignore_ssl?: boolean): Promise<HttpResponseData>;
+  /**
+   * Ends the active Live Activity.
+   */
+  function liveActivityEnd(): Promise<string>;
+  /**
+   * Starts a Live Activity on the Dynamic Island / lock screen (iOS 16.1+).
+   */
+  function liveActivityStart(options: HostNotifyOptions): Promise<string>;
+  /**
+   * Updates the active Live Activity content.
+   */
+  function liveActivityUpdate(options: HostNotifyOptions): Promise<string>;
+  /**
+   * Hides one app's notifications (independent of app lock).
+   */
+  function notificationsBlock(options: HostNotificationsBlockOptions): Promise<string>;
+  /**
+   * Lists app bundle ids currently having notifications blocked.
+   */
+  function notificationsBlocked(): Promise<string>;
+  /**
+   * Reads recent device notifications captured by the tweak (title/body/bid/ts).
+   */
+  function notificationsList(options: HostNotificationsListOptions): Promise<string>;
+  /**
+   * Restores one app's notifications.
+   */
+  function notificationsUnblock(options: HostNotificationsBlockOptions): Promise<string>;
+  /**
+   * Sends a local notification (optionally delayed).
+   */
+  function notify(options: HostNotifyOptions): Promise<string>;
+  /**
+   * Opens a URL/scheme through UIApplication (universal links auto-open apps).
+   */
+  function openUrl(options: HostOpenUrlOptions): Promise<string>;
+  /**
+   * Runs a user's iOS Shortcuts automation by name.
+   */
+  function runShortcut(options: HostShortcutRunOptions): Promise<string>;
+  /**
+   * Requests Apple Screen Time authorization (iOS 16+; must succeed before locking).
+   */
+  function screenTimeAuthorize(): Promise<string>;
+  /**
+   * Shields (locks) one app by Bundle ID.
+   */
+  function screenTimeLock(options: HostScreenTimeLockOptions): Promise<string>;
+  /**
+   * Registers per-app overuse monitoring (DeviceActivityMonitor extension).
+   */
+  function screenTimeMonitorStart(options: HostScreenTimeMonitorStartOptions): Promise<string>;
+  /**
+   * Stops all overuse monitoring.
+   */
+  function screenTimeMonitorStop(): Promise<string>;
+  /**
+   * Shows the system FamilyActivityPicker so the user selects apps the AI may control.
+   */
+  function screenTimePick(): Promise<string>;
+  /**
+   * Unshields (unlocks) all apps.
+   */
+  function screenTimeUnlock(): Promise<string>;
+  /**
+   * Reads overuse events recorded by the DeviceActivityMonitor extension.
+   */
+  function screenTimeUsage(): Promise<string>;
   /**
    * Starts a persistent browser session hosted in a floating WebView.
    */

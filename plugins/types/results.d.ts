@@ -124,7 +124,7 @@ export interface UIActionResultData {
 /**
  * Identifies the command interpreter backing a terminal session.
  */
-export type TerminalType = "powershell" | "bash" | "shell";
+export type TerminalType = "powershell" | "bash" | "shell" | "posix";
 
 /**
  * Identifies the concrete terminal implementation selected by a host.
