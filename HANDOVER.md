@@ -196,6 +196,18 @@ TS 工具（buildin/*.ts）→ Rust ToolRegistration → Tools.Net.* 桥
 
 ### 5.2 本地打包（Mac）——**必须用 build_deb.sh，不要单独跑 packdeb.py**
 
+> 🔴 **2026-08-13 实测新坑：Theos 拒绝项目路径含空格**（`common.mk:45` "contains spaces... Stop"）。
+> 若仓库落在含空格的路径（如本会话的 `.../untitled folder/...`），tweak/CC 的 make 直接失败。
+> 解决：建无空格构建镜像，在镜像里跑全部 Theos/cargo 构建：
+> ```bash
+> rsync -a --exclude '.git' --exclude '.theos' --exclude 'target' --exclude 'build' \
+>       --exclude '.dart_tool' --exclude 'node_modules' --exclude '.out' --exclude '.fvm' \
+>       "<仓库路径>/" /Users/mac/operit2-build-src/
+> # 之后所有构建/打包都在 /Users/mac/operit2-build-src/ 里执行；
+> # 改代码仍在原仓库，改完 rsync 一次即可（build_deb.sh/packdeb.py 本身不排斥空格，只有 theos make 排斥）
+> ```
+> 已验证：镜像内 tweak/CC 产出 FAT dylib、cargo 交叉编译 daemon 全通（2026-08-13）。
+
 ```bash
 # 0. 前置①：daemon 必须先编译（build_deb.sh 找不到 release 产物直接报错退出）
 cd hosts/ios && cargo build --target aarch64-apple-ios --release
