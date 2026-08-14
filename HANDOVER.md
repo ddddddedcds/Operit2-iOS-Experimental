@@ -351,6 +351,10 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
   另加**冷启动验证**（roothide 用 stock dyld + `@loader_path/.jbroot` 链接，预期无 Dopamine 的 60s，
   见 §15 实验结论）
 - **交接者若有 roothide 设备，第一件事就是装最新 roothide deb 全量回归**（脚本：`hosts/ios/deb/scripts/roothide_regress.sh`）
+- 2026-08-14 产物：`operit2-ios_0.3.75_iphoneos-arm64e.deb`（SHA256 8651732bf4bed577…，roothide）
+  - 装机：`scp` 到设备 → Sileo 安装或 `sudo dpkg -i` → respring
+  - 回归：`scp hosts/ios/deb/scripts/roothide_regress.sh mobile@<ip>:/tmp/` → `sudo sh /tmp/roothide_regress.sh`
+  - 冷启动：killall -9 Runner 后重开计时（roothide 用 stock dyld，预期秒级，无 Dopamine 60s）
 
 ### 8.8 IPA 阉割版（nonjb / TrollStore / 自签）整体不可用 🔴
 - **本质**：nonjb 打包用 Runner-nonjb.entitlements（剥离 no-sandbox + container-required=false）→ app 落标准沙盒（data_root=$HOME/Documents/.operit），无 AppSync/amfid patch
