@@ -625,6 +625,17 @@ class RuntimeBrowserOwner extends ChangeNotifier {
       if (value != null) {
         _defaultUserAgents[tab.id] = value;
       }
+    }).catchError((Object error, StackTrace stackTrace) {
+      // WebView 在页面未加载/引擎状态异常时 evaluateJavaScript 会抛
+      // PlatformException(FWFEvaluateJavaScriptError, Failed evaluating JavaScript.)。
+      // UA 只是可选的辅助信息（_defaultUserAgentForTab 对缺项返回 null 走兜底），
+      // 失败降级记录日志，绝不升级为 Zone 级未处理异常。
+      ClientLogger.w(
+        'getUserAgent failed for tab ${tab.id}: $error',
+        tag: 'RuntimeBrowserOwner',
+        error: error,
+        stackTrace: stackTrace,
+      );
     });
     _sessionRegistry.register(
       sessionId: tab.id,
