@@ -150,7 +150,17 @@ pub fn detect_jailbreak() -> JailbreakType {
         return JailbreakType::RootHide;
     }
     if is_symlink("/var/jb") {
-        return JailbreakType::RootHide;
+        // roothide 的 /var/jb 是兼容层符号链接，指向 "/"（见 roothide.md）；
+        // rootless Dopamine 的 /var/jb 是指向 procursus 根的符号链接（或真实目录）。
+        // 按目标区分，避免把 rootless 误判成 RootHide（那会隐藏 /var/jb 二进制根，
+        // 并把 data_root 退化成裸 /var/mobile/.operit）。
+        if let Ok(target) = std::fs::read_link("/var/jb") {
+            if target.to_string_lossy() == "/" {
+                return JailbreakType::RootHide;
+            }
+            return JailbreakType::Rootless;
+        }
+        // 符号链接读不到目标——落到下面的目录探测。
     }
     if let Ok(exe) = std::env::current_exe() {
         if exe.starts_with("/var/jb/") {

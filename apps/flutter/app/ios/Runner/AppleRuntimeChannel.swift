@@ -470,11 +470,15 @@ final class AppleRuntimeChannel: NSObject {
 
   /// True on roothide. `selfJbrootPrefix()` reads the executable path, which
   /// roothide may remap (hiding the `.jbroot-` segment), so also accept the
-  /// roothide compat-layer symlink `/var/jb -> /` (a real rootless `/var/jb` is
-  /// a directory, never a symlink).
+  /// roothide compat-layer symlink `/var/jb -> /`. Rootless Dopamine's `/var/jb`
+  /// is a symlink to the procursus root (or a real directory), so only the
+  /// target-"/" symlink case is genuinely roothide.
   private static func isRootHideInstall() -> Bool {
     if selfJbrootPrefix() != nil { return true }
-    return (try? FileManager.default.destinationOfSymbolicLink(atPath: "/var/jb")) != nil
+    guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: "/var/jb") else {
+      return false
+    }
+    return target == "/"
   }
 
   /// Cached because the answer cannot change while the process lives.

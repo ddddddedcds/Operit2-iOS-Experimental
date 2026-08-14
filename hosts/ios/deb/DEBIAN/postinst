@@ -126,24 +126,14 @@ if [ -f "$DAEMON_BIN" ]; then
   else
     echo "$(date) WARN: ldid/entitlements missing; daemon will likely SIGKILL (-9)" >> "$PINST_LOG" 2>&1
   fi
-  # CRITICAL (0.3.65): an ldid re-sign changes the daemon's cdhash. If that
-  # cdhash is NOT in the jailbreak trustcache, AMFI SIGKILLs the binary at exec
-  # (launchctl ExitCode 9, 8890 never listens). Register the freshly-signed
-  # binary so the kernel trusts it. Needs root — and dpkg postinst runs as root,
-  # so this is the right place. Probe jbctl (Dopamine) since its path varies.
-  JBCTL="$(command -v jbctl 2>/dev/null || true)"
-  [ -z "$JBCTL" ] && [ -x /basebin/jbctl ] && JBCTL=/basebin/jbctl
-  if [ -n "$JBCTL" ]; then
-    echo "$(date) registering daemon cdhash in trustcache via $JBCTL ..." >> "$PINST_LOG" 2>&1
-    if $JBCTL trustcache add "$DAEMON_BIN" >> "$PINST_LOG" 2>&1; then
-      echo "$(date) trustcache add OK" >> "$PINST_LOG" 2>&1
-    else
-      echo "$(date) WARN: jbctl trustcache add failed (rc=$?) — daemon may -9" >> "$PINST_LOG" 2>&1
-    fi
-    $JBCTL trustcache info >> "$PINST_LOG" 2>&1 || true
-  else
-    echo "$(date) WARN: jbctl not found; cannot register daemon in trustcache (may -9)" >> "$PINST_LOG" 2>&1
-  fi
+  # 信任链说明（2026-08-14 修正）：
+  # * roothide：设备 ldid 重签后的签名即被 AMFI 信任（roothide 无 Dopamine
+  #   trustcache），上面的 ldid -S 就是全部所需。
+  # * 原代码尝试 `jbctl trustcache add <文件路径>` —— 但 Dopamine 的 jbctl
+  #   trustcache add 接收的是 40 位 cdhash 而非路径（实测 "passed cdhash has
+  #   wrong length"），该调用从未真正注册过；且本脚本只随 roothide deb 分发
+  #   （rootless 的 packdeb.py 不带 maintainer 脚本），设备上也没有 jbctl。
+  #   故此处不再调用 jbctl。
 else
   echo "   (no daemon binary at $DAEMON_BIN; agent daemon not included)"
 fi
@@ -195,33 +185,6 @@ if [ -d "$APP" ]; then
   chmod 0755 "$APP/Runner" 2>/dev/null || true
   if command -v uicache >/dev/null 2>&1; then uicache 2>/dev/null || true; fi
   echo "   app registered at $APP"
-
-  # --- EXPERIMENT (0.3.74): trustcache-register EVERY app Mach-O binary ---
-  # Hypothesis（HANDOVER §15，fs_usage 实锤：冷启动 60s、726 个库逐个验证）：
-  # rootless 下 AMFI 对每个 embedded framework 的 adhoc/ldid 签名走慢路径验证，
-  # 与 daemon 当初必须 trustcache 注册才免 -9 是同一机制。把 app 内所有可执行
-  # Mach-O（主二进制 + Frameworks 全部 + PlugIns appex 全部）注册进 trustcache，
-  # 若验证慢是根因 → 冷启动应大幅下降。best-effort：失败只记日志。
-  # 注：必须放在上面的 ldid 重签之后（cdhash 随签名变化）。
-  JBCTL2="$(command -v jbctl 2>/dev/null || true)"
-  [ -z "$JBCTL2" ] && [ -x /basebin/jbctl ] && JBCTL2=/basebin/jbctl
-  if [ -n "$JBCTL2" ]; then
-    echo "   [exp] trustcache-registering app Mach-O binaries via $JBCTL2 ..."
-    _reg=0
-    _cand_count=0
-    for _cand in "$APP/Runner" \
-        $(find "$APP/Frameworks" -maxdepth 2 -type f -perm -111 2>/dev/null) \
-        $(find "$APP/PlugIns" -maxdepth 3 -type f -perm -111 2>/dev/null); do
-      [ -f "$_cand" ] || continue
-      _cand_count=$((_cand_count + 1))
-      if $JBCTL2 trustcache add "$_cand" >> "$PINST_LOG" 2>&1; then
-        _reg=$((_reg + 1))
-      fi
-    done
-    echo "   [exp] trustcache registered $_reg/$_cand_count candidate binaries under $APP (log: $PINST_LOG)"
-  else
-    echo "   [exp] WARN: jbctl not found; cannot trustcache-register app binaries"
-  fi
 else
   echo "   (no bundled app found at $APP; frontend not included in this deb)"
 fi

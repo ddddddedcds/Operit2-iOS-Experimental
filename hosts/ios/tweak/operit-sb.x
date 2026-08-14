@@ -37,7 +37,7 @@
 // 拦截点：FBSSystemService / FBSOpenApplicationService（FrontBoard 统一启动入口，
 // SpringBoard 前台启动与外部请求都汇聚于此）+ 本 tweak 的 cmd_launch（AI 主动启动一致拦截）。
 
-static NSString *g_lockPath = @"/var/mobile/.operit/app_lock.plist";
+static NSString *g_lockPath; // 由 operit_tweak_init_paths() 在 load 时按环境解析（roothide→jbroot 物理目录）
 
 // ---- 设置面板（PreferenceLoader：设置 → Operit2）总开关 ----
 // NSUserDefaults 域 com.operit；与 AI 命令的文件开关（app_lock.plist /
@@ -1178,7 +1178,7 @@ static void lock_kill_app(NSString *bid) {
 // /var/mobile/.operit/usage.json（AI 可算"什么时候用了什么、用了多久"）。
 // 结构：{"active":{"bid","since_ts"},"history":[{bid,start,end}...]}，history≤500 条。
 // 前台来源与锁监控同一个 lock_front_bid()（FBSceneManager，必须在主线程）。
-static NSString *g_usagePath = @"/var/mobile/.operit/usage.json";
+static NSString *g_usagePath; // 由 operit_tweak_init_paths() 解析
 
 // 在主线程调（FBSceneManager 要求）；记录当前前台并返回新 front bid。
 static NSString *usage_tick(void) {
@@ -1527,7 +1527,7 @@ static NSString *notif_section_id(id obj) {
 // 每条通知（无论是否拦截）追加到 /var/mobile/.operit/notifications.json，
 // AI 用文件工具读。格式：{"bid","title","body","ts"} 数组，新在前，最多 50 条。
 // 去重：queue/update 对同一条通知会各触发一次，与上一条相同(bid+title+body)则只更新时间。
-static NSString *g_notifPath = @"/var/mobile/.operit/notifications.json";
+static NSString *g_notifPath; // 由 operit_tweak_init_paths() 解析
 static NSMutableArray *g_notifs = nil;
 static NSLock *g_notifLock = nil;
 
@@ -1577,7 +1577,7 @@ static void notif_record(NSString *bid, NSString *title, NSString *body) {
 // /var/mobile/.operit/notif_block.plist：{ "<bundleId>": { "ts": ... }, ... }
 // Swift NotifyServer 的 notif_block/notif_unblock 读写；tweak 只读。
 // 命中 → 该 app 通知不显示（横幅/锁屏/声音全无），但 app 本身不受影响。
-static NSString *g_notifBlockPath = @"/var/mobile/.operit/notif_block.plist";
+static NSString *g_notifBlockPath; // 由 operit_tweak_init_paths() 解析
 static NSDictionary *g_notifBlockCache = nil;
 
 static BOOL notif_blocked_for(NSString *bid) {
@@ -1674,8 +1674,20 @@ static BOOL notif_clear_section(NSString *bid) {
 // 开关：/var/mobile/.operit/clipboard_enabled（存在=开）。AI 用文件工具切换。
 // 开启时监听 UIPasteboardChangedNotification，把复制内容写 clipboard.json（AI 读取）。
 // 只记文本；非文本（图片等）跳过。最多 100 条。
-static NSString *g_clipboardPath = @"/var/mobile/.operit/clipboard.json";
-static NSString *g_clipboardEnablePath = @"/var/mobile/.operit/clipboard_enabled";
+static NSString *g_clipboardPath; // 由 operit_tweak_init_paths() 解析
+static NSString *g_clipboardEnablePath; // 由 operit_tweak_init_paths() 解析
+
+// 数据路径统一在 dylib 加载时按环境解析：rootless 原样；roothide 映射到
+// <jbroot>/var/mobile/.operit 物理目录（SpringBoard 是 real-root 视图，
+// 裸 /var/mobile/.operit 会落到 rootfs 而与 app/daemon 的数据目录分离）。
+__attribute__((constructor)) static void operit_tweak_init_paths(void) {
+    g_lockPath = operit_env_path(@"/var/jb/var/mobile/.operit/app_lock.plist");
+    g_usagePath = operit_env_path(@"/var/jb/var/mobile/.operit/usage.json");
+    g_notifPath = operit_env_path(@"/var/jb/var/mobile/.operit/notifications.json");
+    g_notifBlockPath = operit_env_path(@"/var/jb/var/mobile/.operit/notif_block.plist");
+    g_clipboardPath = operit_env_path(@"/var/jb/var/mobile/.operit/clipboard.json");
+    g_clipboardEnablePath = operit_env_path(@"/var/jb/var/mobile/.operit/clipboard_enabled");
+}
 
 static BOOL clipboard_is_enabled(void) {
     // 面板开关（com.operit clipboardEnabled）或 AI 文件开关（clipboard_enabled 存在）任一开 = 开
@@ -1760,11 +1772,11 @@ static void clipboard_start(void) {
 // 当前会话 id：runtime/state/current_chat_id.preferences.json
 
 static NSString *siri_db_path(void) {
-    return @"/var/mobile/.operit/operit2/runtime/data/database/operit2.sqlite";
+    return operit_env_path(@"/var/jb/var/mobile/.operit/operit2/runtime/data/database/operit2.sqlite");
 }
 
 static NSString *siri_current_chat_id(void) {
-    NSString *p = @"/var/mobile/.operit/operit2/runtime/state/current_chat_id.preferences.json";
+    NSString *p = operit_env_path(@"/var/jb/var/mobile/.operit/operit2/runtime/state/current_chat_id.preferences.json");
     NSData *d = [NSData dataWithContentsOfFile:p];
     if (!d) return nil;
     NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
@@ -1887,7 +1899,7 @@ static NSString *siri_clean_md(NSString *md) {
 //（角色 intro = characterSetting + otherContentChat + advancedCustomPrompt，\n\n 连接；
 //   记忆 = 该角色的 USER.md，拼在末尾 "USER.md:\n<内容>"，与 ConversationService 一致）
 static NSString *siri_build_system_prompt(void) {
-    NSString *prefsPath = @"/var/mobile/.operit/operit2/runtime/config/preferences/character_cards.preferences.json";
+    NSString *prefsPath = operit_env_path(@"/var/jb/var/mobile/.operit/operit2/runtime/config/preferences/character_cards.preferences.json");
     NSDictionary *cards = [NSDictionary dictionaryWithContentsOfFile:prefsPath];
     if (!cards) return @"你是 Operit，一个全能 AI 助手。";
     NSString *activeId = cards[@"active_character_card_id"];
@@ -1900,7 +1912,7 @@ static NSString *siri_build_system_prompt(void) {
     NSString *adv = cards[[NSString stringWithFormat:@"character_card_%@_advanced_custom_prompt", activeId]];
     if (adv.length) [parts addObject:adv];
     NSString *intro = parts.count ? [parts componentsJoinedByString:@"\n\n"] : @"你是 Operit，一个全能 AI 助手。";
-    NSString *mdPath = [NSString stringWithFormat:@"/var/mobile/.operit/operit2/runtime/data/memory/characters/%@/USER.md", activeId];
+    NSString *mdPath = [NSString stringWithFormat:@"%@/operit2/runtime/data/memory/characters/%@/USER.md", operit_env_path(@"/var/jb/var/mobile/.operit"), activeId];
     NSString *md = [NSString stringWithContentsOfFile:mdPath encoding:NSUTF8StringEncoding error:nil];
     if (md.length) {
         return [intro stringByAppendingFormat:@"\n\nUSER.md:\n%@", md];
@@ -1910,7 +1922,7 @@ static NSString *siri_build_system_prompt(void) {
 
 // 调 operit2 的 AI 后端（config.plist 凭证 + 角色记忆 system prompt + 会话历史）
 static NSString *siri_ask_ai(NSString *prompt, NSArray *history) {
-    NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/.operit/config.plist"];
+    NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:operit_env_path(@"/var/jb/var/mobile/.operit/config.plist")];
     NSString *key = cfg[@"apiKey"];
     NSString *base = cfg[@"apiBaseUrl"];
     NSString *model = cfg[@"apiModel"] ?: @"deepseek-chat";
@@ -2154,7 +2166,7 @@ static id g_siriSelf = nil;        // AFUISiriSession 实例（strong）
         oc_log("PROBE_AI_ANSWER=%s", ans.UTF8String);
         // ③ AI 回答写回 operit2 会话（同步 Siri → operit2）
         if (cid.length && ans.length) {
-            NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/.operit/config.plist"];
+            NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:operit_env_path(@"/var/jb/var/mobile/.operit/config.plist")];
             siri_insert_message(cid, @"ai", ans, cfg[@"apiModel"] ?: @"deepseek-chat");
             oc_log("SIRI_SYNC_AI ok");
         }

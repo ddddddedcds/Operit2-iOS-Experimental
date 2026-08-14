@@ -27,12 +27,18 @@
 //
 // PATH POLICY
 // -----------
-// Call sites keep writing rootless-style paths ("/var/jb/var/mobile/.operit/x").
-//   rootless : returned unchanged (it is already the real path).
-//   roothide : the `/var/jb` prefix is stripped, giving the REAL rootfs path
-//              ("/var/mobile/.operit/x"). This matches the Rust daemon and the
-//              Swift host, so tweak + daemon + app all share one data root and
-//              nothing is ever created under `/var/jb`.
+// Call sites keep writing rootless-style paths ("/var/jb/var/mobile/.operit/x")
+// or the equivalent bare "/var/mobile/.operit/x".
+//   rootless : returned unchanged (already the real path — procursus remaps
+//              /var/jb/var/mobile onto the real /var/mobile).
+//   roothide : BOTH forms map to the PHYSICAL jbroot data dir
+//              (<jbroot>/var/mobile/.operit/x). A SpringBoard-injected tweak runs
+//              in the REAL-ROOT view (no per-process /var remap), so a bare
+//              "/var/mobile/.operit" would land in rootfs — a DIFFERENT physical
+//              directory than the one the app (jbroot view) and the daemon
+//              (explicit jbroot prefix, see operit-ios-env data_root) use. Only
+//              the jbroot-prefixed physical path is view-independent and lets
+//              tweak + daemon + app share one data root.
 #ifndef OPERIT_ROOTHIDE_COMPAT_H
 #define OPERIT_ROOTHIDE_COMPAT_H
 
@@ -70,14 +76,35 @@ static inline BOOL operit_is_roothide(void) {
     return operit_jbroot_prefix() != nil;
 }
 
+/// Physical data root — matches Rust operit_ios_env::data_root().
+///   rootless : /var/jb/var/mobile/.operit (procursus remap → real /var/mobile/.operit)
+///   roothide : <jbroot>/var/mobile/.operit (PHYSICAL; view-independent)
+static NSString *operit_data_dir(void) {
+    static NSString *cached = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *jb = operit_jbroot_prefix();
+        cached = jb ? [jb stringByAppendingString:@"/var/mobile/.operit"]
+                    : @"/var/jb/var/mobile/.operit";
+    });
+    return cached;
+}
+
 /// Map a rootless-style path to the real path for the current environment.
 /// See PATH POLICY above.
 static NSString *operit_env_path(NSString *path) {
     if (!path) return path;
     if (!operit_is_roothide()) return path; // rootless: already the real path
     if ([path isEqualToString:@"/var/jb"]) return @"/";
-    if ([path hasPrefix:@"/var/jb/"]) {
-        return [path substringFromIndex:7]; // drop "/var/jb", keep leading '/'
+    NSString *rel = nil;
+    if ([path hasPrefix:@"/var/jb/var/mobile/.operit"]) {
+        rel = [path substringFromIndex:7];   // drop "/var/jb" → "/var/mobile/.operit/…"
+    } else if ([path hasPrefix:@"/var/mobile/.operit"]) {
+        rel = path;                          // already bare
+    }
+    if (rel != nil) {
+        NSString *jb = operit_jbroot_prefix();
+        return jb ? [jb stringByAppendingString:rel] : rel; // physical jbroot data dir
     }
     return path;
 }
