@@ -59,18 +59,10 @@ import UserNotifications
           presenter: controller
         )
         bootLog("AFTER_CHANNEL_REG")
-        if #available(iOS 16.0, *) {
-          ScreenTimeServer.shared.start()
-          bootLog("AFTER_SCREEN_TIME_SERVER")
-        }
-        ShortcutsServer.shared.start()
-        bootLog("AFTER_SHORTCUTS_SERVER")
-        NotifyServer.shared.start()
-        bootLog("AFTER_NOTIFY_SERVER")
-        OpenURLServer.shared.start()
-        bootLog("AFTER_OPEN_URL_SERVER")
-        TCCServer.shared.start()
-        bootLog("AFTER_TCC_SERVER")
+        // 单端口本地服务：合并原 8891-8895 五个监听 → 一个 8891 dispatcher
+        // （screen_time/shortcuts/notify/open_url/tcc 按首 token 路由）
+        OperitLocalServer.shared.start()
+        bootLog("AFTER_LOCAL_SERVER")
       } else {
         bootLog("NO_FLUTTER_VIEWCONTROLLER")
       }

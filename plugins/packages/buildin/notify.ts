@@ -6,8 +6,8 @@
         "en": "Notifications & Live Activities"
     },
     "description": {
-        "zh": "让 AI 主动联系用户：本地通知（可延迟=定时提醒）和灵动岛/锁屏实时活动（可更新/结束）。需配套 native 桥 Tools.Net.notify / liveActivityStart / liveActivityUpdate / liveActivityEnd（连 127.0.0.1:8893 驱动 App 内 Swift NotifyServer）。",
-        "en": "Let the AI reach the user proactively: local notifications (optionally delayed = scheduled reminder) and Dynamic Island / lock-screen Live Activities (updatable / endable). Requires companion native bridge Tools.Net.notify / liveActivityStart / liveActivityUpdate / liveActivityEnd (talking to 127.0.0.1:8893 to drive the in-app Swift NotifyServer)."
+        "zh": "让 AI 主动联系用户：本地通知（可延迟=定时提醒）和灵动岛/锁屏实时活动（可更新/结束）。需配套 native 桥 Tools.Net.notify / liveActivityStart / liveActivityUpdate / liveActivityEnd（连 127.0.0.1:8891 经 OperitLocalServer 路由驱动 App 内 Swift NotifyServer）。",
+        "en": "Let the AI reach the user proactively: local notifications (optionally delayed = scheduled reminder) and Dynamic Island / lock-screen Live Activities (updatable / endable). Requires companion native bridge Tools.Net.notify / liveActivityStart / liveActivityUpdate / liveActivityEnd (talking to 127.0.0.1:8891 via OperitLocalServer to drive the in-app Swift NotifyServer)."
     },
     "enabledByDefault": true,
     "category": "System",

@@ -28,45 +28,11 @@ private let monitoringKey = "operit.screenTime.monitoring"
 final class ScreenTimeServer: NSObject {
   static let shared = ScreenTimeServer()
 
-  private var listener: NWListener?
-  private let queue = DispatchQueue(label: "operit.screen-time.server", qos: .userInitiated)
   private var pickConn: NWConnection?
   private var authorizeConn: NWConnection?
 
-  func start() {
-    guard listener == nil else { return }
-    do {
-      let l = try NWListener(using: .tcp, on: 8891)
-      l.newConnectionHandler = { [weak self] conn in
-        self?.handle(conn)
-      }
-      l.start(queue: queue)
-      listener = l
-    } catch {
-      print("[ScreenTimeServer] start failed: \(error)")
-    }
-  }
-
-  // MARK: - 连接处理
-
-  private func handle(_ conn: NWConnection) {
-    conn.start(queue: queue)
-    conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) {
-      [weak self] data, _, _, _ in
-      guard let self,
-        let data,
-        let line = String(data: data, encoding: .utf8)?
-          .trimmingCharacters(in: .whitespacesAndNewlines),
-        !line.isEmpty
-      else {
-        conn.cancel()
-        return
-      }
-      self.dispatch(line, conn: conn)
-    }
-  }
-
-  private func dispatch(_ line: String, conn: NWConnection) {
+  /// 由 OperitLocalServer（单端口 8891）按首 token "screen_time" 路由至此。
+  func dispatch(_ line: String, conn: NWConnection) {
     // 协议兼容：Rust 端发 "screen_time <cmd> [args]"，剥掉 "screen_time " 命名空间前缀。
     let stripped = line.hasPrefix("screen_time ") ? String(line.dropFirst("screen_time ".count)) : line
     let parts = stripped.split(separator: " ", maxSplits: 1).map(String.init)

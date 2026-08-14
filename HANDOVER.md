@@ -41,12 +41,12 @@ operit2-fork-src/
 │   ├── lib/                            # Flutter 业务代码
 │   │   └── ui/features/...             #   settings/appearance（背景选图崩溃在这）、manual_terminal（PATH 不全在这）等
 │   └── ios/Runner/                     # ★ iOS 原生桥（Swift）
-│       ├── AppDelegate.swift           #   启动所有本地服务（8890-8895 监听入口）
-│       ├── OpenURLServer.swift         #   TCP 8894：open_url / installed_apps / tcc 转发
-│       ├── TCCServer.swift             #   TCP 8895：权限全家桶（通讯录/日历/提醒/照片/健康/定位）
-│       ├── ScreenTimeServer.swift      #   TCP 8891：屏幕使用时间锁应用（写 tweak 名单）+ 吃醋巡检监控
-│       ├── NotifyServer.swift          #   TCP 8893：AI 主动联系用户（通知/灵动岛）
-│       ├── ShortcutsServer.swift       #   TCP 8892：快捷指令运行
+│       ├── AppDelegate.swift           #   启动本地服务（OperitLocalServer 单端口 8891 dispatcher）
+│       ├── OpenURLServer.swift         #   含 OperitLocalServer：8891 单端口按首 token 路由 open_url/installed_apps/tcc
+│       ├── TCCServer.swift             #   权限全家桶（通讯录/日历/提醒/照片/健康/定位，经 open_url 内部直调）
+│       ├── ScreenTimeServer.swift      #   屏幕使用时间锁应用（写 tweak 名单）+ 吃醋巡检监控
+│       ├── NotifyServer.swift          #   AI 主动联系用户（通知/灵动岛）
+│       ├── ShortcutsServer.swift       #   快捷指令运行
 │       ├── AppleRuntimeChannel.swift   #   Flutter↔Rust 桥（核心通道）
 │       ├── AppleLocalInferenceRunner.swift  # 本地模型推理（OCR 等）
 │       ├── AppLockUI.swift             #   应用锁授权 UI 控制器
@@ -103,18 +103,18 @@ files/
 │   │  命令：stop / goal <目标> / config <key>|<provider>|<base>|<model>            │
 │                                                                                  │
 │  [Runner.app]  ← Flutter + Rust 内核 + Swift 本地服务                              │
-│   ├─ TCP 8891 ScreenTimeServer（锁应用/监控）                                     │
-│   ├─ TCP 8892 ShortcutsServer（快捷指令）                                         │
-│   ├─ TCP 8893 NotifyServer（主动通知/灵动岛）                                     │
-│   ├─ TCP 8894 OpenURLServer（深链/installed_apps/tcc 转发）                       │
-│   └─ TCP 8895 TCCServer（通讯录/日历/提醒/照片/健康/定位）                          │
+│   └─ TCP 8891 OperitLocalServer（单端口 dispatcher，按首 token 路由）              │
+│        ├─ screen_time        → ScreenTimeServer（锁应用/监控）                     │
+│        ├─ shortcuts         → ShortcutsServer（快捷指令）                          │
+│        ├─ notify/live_*/notif_* → NotifyServer（主动通知/灵动岛）                  │
+│        ├─ open_url/installed_apps → OpenURLServer（深链）                          │
+│        └─ tcc → OpenURLServer 内部直调 TCCServer（权限全家桶）                      │
 └──────────────────────────────────────────────────────────────────────────────────┘
 
 AI 工具调用链路：
 TS 工具（buildin/*.ts）→ Rust ToolRegistration → Tools.Net.* 桥
   ├─ 设备动作 → daemon(8890) → ios-mcp(8090) → 设备
-  ├─ 深链/权限 → OpenURLServer(8894) → TCCServer(8895)
-  └─ 屏幕时间 → ScreenTimeServer(8891)
+  ├─ 深链/权限/屏幕时间/快捷指令/通知 → OperitLocalServer(8891) 按首 token 路由到各 handler
 ```
 
 **关键设计原则**：
@@ -144,18 +144,20 @@ TS 工具（buildin/*.ts）→ Rust ToolRegistration → Tools.Net.* 桥
 - **签名要求**：daemon 二进制必须 ldid 签名且 cdhash 注册进 Dopamine trustcache（否则 SIGKILL -9 / launchd ExitCode 9）——postinst 负责装机时重签+注册
 
 ### 3.3 Swift 本地服务（Runner.app 进程，AppDelegate 启动）
-| 服务 | 端口 | 协议 | 能力 |
+> 2026-08-14 起合并为**单端口 8891 dispatcher**（OperitLocalServer，按首 token 路由），不再 8891-8895 各占一端口：
+| 服务 | 首 token | 协议 | 能力 |
 |---|---|---|---|
-| ScreenTimeServer | 8891 | 行文本 | `lock <bid>[|<title>|<subtitle>|<button>]`（写 tweak 名单，**任意 app 可锁**，无需 picker）/ `unlock` / `status` / monitor start-stop / usage |
-| ShortcutsServer | 8892 | 行文本 | `run <名称>`（shortcuts://run-shortcut URL scheme）|
-| NotifyServer | 8893 | 行文本 | AI 主动发通知/灵动岛给用户 |
-| OpenURLServer | 8894 | 行文本 | `open_url <url>` / `installed_apps` / `tcc <cmd>`（转发 8895）|
-| TCCServer | 8895 | 行文本 JSON | `contacts list/search` / `calendar list/create` / `reminders list/create` / `photos recent/save` / `health steps/hrt` / `location get` |
+| OperitLocalServer | — | 行文本（单端口 8891） | 按首 token 路由到下列 handler |
+| ScreenTimeServer | `screen_time` | 行文本 | `lock <bid>[|<title>|<subtitle>|<button>]`（写 tweak 名单，**任意 app 可锁**，无需 picker）/ `unlock` / `status` / monitor start-stop / usage |
+| ShortcutsServer | `shortcuts` | 行文本 | `run <名称>`（shortcuts://run-shortcut URL scheme）|
+| NotifyServer | `notify`/`live_*`/`notif_*`/`usage_report` | 行文本 | AI 主动发通知/灵动岛给用户 |
+| OpenURLServer | `open_url`/`installed_apps`/`tcc` | 行文本 | `open_url <url>` / `installed_apps` / `tcc <cmd>`（内部直调 TCCServer，无端口）|
+| TCCServer | （经 OpenURLServer 直调） | 行文本 JSON | `contacts list/search` / `calendar list/create` / `reminders list/create` / `photos recent/save` / `health steps/hrt` / `location get` |
 - 全部走系统公开 API（EventKit/Contacts/Photos/HealthKit/CoreLocation），TCC 授权弹窗，失败降级不崩（responds 前置探测，**禁用裸 value(forKey:)**——iOS 16 不存在的 key 抛 NSException → SIGABRT）
 
 ### 3.4 TS 工具（buildin/*.ts，AI 可用工具）
 - **device_automation.ts**：设备自动化主工具（连 daemon → ios-mcp）
-- **system_io.ts**：9 工具（contacts_read / calendar_list / calendar_create / reminders_list / reminders_create / photos_recent / photos_save / health_read / location_get）→ 走 Tools.Net.openUrl 通道（`tcc ` 前缀 → 8894 → 8895）
+- **system_io.ts**：9 工具（contacts_read / calendar_list / calendar_create / reminders_list / reminders_create / photos_recent / photos_save / health_read / location_get）→ 走 Tools.Net.openUrl 通道（`tcc ` 前缀 → OperitLocalServer 8891 → OpenURLServer 内部直调 TCCServer）
 - **screen_time.ts**：screen_time_authorize / screen_time_lock / screen_time_unlock / screen_time_monitor_start / screen_time_monitor_stop / screen_time_usage（**已删 screen_time_pick**——AI 直接锁任意 app）
 - **super_admin.ts**：终端/文件/进程（⚠️ terminal 工具缺 sessionId 入口，见 9.4）
 - **open_url.ts**：深链手册（⚠️ 大部分未实测，weixin://dl/* 全无效）
@@ -164,7 +166,7 @@ TS 工具（buildin/*.ts）→ Rust ToolRegistration → Tools.Net.* 桥
 ### 3.5 启动链路（开机 → 可用）
 1. LaunchDaemon 拉起 daemon（8890 监听）
 2. SpringBoard 启动，TweakInject 注入 operit-sb.dylib（通知/锁屏/应用锁/Siri 就位）
-3. 用户打开 Runner.app → AppDelegate 启动 5 个 Swift 服务（8891-8895）
+3. 用户打开 Runner.app → AppDelegate 启动 OperitLocalServer（单端口 8891，路由 5 个 Swift 服务）
 4. 主机侧 MCP 连 ios-mcp（8090）→ AI 可用全部能力
 
 ---
@@ -252,7 +254,7 @@ echo '<PASSWORD>' | sudo -S killall -9 SpringBoard   # respring
 - 吃醋巡检（DeviceActivityMonitor）+ 快捷指令接入
 
 ### 🟡 已 push 未端到端验证
-- 权限全家桶（TCCServer 8895 + system_io 9 工具 + HealthKit）
+- 权限全家桶（TCCServer + system_io 9 工具 + HealthKit，经 OperitLocalServer 8891）
 - 设置面板（PreferenceLoader operitPrefs.bundle）——**用户实测未显示**（见 9.6）
 - 控制中心模块（OperitCC）——**用户实测未显示**（见 9.1）
 - installed_apps 修复（responds 探测）
@@ -346,7 +348,7 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
   2. LaunchDaemon 不生效 → daemon 起不来 → 设备自动化（AI 操作手机）全失效
   3. ios-mcp（com.witchan.ios-mcp）不装 → 设备操作无通道
   4. 无完整权限（沙盒内）→ 部分 TCC 公开 API 可用但受容器限制
-- **nonjb 只剩**：AI 聊天 + app 手动打开时 Swift 服务（8891-8895）的部分能力（且 app 挂起即断）
+- **nonjb 只剩**：AI 聊天 + app 手动打开时 OperitLocalServer（8891）的部分能力（且 app 挂起即断）
 - **验证状态**：仅历史打包过（从未装机功能验证）；**不要对 nonjb 版有任何功能预期**
 
 ---

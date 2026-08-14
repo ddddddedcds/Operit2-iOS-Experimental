@@ -3,7 +3,7 @@
 //  Runner
 //
 //  第三方 App 深链服务：AI 工具（open_url.*）→ Tools.Net.openUrl（Rust）
-//        → 127.0.0.1:8894 文本协议 → 本服务 → UIApplication.open（系统级唤起）
+//        → 127.0.0.1:8891（OperitLocalServer）文本协议 → 本服务 → UIApplication.open（系统级唤起）
 //  协议（每连接一行）：open_url <url>
 //  支持：URL scheme（weixin://）、Universal Links（https:// 官方链接自动唤起 App）、
 //        tel://、mailto: 等系统链接。
@@ -18,44 +18,11 @@ import UIKit
 final class OpenURLServer: NSObject {
   static let shared = OpenURLServer()
 
-  private var listener: NWListener?
-  private let queue = DispatchQueue(label: "operit.open-url.server", qos: .userInitiated)
-
-  func start() {
-    guard listener == nil else { return }
-    do {
-      let l = try NWListener(using: .tcp, on: 8894)
-      l.newConnectionHandler = { [weak self] conn in
-        self?.handle(conn)
-      }
-      l.start(queue: queue)
-      listener = l
-    } catch {
-      print("[OpenURLServer] start failed: \(error)")
-    }
-  }
-
-  private func handle(_ conn: NWConnection) {
-    conn.start(queue: queue)
-    conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) {
-      [weak self] data, _, _, _ in
-      guard let self,
-        let data,
-        let line = String(data: data, encoding: .utf8)?
-          .trimmingCharacters(in: .whitespacesAndNewlines),
-        !line.isEmpty
-      else {
-        conn.cancel()
-        return
-      }
-      self.dispatch(line, conn: conn)
-    }
-  }
-
-  private func dispatch(_ line: String, conn: NWConnection) {
+  /// 由 OperitLocalServer（单端口 8891）按首 token（open_url/installed_apps/tcc）路由至此。
+  func dispatch(_ line: String, conn: NWConnection) {
     // 协议：Rust 端发 "open_url <url>" / "installed_apps" / "tcc <cmd>"，剥掉前缀后整行就是 URL。
     if line.hasPrefix("tcc ") {
-      // 权限全家桶：转发给 TCCServer（8895 逻辑走同一通道，AI 无需感知端口）
+      // 权限全家桶：转发给 TCCServer（同进程直调 dispatch，无端口）
       TCCServer.shared.dispatch(String(line.dropFirst(4)), conn: conn)
       return
     }
@@ -158,5 +125,84 @@ final class OpenURLServer: NSObject {
         self.reply(conn: conn, text: "ERR|open failed: \(trimmed)")
       }
     }
+  }
+}
+
+//
+//  OperitLocalServer —— 单端口本地服务（进程/端口合并）
+//
+//  原架构 5 个 NWListener 各占一个端口（ScreenTime 8891 / Shortcuts 8892 /
+//  Notify 8893 / OpenURL 8894 / TCC 8895），但都在 Runner.app 同一进程内，
+//  没必要开 5 个监听。合并后只监听 127.0.0.1:8891，按首 token 路由到各 handler：
+//    screen_time ...                                     → ScreenTimeServer
+//    shortcuts ...                                       → ShortcutsServer
+//    notify / live_* / notif_* / usage_report            → NotifyServer
+//    open_url / installed_apps / tcc                     → OpenURLServer
+//  （tcc 再由 OpenURLServer 内部直调 TCCServer.dispatch，无端口）
+//  各 Server 现在只保留 dispatch + 命令实现，不再各自 bind 端口。
+//
+
+final class OperitLocalServer {
+  static let shared = OperitLocalServer()
+
+  private var listener: NWListener?
+  private let queue = DispatchQueue(label: "operit.local.server", qos: .userInitiated)
+
+  func start() {
+    guard listener == nil else { return }
+    do {
+      let l = try NWListener(using: .tcp, on: 8891)
+      l.newConnectionHandler = { [weak self] conn in self?.handle(conn) }
+      l.start(queue: queue)
+      listener = l
+      print("[OperitLocalServer] listening on 127.0.0.1:8891 (merged 8891-8895)")
+    } catch {
+      print("[OperitLocalServer] start failed: \(error)")
+    }
+  }
+
+  private func handle(_ conn: NWConnection) {
+    conn.start(queue: queue)
+    conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) {
+      [weak self] data, _, _, _ in
+      guard let self,
+        let data,
+        let line = String(data: data, encoding: .utf8)?
+          .trimmingCharacters(in: .whitespacesAndNewlines),
+        !line.isEmpty
+      else {
+        conn.cancel()
+        return
+      }
+      self.route(line, conn: conn)
+    }
+  }
+
+  private func route(_ line: String, conn: NWConnection) {
+    let first = line.split(separator: " ").first.map(String.init) ?? ""
+    switch first {
+    case "screen_time":
+      if #available(iOS 16.0, *) {
+        ScreenTimeServer.shared.dispatch(line, conn: conn)
+      } else {
+        reply(conn: conn, text: "ERR|screen_time requires iOS 16")
+      }
+    case "shortcuts":
+      ShortcutsServer.shared.dispatch(line, conn: conn)
+    case "notify", "live_start", "live_update", "live_end", "notif_list",
+      "notif_block", "notif_unblock", "notif_blocked", "usage_report":
+      NotifyServer.shared.dispatch(line, conn: conn)
+    case "open_url", "installed_apps", "tcc":
+      OpenURLServer.shared.dispatch(line, conn: conn)
+    default:
+      reply(conn: conn, text: "ERR|unknown service: \(first)")
+    }
+  }
+
+  private func reply(conn: NWConnection, text: String) {
+    conn.send(
+      content: Data((text + "\n").utf8),
+      completion: .contentProcessed { _ in conn.cancel() }
+    )
   }
 }

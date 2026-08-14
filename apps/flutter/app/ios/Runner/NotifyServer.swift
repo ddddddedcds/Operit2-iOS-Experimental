@@ -2,12 +2,12 @@
 //  NotifyServer.swift
 //  Runner
 //
-//  AI 主动联系用户服务（TCP 8893）：
+//  AI 主动联系用户服务（经 OperitLocalServer 单端口 8891 路由）：
 //    notify <delaySec> <标题>|<内容>   本地通知（delay=0 立即；>0 定时提醒）
 //    live_start  <标题>|<内容>         启动实时活动（灵动岛 / 锁屏，iOS 16.1+）
 //    live_update <标题>|<内容>         更新实时活动
 //    live_end                          结束实时活动
-//  链路：AI 工具 → Tools.Net.notify*/liveActivity*（Rust）→ 127.0.0.1:8893 → 本服务
+//  链路：AI 工具 → Tools.Net.notify*/liveActivity*（Rust）→ 127.0.0.1:8891（OperitLocalServer）→ 本服务
 //  → UNUserNotificationCenter / ActivityKit（灵动岛由 LiveActivityWidget 扩展渲染）。
 //
 
@@ -29,42 +29,10 @@ struct OperitLiveActivityAttributes: ActivityAttributes {
 final class NotifyServer: NSObject {
   static let shared = NotifyServer()
 
-  private var listener: NWListener?
-  private let queue = DispatchQueue(label: "operit.notify.server", qos: .userInitiated)
   private var liveActivity: Activity<OperitLiveActivityAttributes>?
 
-  func start() {
-    guard listener == nil else { return }
-    do {
-      let l = try NWListener(using: .tcp, on: 8893)
-      l.newConnectionHandler = { [weak self] conn in
-        self?.handle(conn)
-      }
-      l.start(queue: queue)
-      listener = l
-    } catch {
-      print("[NotifyServer] start failed: \(error)")
-    }
-  }
-
-  private func handle(_ conn: NWConnection) {
-    conn.start(queue: queue)
-    conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) {
-      [weak self] data, _, _, _ in
-      guard let self,
-        let data,
-        let line = String(data: data, encoding: .utf8)?
-          .trimmingCharacters(in: .whitespacesAndNewlines),
-        !line.isEmpty
-      else {
-        conn.cancel()
-        return
-      }
-      self.dispatch(line, conn: conn)
-    }
-  }
-
-  private func dispatch(_ line: String, conn: NWConnection) {
+  /// 由 OperitLocalServer（单端口 8891）按首 token（notify/live_*/notif_*/usage_report）路由至此。
+  func dispatch(_ line: String, conn: NWConnection) {
     let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
     let cmd = parts.first ?? ""
     let rest = parts.count > 1 ? parts[1...].joined(separator: " ") : ""

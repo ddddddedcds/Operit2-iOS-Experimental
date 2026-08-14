@@ -474,12 +474,12 @@ fn registerScreenTimeTools(handler: &mut AIToolHandler) {
 }
 
 /// Sends one shortcut line-command to the in-app Swift `ShortcutsServer` over
-/// loopback TCP (127.0.0.1:8892). iOS only.
+/// loopback TCP (127.0.0.1:8891). iOS only.
 #[cfg(target_os = "ios")]
 fn shortcuts_socket_command(command: &str) -> String {
     use std::io::{Read, Write};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8892);
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8891);
     match TcpStream::connect(addr) {
         Ok(mut stream) => {
             if let Err(e) = stream.write_all(format!("{command}\n").as_bytes()) {
@@ -489,7 +489,7 @@ fn shortcuts_socket_command(command: &str) -> String {
             let _ = stream.read_to_string(&mut resp);
             resp.trim().to_string()
         }
-        Err(e) => format!("ERR|connect 127.0.0.1:8892 failed: {e}"),
+        Err(e) => format!("ERR|connect 127.0.0.1:8891 failed: {e}"),
     }
 }
 
@@ -530,12 +530,12 @@ fn registerShortcutTools(handler: &mut AIToolHandler) {
 }
 
 /// Sends one notify line-command to the in-app Swift `NotifyServer` over loopback
-/// TCP (127.0.0.1:8893). iOS only.
+/// TCP (127.0.0.1:8891). iOS only.
 #[cfg(target_os = "ios")]
 fn notify_socket_command(command: &str) -> String {
     use std::io::{Read, Write};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8893);
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8891);
     match TcpStream::connect(addr) {
         Ok(mut stream) => {
             if let Err(e) = stream.write_all(format!("{command}\n").as_bytes()) {
@@ -545,7 +545,7 @@ fn notify_socket_command(command: &str) -> String {
             let _ = stream.read_to_string(&mut resp);
             resp.trim().to_string()
         }
-        Err(e) => format!("ERR|connect 127.0.0.1:8893 failed: {e}"),
+        Err(e) => format!("ERR|connect 127.0.0.1:8891 failed: {e}"),
     }
 }
 
@@ -704,12 +704,12 @@ fn registerNotifyTools(handler: &mut AIToolHandler) {
 }
 
 /// Sends one open-url line-command to the in-app Swift `OpenURLServer` over
-/// loopback TCP (127.0.0.1:8894). iOS only.
+/// loopback TCP (127.0.0.1:8891). iOS only.
 #[cfg(target_os = "ios")]
 fn open_url_socket_command(command: &str) -> String {
     use std::io::{Read, Write};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8894);
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8891);
     match TcpStream::connect(addr) {
         Ok(mut stream) => {
             if let Err(e) = stream.write_all(format!("{command}\n").as_bytes()) {
@@ -719,7 +719,7 @@ fn open_url_socket_command(command: &str) -> String {
             let _ = stream.read_to_string(&mut resp);
             resp.trim().to_string()
         }
-        Err(e) => format!("ERR|connect 127.0.0.1:8894 failed: {e}"),
+        Err(e) => format!("ERR|connect 127.0.0.1:8891 failed: {e}"),
     }
 }
 

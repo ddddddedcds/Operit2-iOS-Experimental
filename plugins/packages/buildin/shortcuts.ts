@@ -6,8 +6,8 @@
         "en": "Shortcuts"
     },
     "description": {
-        "zh": "运行用户在 iOS「快捷指令」App 里建好的自动化（非越狱/越狱均可用）。AI 说「把勿扰模式打开」之类时，先问/确认用户已建对应快捷指令名，再调用 run_shortcut。需配套 native 桥 Tools.Net.runShortcut（连 127.0.0.1:8892 驱动 App 内 Swift ShortcutsServer）。",
-        "en": "Run the user's iOS Shortcuts automations (works on both jailed and jailbroken devices). When the user asks for something system-level (e.g. toggle Do Not Disturb), ask/confirm the shortcut name exists, then call run_shortcut. Requires companion native bridge Tools.Net.runShortcut (talking to 127.0.0.1:8892 to drive the in-app Swift ShortcutsServer)."
+        "zh": "运行用户在 iOS「快捷指令」App 里建好的自动化（非越狱/越狱均可用）。AI 说「把勿扰模式打开」之类时，先问/确认用户已建对应快捷指令名，再调用 run_shortcut。需配套 native 桥 Tools.Net.runShortcut（连 127.0.0.1:8891 经 OperitLocalServer 路由驱动 App 内 Swift ShortcutsServer）。",
+        "en": "Run the user's iOS Shortcuts automations (works on both jailed and jailbroken devices). When the user asks for something system-level (e.g. toggle Do Not Disturb), ask/confirm the shortcut name exists, then call run_shortcut. Requires companion native bridge Tools.Net.runShortcut (talking to 127.0.0.1:8891 via OperitLocalServer to drive the in-app Swift ShortcutsServer)."
     },
     "enabledByDefault": true,
     "category": "System",

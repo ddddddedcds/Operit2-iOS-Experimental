@@ -3,7 +3,7 @@
 //  Runner
 //
 //  权限全家桶服务：AI 工具（contacts_*/calendar_*/reminders_*/photos_*/health_*/location_*）
-//   → Tools.Net.openUrl（Rust）→ 127.0.0.1:8895 文本协议 → 本服务 → 系统公开 API 读写。
+//   → Tools.Net.openUrl（Rust）→ 127.0.0.1:8891（OperitLocalServer，经 OpenURLServer "tcc " 前缀）→ 本服务 → 系统公开 API 读写。
 //  协议（每连接一行，命令用空格分隔，参数用 | 分隔；响应单行 JSON）：
 //    contacts list [limit]            —— 通讯录全部（名字/电话/邮箱）
 //    contacts search <query>          —— 按名字/电话搜索通讯录
@@ -34,46 +34,15 @@ import CoreLocation
 final class TCCServer: NSObject, CLLocationManagerDelegate {
   static let shared = TCCServer()
 
-  private var listener: NWListener?
-  private let queue = DispatchQueue(label: "operit.tcc.server", qos: .userInitiated)
-
   private let eventStore = EKEventStore()
   private let contactStore = CNContactStore()
   private let healthStore = HKHealthStore()
   private let locManager = CLLocationManager()
   private var locCallback: ((CLLocation?) -> Void)?
 
-  func start() {
-    guard listener == nil else { return }
-    do {
-      let l = try NWListener(using: .tcp, on: 8895)
-      l.newConnectionHandler = { [weak self] conn in self?.handle(conn) }
-      l.start(queue: queue)
-      listener = l
-    } catch {
-      print("[TCCServer] start failed: \(error)")
-    }
-  }
-
   // MARK: - 连接/协议
 
-  private func handle(_ conn: NWConnection) {
-    conn.start(queue: queue)
-    conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) {
-      [weak self] data, _, _, _ in
-      guard let self,
-        let data,
-        let line = String(data: data, encoding: .utf8)?
-          .trimmingCharacters(in: .whitespacesAndNewlines),
-        !line.isEmpty
-      else {
-        conn.cancel()
-        return
-      }
-      self.dispatch(line, conn: conn)
-    }
-  }
-
+  // internal：由 OperitLocalServer（单端口 8891，经 OpenURLServer "tcc " 前缀）路由至此
   private func reply(_ conn: NWConnection, _ obj: Any) {
     let json: String
     if let d = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]),
