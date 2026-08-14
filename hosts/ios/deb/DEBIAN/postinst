@@ -185,6 +185,31 @@ if [ -d "$APP" ]; then
   chmod 0755 "$APP/Runner" 2>/dev/null || true
   if command -v uicache >/dev/null 2>&1; then uicache 2>/dev/null || true; fi
   echo "   app registered at $APP"
+
+  # --- roothide 信任链（2026-08-14 实锤）：注册 app 全部 Mach-O 到 jailbreak trustcache ---
+  # Relaxin（Dopamine-roothide）的 AMFI 对 **dlopen** 的 app 内嵌 framework 做严格
+  # cdhash 校验：不注册则报 "code signature invalid"（objective_c.framework 真机实测，
+  # 注册后即修复）。启动时 dyld 加载的库路径放行，但运行时 dlopen 必须可信。
+  # 语法注意：Dopamine 主版 jbctl `trustcache add <cdhash>`，Dopamine-roothide 收
+  # `<路径>`；本脚本只随 roothide deb 分发，故用路径版。必须放在上面 ldid 重签之后
+  # （cdhash 随签名变化）。best-effort，失败仅记日志。
+  JBCTL="$(command -v jbctl 2>/dev/null || true)"
+  [ -z "$JBCTL" ] && [ -x /basebin/jbctl ] && JBCTL=/basebin/jbctl
+  if [ -n "$JBCTL" ]; then
+    echo "   [trustcache] registering app Mach-O binaries (roothide path syntax) ..."
+    _reg=0
+    for _bin in "$APP/Runner" \
+        $(find "$APP/Frameworks" -maxdepth 2 -type f -perm -111 2>/dev/null) \
+        $(find "$APP/PlugIns" -maxdepth 3 -type f -perm -111 2>/dev/null); do
+      [ -f "$_bin" ] || continue
+      if $JBCTL trustcache add "$_bin" >> "$PINST_LOG" 2>&1; then
+        _reg=$((_reg + 1))
+      fi
+    done
+    echo "   [trustcache] registered $_reg binaries under $APP"
+  else
+    echo "   [trustcache] WARN: jbctl not found; dlopen'd frameworks may fail with code signature invalid"
+  fi
 else
   echo "   (no bundled app found at $APP; frontend not included in this deb)"
 fi
