@@ -331,15 +331,26 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 - [ ] 遗留 8.1-8.6 待后续开发者
 - [ ] 可选探索：AI 回复通知（BBServer action 回调 probe；AutoResponder 是 iOS 6-9 短信层先例）
 
-### 8.7 roothide 版整体未验证 🔴🔴（最高优先级）
+### 8.7 roothide 版整体未验证 🔴🔴（最高优先级，2026-08-14 已修 3/5 项，剩 2 项待真机）
 - **0.3.54 之后的所有版本（含 0.3.70）只在 Dopamine rootless 主测试机实测过，roothide deb 从未真机验证**
-- 具体风险（均为历史坑 + 未在最新版复核）：
-  1. postinst 重签/信任链（roothide 的 jbroot 签名机制 vs rootless 的 Dopamine trustcache；历史 ldid 路径坑 /usr/local/bin vs /usr/bin）
-  2. 双视图数据目录（app=jbroot 视图、daemon=真实根视图；.operit 属主、Siri 写 operit2.sqlite 的物理一致性）
-  3. detect_jailbreak 最新版在 roothide 实测
-  4. 设置面板/CC 模块在 roothide 的 jbroot 布局加载路径（无 /var/jb 前缀）
-  5. Siri AFConnection hook 在 roothide SpringBoard 是否触发
-- **交接者若有 roothide 设备，第一件事就是装最新 roothide deb 全量回归**（Siri/通知/锁屏/权限/设置面板/CC）
+- 2026-08-14 代码级修复（commit 00fe35c4，0.3.75）：
+  1. **双视图数据目录（核心）**：`roothide_compat.h` 的 `operit_env_path` 在 roothide 下把
+     `/var/jb/var/mobile/.operit` 与裸 `/var/mobile/.operit` 统一映射到 **`<jbroot>/var/mobile/.operit`
+     物理目录**。根因：SpringBoard（tweak 宿主）是 real-root 视图，裸路径落到 rootfs，
+     与 app（jbroot 视图）/daemon（jbroot 前缀）分离 → 通知/锁屏/应用锁/Siri 数据全断。
+     operit-sb.x 的 12 处数据路径（6 全局 + 6 Siri 内联）全部接入；`operit_data_dir()` 与
+     Rust `operit_ios_env::data_root()`（`scan_jbroot_prefix` → `<jbroot>/var/mobile/.operit`）对齐。
+  2. **detect_jailbreak 修正**：`/var/jb` 符号链接按目标区分——指向 `/` ⇒ roothide，
+     指向 procursus ⇒ rootless（原逻辑把 rootless 的 procursus 符号链接误判成 RootHide）；
+     Swift `isRootHideInstall` 同款对齐。
+  3. **postinst 信任链**：删除两处 `jbctl trustcache add <路径>` 调用——实测 Dopamine jbctl
+     trustcache add 接收 40 位 cdhash 而非文件路径（"passed cdhash has wrong length"），从未注册成功；
+     且 postinst 只随 roothide deb 分发（rootless 的 packdeb.py 不带 maintainer 脚本）。
+     roothide 靠设备 ldid 重签即被信任，无需 trustcache。
+- 剩余待真机（Relaxin）：4. 设置面板/CC 模块 jbroot 布局加载；5. Siri AFConnection hook 触发；
+  另加**冷启动验证**（roothide 用 stock dyld + `@loader_path/.jbroot` 链接，预期无 Dopamine 的 60s，
+  见 §15 实验结论）
+- **交接者若有 roothide 设备，第一件事就是装最新 roothide deb 全量回归**（脚本：`hosts/ios/deb/scripts/roothide_regress.sh`）
 
 ### 8.8 IPA 阉割版（nonjb / TrollStore / 自签）整体不可用 🔴
 - **本质**：nonjb 打包用 Runner-nonjb.entitlements（剥离 no-sandbox + container-required=false）→ app 落标准沙盒（data_root=$HOME/Documents/.operit），无 AppSync/amfid patch
