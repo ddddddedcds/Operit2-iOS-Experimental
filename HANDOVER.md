@@ -347,9 +347,17 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
      trustcache add 接收 40 位 cdhash 而非文件路径（"passed cdhash has wrong length"），从未注册成功；
      且 postinst 只随 roothide deb 分发（rootless 的 packdeb.py 不带 maintainer 脚本）。
      roothide 靠设备 ldid 重签即被信任，无需 trustcache。
-- 剩余待真机（Relaxin）：4. 设置面板/CC 模块 jbroot 布局加载；5. Siri AFConnection hook 触发；
-  另加**冷启动验证**（roothide 用 stock dyld + `@loader_path/.jbroot` 链接，预期无 Dopamine 的 60s，
-  见 §15 实验结论）
+- 剩余待真机（Relaxin）：4. 设置面板/CC 模块 jbroot 布局加载；5. Siri AFConnection hook 触发
+- **2026-08-14 Relaxin 真机实测（重要修正）**：
+  - **Relaxin 是 Dopamine 系 roothide**（preboot 有 `gen/dyld` 自研 dyld + `dyldhook_merge.*.dylib`，
+    与 Dopamine 主版同架构）→ **冷启动同样是 60s**！"roothide 用 stock dyld 无 60s"的推断
+    只对 Bootstrap/Serotonin 系真 roothide 成立，对 Relaxin 不成立。60s 是 Dopamine 系 dyld
+    的普遍问题（726 库 × 每库开销），非 Flutter 单独问题（Dart 逻辑仅 1s，§15 排除实验已证）。
+  - **dlopen 需 trustcache**：AMFI 对运行时 dlopen 的 app 内嵌 framework 做严格 cdhash 校验，
+    不注册报 "code signature invalid"（objective_c.framework / DOBJC_initializeApi 实测）。
+    **jbctl 语法分叉**：Dopamine 主版 `trustcache add <cdhash>`（40 位 hex），
+    Dopamine-roothide/Relaxin `trustcache add <路径>`（usage 实测相反！）。
+    postinst（0.3.77+）在 roothide 用路径版注册 app 全部 Mach-O（ldid 重签之后）。
 - **交接者若有 roothide 设备，第一件事就是装最新 roothide deb 全量回归**（脚本：`hosts/ios/deb/scripts/roothide_regress.sh`）
 - 2026-08-14 产物：`operit2-ios_0.3.75_iphoneos-arm64e.deb`（SHA256 8651732bf4bed577…，roothide）
   - 装机：`scp` 到设备 → Sileo 安装或 `sudo dpkg -i` → respring
