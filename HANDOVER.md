@@ -358,6 +358,11 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
     **jbctl 语法分叉**：Dopamine 主版 `trustcache add <cdhash>`（40 位 hex），
     Dopamine-roothide/Relaxin `trustcache add <路径>`（usage 实测相反！）。
     postinst（0.3.77+）在 roothide 用路径版注册 app 全部 Mach-O（ldid 重签之后）。
+  - **Dopamine2-roothide 同样有 60s（调研结论）**：该仓库 BaseBin 保留 `dyldhook`（逐库
+    dyld hook）+ `launchdhook` + `jailbreakd` + `jbctl`，与 Dopamine 主版同架构（Relaxin 即
+    其系，basebin 内容吻合）。60s 是 dyldhook 对每库做路径重映射/处理的固有开销，
+    **与 rootless/roothide 模式无关**。"真 roothide（Bootstrap/Serotonin 系，stock dyld +
+    DYLD_INSERT preload.dylib 一次性注入、无逐库 hook）"才可能无 60s——未验证。
 - **交接者若有 roothide 设备，第一件事就是装最新 roothide deb 全量回归**（脚本：`hosts/ios/deb/scripts/roothide_regress.sh`）
 - 2026-08-14 产物：`operit2-ios_0.3.75_iphoneos-arm64e.deb`（SHA256 8651732bf4bed577…，roothide）
   - 装机：`scp` 到设备 → Sileo 安装或 `sudo dpkg -i` → respring
