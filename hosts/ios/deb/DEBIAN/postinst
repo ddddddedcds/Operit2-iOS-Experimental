@@ -195,6 +195,33 @@ if [ -d "$APP" ]; then
   chmod 0755 "$APP/Runner" 2>/dev/null || true
   if command -v uicache >/dev/null 2>&1; then uicache 2>/dev/null || true; fi
   echo "   app registered at $APP"
+
+  # --- EXPERIMENT (0.3.74): trustcache-register EVERY app Mach-O binary ---
+  # Hypothesis（HANDOVER §15，fs_usage 实锤：冷启动 60s、726 个库逐个验证）：
+  # rootless 下 AMFI 对每个 embedded framework 的 adhoc/ldid 签名走慢路径验证，
+  # 与 daemon 当初必须 trustcache 注册才免 -9 是同一机制。把 app 内所有可执行
+  # Mach-O（主二进制 + Frameworks 全部 + PlugIns appex 全部）注册进 trustcache，
+  # 若验证慢是根因 → 冷启动应大幅下降。best-effort：失败只记日志。
+  # 注：必须放在上面的 ldid 重签之后（cdhash 随签名变化）。
+  JBCTL2="$(command -v jbctl 2>/dev/null || true)"
+  [ -z "$JBCTL2" ] && [ -x /basebin/jbctl ] && JBCTL2=/basebin/jbctl
+  if [ -n "$JBCTL2" ]; then
+    echo "   [exp] trustcache-registering app Mach-O binaries via $JBCTL2 ..."
+    _reg=0
+    _cand_count=0
+    for _cand in "$APP/Runner" \
+        $(find "$APP/Frameworks" -maxdepth 2 -type f -perm -111 2>/dev/null) \
+        $(find "$APP/PlugIns" -maxdepth 3 -type f -perm -111 2>/dev/null); do
+      [ -f "$_cand" ] || continue
+      _cand_count=$((_cand_count + 1))
+      if $JBCTL2 trustcache add "$_cand" >> "$PINST_LOG" 2>&1; then
+        _reg=$((_reg + 1))
+      fi
+    done
+    echo "   [exp] trustcache registered $_reg/$_cand_count candidate binaries under $APP (log: $PINST_LOG)"
+  else
+    echo "   [exp] WARN: jbctl not found; cannot trustcache-register app binaries"
+  fi
 else
   echo "   (no bundled app found at $APP; frontend not included in this deb)"
 fi
