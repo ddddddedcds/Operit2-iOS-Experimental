@@ -673,3 +673,17 @@ cd hosts/ios/deb && OPERIT_PACK_SCHEME=rootless THEOS_MODE=release APP_SRC="<CI�
 - **软移植收益**：消灭 Flutter 引擎 → 726→~200 库 → 冷启动 5-10 秒；包/插件/技能/MCP/记忆全在 Rust core 100% 保留
 - **软移植成本**：Flutter UI 层 228 文件/10.7 万行 Dart 需重写为 SwiftUI（3-6 周工程）
 - 替代（不根治）：裁 Flutter 插件（726→~550，可能省 30-40%，功能阉割）
+
+### 15.5 终极归因（2026-08-14 全链路实验定论，接手者必读）
+**60s = Dopamine 系 dyld hook（2.4+ 架构）的逐库处理 × Flutter 的 726 库。**
+- **真凶**：Dopamine 2.4 changelog 自述 "introduced a dyld hook and redirects dyld to a different folder via symlink"。
+  dyld hook 对**每个加载的库**做路径重映射/处理（fs_usage 的"每库反复打开 dyld_shared_cache + fsgetpath"即此），
+  726 库 × 每库开销 = 60s；微信等库少的 app 开销小 → 秒开。
+- **iOS 16.7 无解环境**（全部实测/调研确认）：
+  1. Dopamine 3.x 与 Relaxin（Dopamine2-roothide 系）都是 2.4+ 血统 → 都带 dyld hook → 都 60s
+  2. Dopamine ≤2.3 无 dyld hook，但**不支持 iOS 16.7**（16.7 只能用 Dopamine 3+/Relaxin）
+  3. Hide Jailbreak 会禁用 dyld hook（Chase issue 验证 app 变快），但会隐藏整个越狱——**本产品就是越狱插件，hide 后 operit2 自身失效**，不可用
+  4. trustcache 注册、tweak 注入关闭、IO 预热、Impeller/Metal/网络/daemon/Rust/Dart 全部排除（§15.3 + 08-14 实验）
+- **唯一解**：软移植（§15.4）减库，或接受 60s + 体验层绕过（高频入口走 tweak 原生 UI，Siri 卡片已实现）
+- 附：本调研顺带实锤 **Relaxin 的 jbctl `trustcache add` 收路径**（Dopamine 主版收 cdhash），
+  dlopen 的 app 内嵌 framework 必须 trustcache 注册否则 "code signature invalid"（objective_c 实测，0.3.77 已固化进 postinst）
