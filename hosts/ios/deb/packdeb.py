@@ -120,12 +120,16 @@ def make_data_tar():
                     # ProgramArguments path verbatim, fails to find the daemon, and 8890
                     # never comes up. Rewrite the path inside the plist for the rootless
                     # scheme only; roothide keeps the original /usr/bin path.
+                    # 幂等保护（2026-08-14 回归修复）：若源文件已是 /var/jb 前缀
+                    # （fb9d01c3 曾直接写死 /var/jb/usr/bin，str.replace 把子串再替换
+                    # 成 /var/jb/var/jb/usr/bin 双前缀，daemon 起不来），不再二次加前缀。
                     if (SCHEME == "rootless"
                             and fn == "ai.operit.agent.plist"
                             and arc.endswith("Library/LaunchDaemons/ai.operit.agent.plist")):
                         data = open(fp, "rb").read()
-                        data = data.replace(b"/usr/bin/operit_agent_daemon",
-                                            b"/var/jb/usr/bin/operit_agent_daemon")
+                        if b"/var/jb/usr/bin/operit_agent_daemon" not in data:
+                            data = data.replace(b"/usr/bin/operit_agent_daemon",
+                                                b"/var/jb/usr/bin/operit_agent_daemon")
                         tar_add_bytes(tar, data, arc, mode=m)
                     else:
                         tar_add(tar, fp, arc, mode=m)

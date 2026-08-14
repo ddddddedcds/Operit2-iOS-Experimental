@@ -6,7 +6,9 @@
     <string>ai.operit.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/var/jb/usr/bin/operit_agent_daemon</string>
+        <!-- 源文件必须写 /usr/bin（roothide 用）；rootless 由 packdeb.py 加 /var/jb 前缀。
+             曾因直接写 /var/jb/usr/bin 导致 packdeb 子串替换成 /var/jb/var/jb/usr/bin 双前缀（0.3.71+ 回归）-->
+        <string>/usr/bin/operit_agent_daemon</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
