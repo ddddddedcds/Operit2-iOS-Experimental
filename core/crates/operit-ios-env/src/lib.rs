@@ -1,19 +1,22 @@
 //! iOS (jailbreak) environment root resolution and capability detection.
 //!
-//! Replaces hardcoded `/var/jb` literals across the iOS host, daemon, terminal
-//! and Flutter bridge with runtime-resolved roots:
+//! Rootless-only: this fork targets Dopamine / ElleKit rootless (everything
+//! under a fixed `/var/jb` symlink to the procursus root). All roothide
+//! support (random jbroot injection, per-process /var remap, JBROOT env, the
+//! whole `operit_env_path` / PathMapper abstraction) has been REMOVED — it was
+//! a compat shim for a jailbreak flavour this fork does not ship, and its
+//! `/var/jb/var/mobile/.operit == real /var/mobile/.operit` assumption was
+//! factually wrong on Dopamine (verified by inode: procursus has its own var).
 //!
-//! * `binary_root()` — where mach-o binaries live (daemon / tweak dylib / app).
-//!   On roothide this MUST NOT be under `/var` or `/tmp` (hard constraint from
-//!   the roothide loader; binaries placed there are rejected at load time).
-//! * `data_root()` — where logs / sockets / config / screenshots live. The real
-//!   `/var/mobile/.operit` is writable even on roothide (it is data, not a
-//!   mach-o binary, so the `/var` ban does not apply).
+//! * `binary_root()` — where mach-o binaries live (daemon / tweak dylib / app):
+//!   `/var/jb` (symlink to the procursus root).
+//! * `data_root()` — logs / sockets / config / screenshots: the REAL
+//!   `/var/mobile/.operit`. The app (containerized UIKitApplication) can write
+//!   here but NOT into the procursus tree (/private/preboot), so using the
+//!   `/var/jb` prefix for data was an EACCES crash on every fresh install.
 //!
 //! On non-iOS targets `binary_root()` is `None` and `data_root()` falls back to
-//! a portable directory. The legacy code wrote to `/var/jb` off-device, which
-//! silently failed as a non-root user; we now use a real, writable location so
-//! diagnostics survive.
+//! a portable writable directory so diagnostics survive.
 
 use std::path::{Path, PathBuf};
 
@@ -24,8 +27,8 @@ pub enum JailbreakType {
     Unknown,
     /// Dopamine / ElleKit style: everything under a fixed `/var/jb`.
     Rootless,
-    /// roothide (Dopamine2-roothide / relaxin): random jbroot injected via the
-    /// `JBROOT` environment variable; mach-o must avoid `/var` and `/tmp`.
+    /// roothide — REMOVED: the fork is rootless-only. Variant kept so external
+    /// `match` arms still compile; `detect_jailbreak()` never returns it.
     RootHide,
     /// No jailbreak: daemon / tweak are absent; only the local sandbox works.
     NonJailbreak,
@@ -51,16 +54,9 @@ impl Roots {
 
 /// Test whether this process can write to `/var/mobile/.operit`.
 ///
-/// On roothide the app runs unsandboxed inside the jbroot container, so this
-/// path is writable and resolves to the (per-process-remapped) jbroot data dir.
-/// On a stock, non-jailbroken, sandboxed app this path is NOT writable, which is
-/// how we distinguish roothide from plain NonJailbreak. (TrollStore is
-/// intentionally out of scope, so "unsandboxed + writable" is unambiguous.)
-///
-/// We deliberately do NOT probe the `.jbroot-*` / `/.jbroot` markers: those live
-/// in the *real-root* filesystem view and are invisible to the jbroot-injected
-/// app, which is exactly why the old marker-based detection silently fell
-/// through to NonJailbreak on roothide.
+/// On a stock, non-jailbroken, sandboxed app this path is NOT writable; on a
+/// rootless device (app unsandboxed via no-sandbox entitlements) it is. This is
+/// how we distinguish jailbroken (rootless) from NonJailbreak.
 fn operit_data_writable() -> bool {
     let p = Path::new("/var/mobile/.operit");
     if std::fs::create_dir_all(p).is_err() {
@@ -78,90 +74,13 @@ fn operit_data_writable() -> bool {
     }
 }
 
-/// Physical jbroot prefix of the CURRENT executable, e.g.
-/// `/var/containers/Bundle/Application/.jbroot-58EAA282AAFACD0F`.
-///
-/// `None` when this binary was not installed by roothide.
-///
-/// This is the authoritative roothide test: roothide installs the whole
-/// jailbreak tree inside `/var/containers/Bundle/Application/.jbroot-XXXXXXXX/`,
-/// so every binary it ships (app, daemon, tweak dylib) carries that segment in
-/// its own path. Verified on device:
-///   `/var/containers/Bundle/Application/.jbroot-58EAA282AAFACD0F/Applications/Runner.app/Runner`
-pub fn self_jbroot_prefix() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let s = exe.to_string_lossy();
-    let idx = s.find("/.jbroot-")?;
-    let after = &s[idx + 1..];
-    let end = after.find('/').map(|i| idx + 1 + i).unwrap_or(s.len());
-    Some(PathBuf::from(&s[..end]))
-}
-
-/// True when `path` is a symbolic link (without following it).
-fn is_symlink(path: &str) -> bool {
-    std::fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-}
-
-/// Locate the roothide jbroot container prefix WITHOUT relying on our own
-/// executable path.
-///
-/// roothide installs every jailbreak file (app, daemon, dylib, frameworks)
-/// under `/var/containers/Bundle/Application/.jbroot-XXXXXXXX/`. An app/tweak can
-/// read its own `.jbroot-` segment from `current_exe()` / `Bundle.main`, but a
-/// daemon's `current_exe()` is REMAPPED to `/usr/bin` by roothide (the segment
-/// is hidden), so `self_jbroot_prefix()` returns `None` for daemons. We discover
-/// the prefix by scanning that well-known directory instead.
-fn scan_jbroot_prefix() -> Option<PathBuf> {
-    let base = Path::new("/var/containers/Bundle/Application/");
-    let entries = std::fs::read_dir(base).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let s = name.to_string_lossy();
-        if s.starts_with(".jbroot-") {
-            return Some(entry.path());
-        }
-    }
-    None
-}
-
 /// Detect the active jailbreak environment at runtime.
 ///
-/// Resolution order (NEVER test bare `/var/jb` existence as "rootless" — see
-/// below):
-/// 1. our own path contains `/.jbroot-` ⇒ roothide (app / tweak / dylib).
-/// 2. `/var/jb` is a SYMLINK ⇒ roothide. On roothide `/var/jb` is a compat-layer
-///    symlink pointing at `/` (so `/var/jb/usr/lib` *does* exist there); on
-///    rootless `/var/jb` is a real directory. This is the reliable daemon test.
-/// 3. `/var/jb/usr/lib` exists AND `/var/jb` is a real directory ⇒ rootless.
-/// 4. `/var/mobile/.operit` writable ⇒ jailbroken with unknown flavour, treated
-///    as roothide (unsandboxed).
-/// 5. Otherwise ⇒ non-jailbreak (local sandbox only).
-///
-/// WHY NOT `Path::new("/var/jb/usr/lib").exists()` alone?
-/// On a real roothide device `/var/jb` is a symlink to `/`, so `/var/jb/usr/lib`
-/// EXISTS too — that test alone mis-detects roothide as rootless, which then
-/// points the daemon's data root at the wrong physical directory and breaks the
-/// app↔daemon shared data dir (config / logs / tool packages). A detection rule
-/// must not be falsifiable by the thing it detects.
+/// Rootless-only: returns `Rootless` when a rootless marker is present
+/// (`/var/jb` symlink to a procursus root, current_exe under `/var/jb`, or
+/// `/var/jb/usr/lib`), `NonJailbreak` otherwise. The roothide symlink-target
+/// disambiguation (target == "/") is gone — there is no roothide anymore.
 pub fn detect_jailbreak() -> JailbreakType {
-    if self_jbroot_prefix().is_some() {
-        return JailbreakType::RootHide;
-    }
-    if is_symlink("/var/jb") {
-        // roothide 的 /var/jb 是兼容层符号链接，指向 "/"（见 roothide.md）；
-        // rootless Dopamine 的 /var/jb 是指向 procursus 根的符号链接（或真实目录）。
-        // 按目标区分，避免把 rootless 误判成 RootHide（那会隐藏 /var/jb 二进制根，
-        // 并把 data_root 退化成裸 /var/mobile/.operit）。
-        if let Ok(target) = std::fs::read_link("/var/jb") {
-            if target.to_string_lossy() == "/" {
-                return JailbreakType::RootHide;
-            }
-            return JailbreakType::Rootless;
-        }
-        // 符号链接读不到目标——落到下面的目录探测。
-    }
     if let Ok(exe) = std::env::current_exe() {
         if exe.starts_with("/var/jb/") {
             return JailbreakType::Rootless;
@@ -170,20 +89,17 @@ pub fn detect_jailbreak() -> JailbreakType {
     if Path::new("/var/jb/usr/lib").exists() {
         return JailbreakType::Rootless;
     }
+    if std::fs::symlink_metadata("/var/jb").is_ok() {
+        return JailbreakType::Rootless;
+    }
     if operit_data_writable() {
-        return JailbreakType::RootHide;
+        return JailbreakType::Rootless;
     }
     JailbreakType::NonJailbreak
 }
 
 /// Create the data root and make sure a non-root process (the Flutter app runs
 /// as `mobile`, uid 501) can write inside it.
-///
-/// The daemon runs as root under launchd; anything it creates first would
-/// otherwise be `root`-owned `755`, and the app could not create its log/client
-/// subdirectories. That exact situation white-screened the app on roothide.
-/// Widening the mode is enough (the app only needs to create its own children)
-/// and needs no libc dependency.
 pub fn ensure_data_root() -> PathBuf {
     let root = data_root();
     let _ = std::fs::create_dir_all(&root);
@@ -209,9 +125,12 @@ pub fn relax_dir_permissions(dir: &Path) {
 }
 
 /// Resolve the two roots for an explicit jailbreak type.
+///
+/// Rootless-only. `RootHide` is treated identically to `Rootless` (defensive;
+/// the variant is never produced by `detect_jailbreak` anymore).
 pub fn resolve_roots_for(jb: JailbreakType) -> Roots {
     match jb {
-        JailbreakType::Rootless => Roots {
+        JailbreakType::Rootless | JailbreakType::RootHide | JailbreakType::Unknown => Roots {
             // binary_root is /var/jb: on rootless Dopamine this is a *symlink to
             // the procursus root* (e.g. /private/preboot/.../dopamine-.../procursus),
             // so mach-o we stage lands under /var/jb/usr/bin etc.
@@ -219,45 +138,17 @@ pub fn resolve_roots_for(jb: JailbreakType) -> Roots {
             // data_root is the REAL /var/mobile/.operit. On Dopamine rootless
             // /var/jb/var is procursus's OWN var (a different physical
             // directory — verified by inode on-device), NOT a remap of the
-            // real /var/mobile. A sandboxed/containerized app process cannot
-            // write into the procursus tree (/private/preboot) and hits EACCES;
-            // the launchd daemon (no container) can, which masked the bug.
-            // The real /var/mobile/.operit is writable by mobile and is where
-            // the app's launch.log already lands. App + daemon + tweak all
-            // resolve data_root() to this same physical path on rootless.
+            // real /var/mobile. A containerized app process cannot write into
+            // the procursus tree (/private/preboot) and hits EACCES; the
+            // launchd daemon (no container) can, which masked the bug. The
+            // real /var/mobile/.operit is writable by mobile and is where the
+            // app's launch.log already lands. App + daemon + tweak all resolve
+            // data_root() to this same physical path.
             data: PathBuf::from("/var/mobile/.operit"),
-        },
-        JailbreakType::RootHide => Roots {
-            // Prefer our own install path: launchd does NOT pass JBROOT to the
-            // daemon, so the env var is frequently absent where it matters.
-            // For daemons current_exe() is remapped to /usr/bin by roothide, so
-            // fall back to scanning the jbroot container directory.
-            binary: self_jbroot_prefix()
-                .or_else(scan_jbroot_prefix)
-                .or_else(|| {
-                    std::env::var("JBROOT")
-                        .ok()
-                        .filter(|s| !s.is_empty())
-                        .map(PathBuf::from)
-                }),
-            // The Flutter app (jbroot-injected) resolves "/var/mobile/.operit" to
-            // the jbroot view, which physically lands at
-            // .jbroot-XXX/var/mobile/.operit. A daemon runs in the REAL-ROOT view
-            // where "/var/mobile/.operit" is a DIFFERENT directory, so it must
-            // address the same physical location explicitly via the jbroot
-            // prefix. Otherwise the app and daemon write to two separate
-            // directories and shared data (config / logs / tool packages) splits.
-            data: scan_jbroot_prefix()
-                .map(|p| p.join("var/mobile/.operit"))
-                .unwrap_or_else(|| PathBuf::from("/var/mobile/.operit")),
         },
         JailbreakType::NonJailbreak => Roots {
             binary: None,
             data: portable_data_dir(),
-        },
-        JailbreakType::Unknown => Roots {
-            binary: Some(PathBuf::from("/var/jb")),
-            data: PathBuf::from("/var/jb/var/mobile/.operit"),
         },
     }
 }
@@ -274,36 +165,15 @@ pub fn data_root() -> PathBuf {
 
 /// Convenience: the binary root, or `None` when mach-o cannot be placed.
 ///
-/// On rootless Dopamine `/var/jb` is a *symlink to the procursus root*
-/// (e.g. `/private/preboot/.../procursus`), so `detect_jailbreak()`'s
-/// "any `/var/jb` symlink ⇒ RootHide" rule mis-classifies it and yields
-/// `binary_root() == None`. That strips `/var/jb/usr/bin` from the terminal
-/// PATH (every command → "command not found"). Detect the rootless binary
-/// root directly via the symlink *target*: roothide targets `/`, rootless
-/// targets the procursus directory.
+/// On rootless Dopamine `/var/jb` is a symlink to the procursus root, so
+/// `/var/jb/usr/bin` is where the terminal PATH finds binaries.
 pub fn binary_root() -> Option<PathBuf> {
-    // Prefer the classified root (handles roothide jbroot prefix correctly and
-    // is byte-for-byte identical to the old behaviour there).
-    if let Some(bin) = resolve_roots().binary {
-        return Some(bin);
-    }
-    // Fallback: rootless Dopamine where `/var/jb` is a procursus symlink.
-    if is_symlink("/var/jb") {
-        if let Ok(target) = std::fs::read_link("/var/jb") {
-            if target.to_string_lossy() != "/" {
-                return Some(PathBuf::from("/var/jb"));
-            }
-        }
-    } else if Path::new("/var/jb/usr/lib").exists() {
-        return Some(PathBuf::from("/var/jb"));
-    }
-    None
+    resolve_roots().binary
 }
 
 #[cfg(not(target_os = "ios"))]
 fn portable_data_dir() -> PathBuf {
-    // Off-device the legacy code wrote to /var/jb (which fails silently as a
-    // non-root user). Use a real, writable directory so diagnostics survive.
+    // Off-device diagnostics: use a real, writable directory.
     std::env::temp_dir().join("operit")
 }
 
@@ -318,10 +188,6 @@ fn portable_data_dir() -> PathBuf {
 
 // ---------------------------------------------------------------------------
 // CapabilitiesProvider — iOS-internal environment abstraction.
-//
-// Orthogonal to the upstream I1–I8 contract: upstream only sees stable host
-// capabilities and never learns whether the device is rootless / roothide /
-// non-jailbroken. Each environment provides its own Provider.
 // ---------------------------------------------------------------------------
 
 pub trait CapabilitiesProvider {
@@ -333,7 +199,7 @@ pub trait CapabilitiesProvider {
     fn can_hide_jailbreak(&self) -> bool;
 }
 
-/// Dopamine / ElleKit (the current default).
+/// Dopamine / ElleKit (the only environment this fork ships).
 pub struct RootlessProvider;
 impl CapabilitiesProvider for RootlessProvider {
     fn jailbreak_type(&self) -> JailbreakType {
@@ -346,7 +212,7 @@ impl CapabilitiesProvider for RootlessProvider {
         Some(PathBuf::from("/var/jb"))
     }
     fn data_root(&self) -> PathBuf {
-        PathBuf::from("/var/jb/var/mobile/.operit")
+        PathBuf::from("/var/mobile/.operit")
     }
     fn can_inject_tweaks(&self) -> bool {
         true
@@ -356,41 +222,7 @@ impl CapabilitiesProvider for RootlessProvider {
     }
 }
 
-/// Dopamine2-roothide / relaxin.
-pub struct RootHideProvider;
-impl CapabilitiesProvider for RootHideProvider {
-    fn jailbreak_type(&self) -> JailbreakType {
-        JailbreakType::RootHide
-    }
-    fn is_jailbroken(&self) -> bool {
-        true
-    }
-    fn binary_root(&self) -> Option<PathBuf> {
-        self_jbroot_prefix().or_else(|| {
-            std::env::var("JBROOT")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from)
-        })
-    }
-    fn data_root(&self) -> PathBuf {
-        // Must match the Flutter app's jbroot-view /var/mobile/.operit, which
-        // physically resolves to .jbroot-XXX/var/mobile/.operit. Address that
-        // same physical directory explicitly so daemon-written data (config /
-        // logs / tool packages) is visible to the app.
-        scan_jbroot_prefix()
-            .map(|p| p.join("var/mobile/.operit"))
-            .unwrap_or_else(|| PathBuf::from("/var/mobile/.operit"))
-    }
-    fn can_inject_tweaks(&self) -> bool {
-        true
-    }
-    fn can_hide_jailbreak(&self) -> bool {
-        true
-    }
-}
-
-/// No jailbreak: daemon / tweak are absent; only the local sandbox works.
+/// Non-jailbroken device fallback.
 pub struct NonJailbreakProvider;
 impl CapabilitiesProvider for NonJailbreakProvider {
     fn jailbreak_type(&self) -> JailbreakType {
@@ -416,10 +248,8 @@ impl CapabilitiesProvider for NonJailbreakProvider {
 /// Select the provider for the active environment.
 pub fn provider() -> Box<dyn CapabilitiesProvider> {
     match detect_jailbreak() {
-        JailbreakType::Rootless => Box::new(RootlessProvider),
-        JailbreakType::RootHide => Box::new(RootHideProvider),
         JailbreakType::NonJailbreak => Box::new(NonJailbreakProvider),
-        JailbreakType::Unknown => Box::new(RootlessProvider),
+        _ => Box::new(RootlessProvider),
     }
 }
 
@@ -431,7 +261,16 @@ mod tests {
     fn rootless_roots() {
         let r = resolve_roots_for(JailbreakType::Rootless);
         assert_eq!(r.binary, Some(PathBuf::from("/var/jb")));
-        assert_eq!(r.data, PathBuf::from("/var/jb/var/mobile/.operit"));
+        assert_eq!(r.data, PathBuf::from("/var/mobile/.operit"));
+    }
+
+    #[test]
+    fn roothide_treated_as_rootless() {
+        // RootHide no longer exists; it must degrade to rootless, not to a
+        // jbroot-scanned data dir.
+        let r = resolve_roots_for(JailbreakType::RootHide);
+        assert_eq!(r.binary, Some(PathBuf::from("/var/jb")));
+        assert_eq!(r.data, PathBuf::from("/var/mobile/.operit"));
     }
 
     #[test]

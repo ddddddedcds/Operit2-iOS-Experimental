@@ -52,7 +52,7 @@
 			<key>label</key>
 			<string>关于</string>
 			<key>footerText</key>
-			<string>Operit2 iOS 越狱版（rootless-only，Dopamine/ElleKit）。数据目录 /var/jb/var/mobile/.operit。roothide 兼容层保留但未启用。</string>
+			<string>Operit2 iOS 越狱版（rootless-only，Dopamine/ElleKit）。数据目录 /var/mobile/.operit。</string>
 		</dict>
 	</array>
 </dict>

@@ -156,7 +156,7 @@ const IOS_ONLY_BUILTIN_TOOLS: &[BuiltinToolName] = &[
 
 /// Sends one line-command to the on-device `operit-agent` daemon over loopback
 /// TCP (127.0.0.1:8890) and returns the daemon's textual response. iOS only —
-/// loopback TCP is shared across the roothide per-process /var remap, which a
+/// loopback TCP is shared across app/daemon views, which a
 /// unix-socket path (resolved differently by the app vs the daemon) could not
 /// guarantee.
 #[cfg(target_os = "ios")]

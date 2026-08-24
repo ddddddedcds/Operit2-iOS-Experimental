@@ -3,16 +3,8 @@
 # Mac has no dpkg-deb, so packdeb.py constructs the ar package in Python.
 set -e
 BASE="$(cd "$(dirname "$0")" && pwd)"
-# Package scheme: rootless (default) or roothide. Override with OPERIT_PACK_SCHEME=roothide.
-SCHEME="${OPERIT_PACK_SCHEME:-rootless}"
-# roothide needs 4 extra entitlements (platform-application + AppBundles +
-# AppDataContainers); those must NOT be applied to a plain rootless build, where
-# platform-application can break app launch. Pick the file per scheme.
-if [ "$SCHEME" = "roothide" ]; then
-  ENTITLEMENTS="$BASE/Runner.roothide.entitlements"
-else
-  ENTITLEMENTS="$BASE/Runner.entitlements"
-fi
+# Rootless-only (this fork no longer ships a roothide build).
+ENTITLEMENTS="$BASE/Runner.entitlements"
 # Standalone LaunchDaemon agent daemon (restored 0.3.65): launched by launchd as
 # the automation host on 127.0.0.1:8890 (TCP, so any user can bind it — the plist
 # runs it as mobile). Gives lock-screen / background automation the foreground app
@@ -51,32 +43,23 @@ APP="$TWEAK/$OBJ_DIR/operit-app.dylib"
 # macOS, and ship the plist so postinst can re-sign + trustcache-register it.
 mkdir -p "$FILES/usr/bin" "$FILES/Library/LaunchDaemons"
 cp "$DAEMON" "$FILES/usr/bin/operit_agent_daemon"
-# Pre-sign the daemon on macOS so it ships signed. The SCHEME entitlements are
+# Pre-sign the daemon on macOS so it ships signed. The entitlements are
 # used (same key set as the app): the daemon touches the jbroot and needs the
-# roothide platform keys. On-device postinst re-signs with ldid and registers
-# the new cdhash via `jbctl trustcache add` — THAT is what prevents AMFI SIGKILL.
-if [ "$SCHEME" = "roothide" ] && command -v ldid >/dev/null 2>&1; then
-  echo "   signing daemon (macOS ldid) with $ENTITLEMENTS ..."
-  ldid -S"$ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
-    echo "   (ldid pre-sign failed; postinst re-signs on-device)"
-else
-  echo "   ad-hoc signing daemon (macOS codesign) with entitlements ..."
-  codesign --force --sign - --entitlements "$ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
-    echo "   (codesign unavailable; postinst re-signs on-device)"
-fi
-# Ship the daemon LaunchDaemon plist. IMPORTANT: it hardcodes
-# /usr/bin/operit_agent_daemon, which is correct for roothide (its dpkg installs
-# to a real /usr/bin) but WRONG for rootless (/usr/bin is the read-only system
-# dir; the binary is at /var/jb/usr/bin). packdeb.py rewrites that path inside
-# the plist for the rootless scheme, so launchd can find the daemon (8890).
+# On-device postinst re-signs with ldid and registers the new cdhash via
+# `jbctl trustcache add` — THAT is what prevents AMFI SIGKILL.
+echo "   ad-hoc signing daemon (macOS codesign) with entitlements ..."
+codesign --force --sign - --entitlements "$ENTITLEMENTS" "$FILES/usr/bin/operit_agent_daemon" 2>&1 | tail -3 || \
+  echo "   (codesign unavailable; postinst re-signs on-device)"
+# Ship the daemon LaunchDaemon plist. packdeb.py rewrites the daemon path for
+# the rootless scheme (binary at /var/jb/usr/bin, not /usr/bin).
 if [ ! -f "$FILES/Library/LaunchDaemons/ai.operit.agent.plist" ]; then
   echo "   WARN: daemon plist missing at files/Library/LaunchDaemons/"
 fi
 
 mkdir -p "$FILES/Library/MobileSubstrate/DynamicLibraries"
 # Ship the APP's full entitlements into the deb so postinst can re-sign the
-# frontend app on-device (platform-application + AppBundles/AppDataContainers +
-# iokit Metal + keychain — the app needs all of those).
+# frontend app on-device (no-sandbox + iokit Metal + keychain — the app needs
+# all of those).
 mkdir -p "$FILES/usr/share/operit"
 cp "$ENTITLEMENTS" "$FILES/usr/share/operit/operit.entitlements"
 
@@ -164,7 +147,7 @@ if [ -d "$APP_SRC" ]; then
   fi
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
   # --- produce IPA (app already ad-hoc signed above with $ENTITLEMENTS) ---
-  IPA_NAME="operit2-ios_${VERSION}_$( [ "$SCHEME" = "roothide" ] && echo iphoneos-arm64e || echo iphoneos-arm64 ).ipa"
+  IPA_NAME="operit2-ios_${VERSION}_iphoneos-arm64.ipa"
   IPA_OUT="$BASE/$IPA_NAME"
   echo "   building IPA: $IPA_NAME"
   ( cd "$FILES/Applications" \
@@ -178,6 +161,6 @@ else
 fi
 
 # --- pack ---
-export OPERIT_PACK_SCHEME="$SCHEME"
+export OPERIT_PACK_SCHEME=rootless
 python3 "$BASE/packdeb.py"
 echo "done."

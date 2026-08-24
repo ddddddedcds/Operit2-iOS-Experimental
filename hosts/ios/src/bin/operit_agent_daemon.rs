@@ -21,8 +21,7 @@ use operit_host_ios_native::device_agent::{run_device_agent_loop, DeviceAgentCon
 use operit_host_ios_native::device_automation::IosDeviceAutomationHost;
 
 // All on-device paths are resolved at runtime from the active jailbreak root
-// (see `operit_ios_env`): on rootless the data root is /var/jb/var/mobile/.operit,
-// on roothide it is /var/mobile/.operit (real, writable data path).
+// (see `operit_ios_env`): the data root is the real /var/mobile/.operit.
 const AUTOGLM_ENDPOINT: &str = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 const DAEMON_VERSION: &str = "0.3.9";
 
@@ -39,11 +38,8 @@ static STOP: LazyLock<Mutex<Arc<AtomicBool>>> =
 
 /// Cached daemon config pushed by the app over the TCP control channel.
 ///
-/// On roothide the app and daemon resolve `data_root()` to DIFFERENT physical
-/// directories (per-process /var remap), so a config.plist file written by the
-/// app is invisible to the daemon. The only cross-view channel is loopback TCP,
-/// hence the app pushes its LLM credentials here; `resolve_config` prefers this
-/// cache and falls back to the on-disk plist (which still works on rootless).
+/// The app pushes its LLM credentials over loopback TCP; `resolve_config`
+/// prefers this cache and falls back to the on-disk plist.
 struct CachedConfig {
     api_key: String,
     provider: String,
@@ -121,7 +117,7 @@ fn build_config(api_key: &str, provider: &str, base_url: &str, model: &str) -> O
     })
 }
 
-/// Read the app-written shared config.plist (XML). On roothide this file lives
+/// Read the app-written shared config.plist (XML).
 /// in a different physical dir than the one the app wrote, so it may be
 /// missing/empty; `resolve_config` covers that case via the TCP-pushed cache.
 fn load_config() -> Option<DeviceAgentConfig> {
@@ -141,7 +137,7 @@ fn load_config() -> Option<DeviceAgentConfig> {
     build_config(&api_key, &provider, &base_url, &model)
 }
 
-/// Resolve the daemon config: prefer the app-pushed TCP cache (roothide-safe),
+/// Resolve the daemon config: prefer the app-pushed TCP cache,
 /// fall back to the on-disk config.plist (rootless / non-jb).
 fn resolve_config() -> Option<DeviceAgentConfig> {
     if let Some(c) = CACHED_CONFIG.lock().unwrap().as_ref() {
@@ -212,7 +208,7 @@ fn dispatch(line: &str) -> String {
             "OK|goal set".to_string()
         }
         _ if line.starts_with("config ") => {
-            // App pushes LLM credentials over TCP (roothide-safe). Payload:
+            // App pushes LLM credentials over TCP. Payload:
             // "config <apiKey>|<apiProvider>|<apiBaseUrl>|<apiModel>".
             let rest = &line[7..];
             let parts: Vec<&str> = rest.split('|').collect();
@@ -567,15 +563,10 @@ fn main() {
 /// Bind the agent control socket on 127.0.0.1:AGENT_PORT.
 ///
 /// IMPORTANT: we bind directly and do NOT pre-probe with `TcpStream::connect`.
-/// On roothide the loopback connect probe hangs indefinitely (neither succeeds
-/// nor fails fast), which previously froze the daemon at startup so it never
-/// reached `bind` — the process looked alive but 8890 was never listening.
 /// If another instance already holds the port we get EADDRINUSE and exit 0,
 /// which (with KeepAlive SuccessfulExit=false) stops launchd from respawning
-/// us, so no crash loop. Loopback TCP is shared across the roothide
-/// per-process /var remap, so the app (jbroot view) and the daemon (real-root
-/// view) both reach this listener — which a unix-socket path could not
-/// guarantee.
+/// us, so no crash loop. Loopback TCP lets the app and the daemon share one
+/// control channel.
 fn bind_agent_sock() -> TcpListener {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), AGENT_PORT);
     match TcpListener::bind(addr) {

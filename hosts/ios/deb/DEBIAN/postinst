@@ -1,58 +1,18 @@
 #!/bin/sh
-# Run as root on the jailbroken device after `dpkg -i` (roothide scheme only).
+# Run as root on the jailbroken device after `dpkg -i` (rootless only).
 set -u
 
-# roothide installs to / (dpkg remaps package paths into the random jbroot);
-# rootless installs to /var/jb. Detect so the paths below are correct on both.
-#
-# CRITICAL: do NOT test bare `/var/jb` existence to tell the two apart. On a
-# real roothide device `/var/jb` exists too (it is a symlink into the jbroot),
-# so the old `[ -L /var/jb ] || [ -d /var/jb/usr ]` rule silently mis-detected
-# roothide as rootless and pointed every path at a non-writable tree. Require a
-# *real* rootless subtree (`/var/jb/usr/lib`); the buggy tweak never created
-# that, so its presence is an unambiguous rootless signal.
-if [ -d /var/jb/usr/lib ]; then
-  JB=/var/jb
-else
-  JB=
-fi
-echo "== Operit2 iOS install (JB prefix='${JB:-<none>}') =="
+# Rootless-only: this fork targets Dopamine/ElleKit rootless. Everything lives
+# under /var/jb (binaries) and the REAL /var/mobile/.operit (data). All
+# roothide detection / dual-path logic has been removed.
+JB=/var/jb
+echo "== Operit2 iOS install (rootless, JB=${JB}) =="
 
-# Self-heal: purge the bogus /var/jb tree the OLD buggy build left in the real
-# rootfs (/rootfs/var/jb -> /var/jb/var/mobile/.operit). The new code never routes
-# any path through /var/jb on roothide, so leaving the stale tree behind only
-# risks confusing future tooling. Removal is guarded so it can NEVER touch a
-# legitimate jailbreak tree:
-#   1. a real rootless/roothide bootstrap has /var/jb/usr/lib -> if present, skip;
-#   2. only act on a plain directory at /rootfs/var/jb (never a symlink, so a
-#      legit roothide /var/jb symlink is untouched);
-#   3. only when it contains NO real system subdirs (usr/System/Library/bin/sbin/
-#      Applications) -> i.e. it is genuinely the empty shell our bug created.
-if [ ! -d /var/jb/usr/lib ] && [ -d /rootfs/var/jb ] && [ ! -L /rootfs/var/jb ]; then
-  _jb_has_sys=0
-  for _s in usr System Library bin sbin Applications; do
-    [ -e "/rootfs/var/jb/$_s" ] && _jb_has_sys=1 && break
-  done
-  if [ "$_jb_has_sys" -eq 0 ]; then
-    echo "== self-heal: removing leftover bogus /rootfs/var/jb (not a real jb tree) =="
-    rm -rf /rootfs/var/jb 2>/dev/null || true
-  else
-    echo "== self-heal: /rootfs/var/jb has system subdirs; leaving it alone =="
-  fi
-fi
-
-# Data directory for sockets / logs / config.
-# - rootless: /var/jb/var/mobile/.operit (writable jb tree).
-# - roothide: /var/mobile/.operit. The app (jbroot-injected) and the daemon
-#   (system launchd) each resolve this to their OWN physical dir — that is fine,
-#   because the agent control channel and config are exchanged over loopback TCP
-#   (127.0.0.1:8890), which is shared across the per-process /var remap. No
-#   /rootfs anchor needed.
-if [ -n "$JB" ]; then
-  DATA_DIR="${JB}/var/mobile/.operit"
-else
-  DATA_DIR="/var/mobile/.operit"
-fi
+# Data directory for sockets / logs / config. The REAL /var/mobile/.operit:
+# the app (containerized UIKitApplication) can write here but NOT into the
+# procursus tree (/private/preboot) — using /var/jb for data was an EACCES
+# crash on every fresh install.
+DATA_DIR="/var/mobile/.operit"
 
 # Locate the device ldid. Its install path varies by jailbreak toolchain
 # (Procursus commonly uses /usr/bin/ldid, but some setups install to
@@ -68,24 +28,7 @@ done
 echo "== ldid resolved to: ${LDID_BIN:-<NOT FOUND>} =="
 
 echo "== socket / log directories =="
-# NOTE: on roothide the app's view of /var/jb exists, so the DATA_DIR detection
-# above may target the WRONG physical path. Chown BOTH the plain and the
-# /var/jb-prefixed candidates so the app (mobile, uid 501) can actually write its
-# client logs / runtime storage regardless of which path the app and daemon
-# resolve to. Failures are reported, not silently swallowed.
-# CRITICAL: never `mkdir -p /var/jb/...` on roothide. Creating a bare /var/jb
-# permanently poisons every "is this rootless?" check made by the app, the
-# daemon and this script — that is exactly what produced the white screen (the
-# app resolved its data root to a root-owned /var/jb tree it cannot write).
-# Only touch the jb tree when a REAL rootless install is present (/var/jb/usr).
 _DATA_CANDIDATES="/var/mobile/.operit"
-if [ -d /var/jb/usr/lib ]; then
-  _DATA_CANDIDATES="$_DATA_CANDIDATES /var/jb/var/mobile/.operit"
-elif [ -d /var/jb ]; then
-  # Leftover bogus /var/jb from an older build: don't extend it, but make any
-  # existing data dir inside it writable so an already-poisoned device recovers.
-  [ -d /var/jb/var/mobile/.operit ] && _DATA_CANDIDATES="$_DATA_CANDIDATES /var/jb/var/mobile/.operit"
-fi
 for _d in $_DATA_CANDIDATES; do
   mkdir -p "$_d" 2>/dev/null || true
   if chown -R mobile:mobile "$_d" 2>/dev/null; then
@@ -134,14 +77,12 @@ if [ -f "$DAEMON_BIN" ]; then
   else
     echo "$(date) WARN: ldid/entitlements missing; daemon will likely SIGKILL (-9)" >> "$PINST_LOG" 2>&1
   fi
-  # 信任链说明（2026-08-14 修正）：
-  # * roothide：设备 ldid 重签后的签名即被 AMFI 信任（roothide 无 Dopamine
-  #   trustcache），上面的 ldid -S 就是全部所需。
-  # * 原代码尝试 `jbctl trustcache add <文件路径>` —— 但 Dopamine 的 jbctl
-  #   trustcache add 接收的是 40 位 cdhash 而非路径（实测 "passed cdhash has
-  #   wrong length"），该调用从未真正注册过；且本脚本只随 roothide deb 分发
-  #   （rootless 的 packdeb.py 不带 maintainer 脚本），设备上也没有 jbctl。
-  #   故此处不再调用 jbctl。
+  # 信任链说明：Dopamine rootless 下 daemon 的信任由 Dopamine 的 launchdhook
+  # 在 deb 安装时收集；ldid 重签后需 trustcache add 新 cdhash（见上面 app 段）。
+  # 原代码尝试 `jbctl trustcache add <文件路径>` —— 但 Dopamine 的 jbctl
+  # trustcache add 接收的是 40 位 cdhash 而非路径（实测 "passed cdhash has
+  # wrong length"），该调用从未真正注册过。此处保留 ldid 重签（必须），
+  # trustcache 注册交给 app 段的统一逻辑。
 else
   echo "   (no daemon binary at $DAEMON_BIN; agent daemon not included)"
 fi
@@ -172,8 +113,8 @@ echo "== frontend app install (sign + register) =="
 APP=${JB}/Applications/Runner.app
 if [ -d "$APP" ]; then
   # Re-sign app binaries on-device with the SAME entitlements the build used
-  # (Runner.roothide.entitlements: no-sandbox + iokit for Metal/IOSurface).
-  # A bare `ldid -S` (no file) would STRIP those keys -> Impeller SIGABRT / Metal
+  # (Runner.entitlements: no-sandbox + iokit for Metal/IOSurface). A bare
+  # `ldid -S` (no file) would STRIP those keys -> Impeller SIGABRT / Metal
   # denied at launch. If ldid or the entitlements file is missing, skip and let
   # AppSync Unified (already installed) sign the app instead.
   if [ -n "$LDID_BIN" ] && [ -f "$APP_ENTFILE" ]; then
@@ -194,29 +135,30 @@ if [ -d "$APP" ]; then
   if command -v uicache >/dev/null 2>&1; then uicache 2>/dev/null || true; fi
   echo "   app registered at $APP"
 
-  # --- roothide 信任链（2026-08-14 实锤）：注册 app 全部 Mach-O 到 jailbreak trustcache ---
-  # Relaxin（Dopamine-roothide）的 AMFI 对 **dlopen** 的 app 内嵌 framework 做严格
-  # cdhash 校验：不注册则报 "code signature invalid"（objective_c.framework 真机实测，
-  # 注册后即修复）。启动时 dyld 加载的库路径放行，但运行时 dlopen 必须可信。
-  # 语法注意：Dopamine 主版 jbctl `trustcache add <cdhash>`，Dopamine-roothide 收
-  # `<路径>`；本脚本只随 roothide deb 分发，故用路径版。必须放在上面 ldid 重签之后
-  # （cdhash 随签名变化）。best-effort，失败仅记日志。
+  # --- trustcache：注册 app 全部 Mach-O 的 cdhash 到 jailbreak trustcache ---
+  # Dopamine 的 AMFI 对 dlopen 的 app 内嵌 framework 做严格 cdhash 校验：
+  # 不注册则报 "code signature invalid"（objective_c.framework 真机实测，
+  # 注册后即修复）。Dopamine 主版 jbctl 收 `<cdhash>`（40 位 hex），用
+  # `ldid -h` 提取。必须放在上面 ldid 重签之后（cdhash 随签名变化）。
+  # best-effort，失败仅记日志。
   JBCTL="$(command -v jbctl 2>/dev/null || true)"
   [ -z "$JBCTL" ] && [ -x /basebin/jbctl ] && JBCTL=/basebin/jbctl
-  if [ -n "$JBCTL" ]; then
-    echo "   [trustcache] registering app Mach-O binaries (roothide path syntax) ..."
+  if [ -n "$JBCTL" ] && [ -n "$LDID_BIN" ]; then
+    echo "   [trustcache] registering app Mach-O cdhashes ..."
     _reg=0
     for _bin in "$APP/Runner" \
         $(find "$APP/Frameworks" -maxdepth 2 -type f -perm -111 2>/dev/null) \
         $(find "$APP/PlugIns" -maxdepth 3 -type f -perm -111 2>/dev/null); do
       [ -f "$_bin" ] || continue
-      if $JBCTL trustcache add "$_bin" >> "$PINST_LOG" 2>&1; then
+      _cd=$($LDID_BIN -h "$_bin" 2>/dev/null | grep -m1 '^CDHash' | awk '{print $2}')
+      [ -n "$_cd" ] || continue
+      if $JBCTL trustcache add "$_cd" >> "$PINST_LOG" 2>&1; then
         _reg=$((_reg + 1))
       fi
     done
     echo "   [trustcache] registered $_reg binaries under $APP"
   else
-    echo "   [trustcache] WARN: jbctl not found; dlopen'd frameworks may fail with code signature invalid"
+    echo "   [trustcache] WARN: jbctl/ldid not found; dlopen'd frameworks may fail with code signature invalid"
   fi
 else
   echo "   (no bundled app found at $APP; frontend not included in this deb)"

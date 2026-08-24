@@ -59,7 +59,7 @@ impl Default for IosTerminalHost {
 impl IosTerminalHost {
     /// Creates the iOS terminal host and checks whether a real system shell can
     /// actually start in a PTY. Tries `/bin/sh` first (stock-ish hosts), then
-    /// falls back to the jailbroken rootless/roothide layout `/var/jb/bin/sh`.
+    /// falls back to the jailbroken rootless layout `/var/jb/bin/sh`.
     pub fn new() -> Self {
         let (systemShell, systemShellAvailable) = Self::probeSystemShell();
         Self {

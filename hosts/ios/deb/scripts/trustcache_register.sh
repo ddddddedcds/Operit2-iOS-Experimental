@@ -9,7 +9,7 @@
 #   scp trustcache_register.sh mobile@<ip>:/tmp/
 #   ssh mobile@<ip> 'echo <PASSWORD> | sudo -S sh /tmp/trustcache_register.sh'
 #
-# 注意：rootless 的 deb 从不打包 postinst（packdeb.py 仅 roothide 带），
+# 注意：rootless 的 deb 从不打包 postinst（packdeb.py 不带 maintainer 脚本），
 # 所以本脚本是实验的唯一通道。注册对设备是持久内核状态（重启后仍有效，
 # Dopamine 会把已注册项持久化；若重启丢失则重跑本脚本）。
 
@@ -27,7 +27,7 @@ echo "== jbctl: $JBCTL =="
 
 APP=/var/jb/Applications/Runner.app
 if [ ! -d "$APP" ]; then
-  # roothide 布局兜底
+  # 布局兜底
   APP=/Applications/Runner.app
 fi
 if [ ! -d "$APP" ]; then
