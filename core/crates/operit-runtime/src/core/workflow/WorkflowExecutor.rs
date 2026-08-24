@@ -482,22 +482,13 @@ impl WorkflowExecutor {
         action_type: &str,
         parameters: &[(String, String)],
     ) -> Result<String, String> {
-        // Without a runtime this is a best-effort sync call; async tools must
-        // move execute() to an async entry in Step 2.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build();
-                let result = match rt {
-                    Ok(runtime) => runtime.block_on(action.execute(action_type, parameters)),
-                    Err(_) => Err("failed to build tokio runtime".to_string()),
-                };
-                let _ = tx.send(result);
-            });
-        });
-        rx.recv().map_err(|_| "action channel closed".to_string())?
+        // Build a small current-thread runtime and drive the async action on
+        // the calling thread (no std::thread, so Wasm boundary guards pass).
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("failed to build tokio runtime: {error}"))?;
+        rt.block_on(action.execute(action_type, parameters))
     }
 
     fn execute_condition(
@@ -813,17 +804,15 @@ fn random_string(length: i32, charset: &str) -> String {
 /// Minimal non-cryptographic randomness (no external dep needed for Step 1).
 mod rand_util {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     static SEED: AtomicU64 = AtomicU64::new(0);
 
     pub fn next_u64() -> u64 {
         let mut seed = SEED.load(Ordering::Relaxed);
         if seed == 0 {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0x9E3779B97F4A7C15);
+            // Use the host time abstraction (std::time is forbidden by the
+            // Wasm platform boundary guard).
+            let nanos = operit_host_api::TimeUtils::currentTimeMillisU128() as u64;
             seed = nanos ^ 0x9E3779B97F4A7C15;
             SEED.store(seed, Ordering::Relaxed);
         }

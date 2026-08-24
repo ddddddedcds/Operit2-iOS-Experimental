@@ -95,6 +95,14 @@ for _d in $_DATA_CANDIDATES; do
   fi
   mkdir -p "$_d/logs" 2>/dev/null || true
   chown -R mobile:mobile "$_d/logs" 2>/dev/null || true
+  # Rootless-only runtime layout: the app's runtime storage root is
+  # <data>/runtime (PathMapper maps /app/data/<x> -> <runtimeRoot>/<x>, the
+  # "data" VFS segment is consumed). AppLogger writes <runtimeRoot>/logs, and
+  # core uses <runtimeRoot>/temp. Without these dirs owned by mobile the core
+  # panics with "runtime log files must be configured ... Permission denied".
+  mkdir -p "$_d/runtime/logs" 2>/dev/null || true
+  mkdir -p "$_d/runtime/temp" 2>/dev/null || true
+  chown -R mobile:mobile "$_d/runtime" 2>/dev/null || true
 done
 
 # --- agent daemon (restored 0.3.65): re-sign on-device + register in trustcache ---

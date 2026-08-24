@@ -607,10 +607,24 @@ pub(crate) fn create_local_core(
     Ok(LocalCoreProxy::new(application))
 }
 
+#[cfg(target_os = "ios")]
+pub(crate) fn default_native_storage_roots() -> Result<(PathBuf, PathBuf), String> {
+    // iOS jailbreak (rootless): the app and daemon share one filesystem view.
+    // Use the same data root the deb stages (postinst chowns it to mobile) so
+    // the AppLogger / runtime storage write succeeds. Do NOT use
+    // $HOME/Library/Application Support/Operit2 — on a fresh install those
+    // directories do not exist and the sandbox denies creating them, which
+    // panics core init with "runtime log files must be configured ... EACCES".
+    let data = operit_ios_env::data_root();
+    Ok((
+        data.join("runtime"),
+        data.join("workspaces"),
+    ))
+}
+
 #[cfg(any(
     windows,
     all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "ios",
     target_os = "macos"
 ))]
 pub(crate) fn default_native_storage_roots() -> Result<(PathBuf, PathBuf), String> {

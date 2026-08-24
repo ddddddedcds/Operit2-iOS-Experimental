@@ -127,7 +127,7 @@ pub fn build_execution_record(
     message: String,
 ) -> WorkflowExecutionRecord {
     WorkflowExecutionRecord {
-        id: format!("rec-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)),
+        id: format!("rec-{}", operit_host_api::TimeUtils::currentTimeMillis()),
         entries: vec![operit_model::WorkflowExecutionLog::WorkflowExecutionLogEntry {
             level: if success { WorkflowLogLevel::INFO } else { WorkflowLogLevel::ERROR },
             message,
