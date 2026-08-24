@@ -221,13 +221,37 @@ impl RuntimeSqliteHost for AppleRuntimeStorageHost {
     fn openSqliteDatabase(&self, path: &str) -> HostResult<Box<dyn RuntimeSqliteConnection>> {
         let path = self.resolve(path)?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|error| {
+                trace_sqlite_failure(&path, &format!("create_dir_all: {error}"));
+                HostError::new(error.to_string())
+            })?;
         }
         let connection =
-            rusqlite::Connection::open(path).map_err(|error| HostError::new(error.to_string()))?;
+            rusqlite::Connection::open(&path).map_err(|error| {
+                trace_sqlite_failure(&path, &format!("rusqlite open: {error}"));
+                HostError::new(error.to_string())
+            })?;
         Ok(Box::new(RusqliteRuntimeConnection { connection }))
     }
 }
+
+/// Best-effort diagnostics: appends the exact physical path that failed to
+/// `/var/mobile/.operit/launch.log` (writable from the app process; tweak and
+/// Dart both write there). Helps isolate EACCES-on-iOS without a rebuild loop.
+#[cfg(target_os = "ios")]
+fn trace_sqlite_failure(path: &std::path::Path, detail: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/var/mobile/.operit/launch.log")
+    {
+        let _ = writeln!(f, "[sqlite-fail] path={} detail={detail}", path.display());
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+fn trace_sqlite_failure(_path: &std::path::Path, _detail: &str) {}
 
 /// Normalizes a storage path into safe relative path segments.
 #[allow(non_snake_case)]
