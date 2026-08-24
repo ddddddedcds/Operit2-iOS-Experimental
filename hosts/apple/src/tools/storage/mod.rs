@@ -46,6 +46,13 @@ impl AppleRuntimeStorageHost {
     }
 
     fn resolve(&self, path: &str) -> HostResult<PathBuf> {
+        // Physical absolute paths pass through untouched (iOS direct-physical
+        // mode). The virtual `/app/data/...` / `runtime/...` mapping is only
+        // applied to relative paths (legacy web/desktop storage calls).
+        let p = Path::new(path);
+        if p.is_absolute() {
+            return Ok(p.to_path_buf());
+        }
         let path = toVirtualStoragePath(path, &self.runtimeRoot, &self.workspaceRoot)?;
         let normalized = normalizeStoragePath(&path)?;
         let segments = normalized.iter().map(String::as_str).collect::<Vec<_>>();

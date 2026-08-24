@@ -85,21 +85,15 @@ impl OperitApplication {
                     Some(workspaceRoot) => {
                         let fileSystemHost = hostManager.fileSystemHost.clone();
                         if let Some(fileSystemHost) = fileSystemHost {
-                            let pathMapper = PathMapper::new(runtimeRoot.clone(), workspaceRoot.clone());
-                            match pathMapper.resolve("/app/data/logs/operit.log") {
-                                Ok(resolved) => {
-                                    let logFile = resolved.physicalPath;
-                                    let packageLogFile = pathMapper
-                                        .resolve("/app/data/logs/toolpkg.log")
-                                        .map(|r| r.physicalPath)
-                                        .unwrap_or_else(|_| logFile.clone());
-                                    if let Err(error) = AppLogger::configure_log_files(fileSystemHost, logFile, packageLogFile) {
-                                        eprintln!("[operit] warn: file logging unavailable (continuing without file logs): {error}");
-                                    }
-                                }
-                                Err(error) => {
-                                    eprintln!("[operit] warn: runtime log path unresolved (continuing without file logs): {error}");
-                                }
+                            // Direct physical log paths (no PathMapper virtual
+                            // `/app/data/...` round trip): the mapper resolves
+                            // against the same root but adds an indirection
+                            // that has no value on iOS and delayed the root
+                            // config registration in the old flow.
+                            let logFile = runtimeRoot.join("logs/operit.log");
+                            let packageLogFile = runtimeRoot.join("logs/toolpkg.log");
+                            if let Err(error) = AppLogger::configure_log_files(fileSystemHost, logFile, packageLogFile) {
+                                eprintln!("[operit] warn: file logging unavailable (continuing without file logs): {error}");
                             }
                         }
                         setDefaultRuntimeStoreRootConfig(RuntimeStoreRootConfig::new(

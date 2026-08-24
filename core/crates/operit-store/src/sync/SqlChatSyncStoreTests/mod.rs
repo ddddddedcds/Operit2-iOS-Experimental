@@ -32,11 +32,10 @@ impl TestRuntimeHost {
 
     fn resolve(&self, path: &str) -> HostResult<PathBuf> {
         let path = Path::new(path);
+        // Physical absolute paths pass through (SqliteStore now opens with the
+        // physical path directly).
         if path.is_absolute() {
-            return Err(HostError::new(format!(
-                "Runtime storage path must be relative: {}",
-                path.display()
-            )));
+            return Ok(path.to_path_buf());
         }
         let mut resolved = self.root.clone();
         for component in path.components() {

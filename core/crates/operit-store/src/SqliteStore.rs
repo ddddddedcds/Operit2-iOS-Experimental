@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use operit_host_api::{HostError, RuntimeSqliteConnection, RuntimeSqliteTransaction};
 use thiserror::Error;
 
-use crate::RuntimeStorageHost::{defaultRuntimeSqliteHost, runtimeStoragePath};
+use crate::RuntimeStorageHost::defaultRuntimeSqliteHost;
 
 pub use operit_host_api::{SqliteRow, SqliteValue};
 
@@ -33,9 +33,15 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     /// Opens a runtime-hosted SQLite database and enables foreign keys.
+    ///
+    /// The host is passed the PHYSICAL path directly (no virtual-path round
+    /// trip): on iOS the storage host resolves absolute paths as-is, and the
+    /// old `runtimeStoragePath()` virtual conversion depended on the global
+    /// default store root being registered — a timing hazard that broke
+    /// startup with EACCES on the jailbroken device.
     pub fn open(path: PathBuf) -> Result<Self, SqliteStoreError> {
-        let storagePath = runtimeStoragePath(&path);
-        let mut connection = defaultRuntimeSqliteHost().openSqliteDatabase(&storagePath)?;
+        let mut connection = defaultRuntimeSqliteHost()
+            .openSqliteDatabase(&path.to_string_lossy())?;
         connection.execute("PRAGMA foreign_keys = ON", Vec::new())?;
         Ok(Self {
             path,
