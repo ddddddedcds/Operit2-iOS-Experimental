@@ -226,6 +226,37 @@ class _WorkflowCanvasScreenState extends State<WorkflowCanvasScreen> {
     });
   }
 
+  Future<void> _scheduleToDaemon() async {
+    final json = WorkflowModel(
+      id: 'wf-${DateTime.now().millisecondsSinceEpoch}',
+      name: 'My Workflow',
+      description: '',
+      nodes: _nodes,
+      connections: _connections,
+    ).toJsonString();
+    try {
+      final reply = await const WorkflowBridge(ProxyCoreRuntimeBridge())
+          .scheduleDaemon(json);
+      if (!mounted) {
+        return;
+      }
+      final ok = reply.startsWith('OK|');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok ? '已注册到 daemon 调度' : '注册失败: $reply'),
+          backgroundColor: ok ? Colors.green : Colors.red,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('注册异常: $error')),
+      );
+    }
+  }
+
   void _save() {
     final json = WorkflowModel(
       id: 'wf-${DateTime.now().millisecondsSinceEpoch}',
@@ -322,6 +353,11 @@ class _WorkflowCanvasScreenState extends State<WorkflowCanvasScreen> {
             tooltip: '保存',
             onPressed: _save,
             icon: const Icon(Icons.save),
+          ),
+          IconButton(
+            tooltip: '注册到 daemon 调度',
+            onPressed: _scheduleToDaemon,
+            icon: const Icon(Icons.schedule),
           ),
           IconButton(
             tooltip: '运行',

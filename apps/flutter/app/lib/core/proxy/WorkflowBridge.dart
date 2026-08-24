@@ -93,6 +93,33 @@ class WorkflowBridge {
     return const <String>[];
   }
 
+  /// Registers a workflow with the standalone daemon so it schedules and runs
+  /// even when the app is not foregrounded. Returns the daemon reply text.
+  Future<String> scheduleDaemon(String workflowJson) async {
+    final value = await bridge.call(
+      CoreCallRequest(
+        requestId: _workflowRequestId(),
+        targetPath: const CoreObjectPath(<String>['workflow']),
+        methodName: 'scheduleDaemon',
+        args: <String, Object?>{'workflowJson': workflowJson},
+      ),
+    );
+    return value?.toString() ?? 'ERR|empty response';
+  }
+
+  /// Lists workflows registered on the daemon.
+  Future<String> daemonList() async {
+    final value = await bridge.call(
+      CoreCallRequest(
+        requestId: _workflowRequestId(),
+        targetPath: const CoreObjectPath(<String>['workflow']),
+        methodName: 'daemonList',
+        args: const <String, Object?>{},
+      ),
+    );
+    return value?.toString() ?? 'ERR|empty response';
+  }
+
   static String _encodeExtras(Map<String, String> extras) {
     final buffer = StringBuffer('{');
     var first = true;

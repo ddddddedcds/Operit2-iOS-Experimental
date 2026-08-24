@@ -8,6 +8,7 @@
 // 不依赖 Operit.app 前台 Task，规避 iOS 退后台挂起（P0 死结）。
 #![cfg(target_os = "ios")]
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, IpAddr, Ipv4Addr, SocketAddr};
@@ -51,6 +52,12 @@ struct CachedConfig {
 }
 static CACHED_CONFIG: LazyLock<Mutex<Option<CachedConfig>>> =
     LazyLock::new(|| Mutex::new(None));
+
+/// In-memory cache of daemon-scheduled workflows (id -> workflow). Updated on
+/// schedule/list/remove; the scheduler loop walks this instead of re-reading
+/// every JSON file each tick.
+static SCHEDULED_WORKFLOWS: LazyLock<Mutex<HashMap<String, operit_model::Workflow::Workflow>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn now_hms() -> String {
     let secs = SystemTime::now()
@@ -221,8 +228,164 @@ fn dispatch(line: &str) -> String {
                 "ERR|bad config payload".to_string()
             }
         }
+        _ if line.starts_with("workflow.schedule ") => {
+            // App registers a workflow for daemon-side scheduling:
+            // "workflow.schedule <workflow-json>".
+            match workflow_schedule(&line[18..]) {
+                Ok(id) => format!("OK|scheduled {id}"),
+                Err(e) => format!("ERR|{e}"),
+            }
+        }
+        "workflow.list" => match workflow_list() {
+            Ok(ids) => {
+                if ids.is_empty() {
+                    "OK|(none)".to_string()
+                } else {
+                    format!("OK|{}", ids.join(","))
+                }
+            }
+            Err(e) => format!("ERR|{e}"),
+        },
+        _ if line.starts_with("workflow.remove ") => {
+            let id = line[16..].trim();
+            match workflow_remove(id) {
+                Ok(()) => "OK|removed".to_string(),
+                Err(e) => format!("ERR|{e}"),
+            }
+        }
         _ => "ERR|unknown".to_string(),
     }
+}
+
+// ---------- daemon-side workflow scheduling ----------
+
+/// Directory where scheduled workflows are persisted (shared with the app).
+fn workflows_dir() -> std::path::PathBuf {
+    operit_ios_env::data_root().join("workflows")
+}
+
+/// Registers a workflow JSON for daemon-side scheduling.
+fn workflow_schedule(workflow_json: &str) -> Result<String, String> {
+    let workflow: operit_model::Workflow::Workflow = serde_json::from_str(workflow_json)
+        .map_err(|e| format!("bad workflow json: {e}"))?;
+    let dir = workflows_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+    let path = dir.join(format!("{}.json", sanitize_id(&workflow.id)));
+    std::fs::write(&path, workflow_json).map_err(|e| format!("write: {e}"))?;
+    let workflow_id = workflow.id.clone();
+    SCHEDULED_WORKFLOWS
+        .lock()
+        .unwrap()
+        .insert(workflow_id.clone(), workflow);
+    Ok(workflow_id)
+}
+
+fn workflow_list() -> Result<Vec<String>, String> {
+    // Prefer the in-memory cache; fall back to a directory scan for a fresh
+    // daemon start where the cache has not been hydrated yet.
+    let cached = SCHEDULED_WORKFLOWS.lock().unwrap();
+    if !cached.is_empty() {
+        let mut ids: Vec<String> = cached.keys().cloned().collect();
+        ids.sort();
+        return Ok(ids);
+    }
+    drop(cached);
+    let dir = workflows_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut ids = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(stripped) = name.strip_suffix(".json") {
+            ids.push(stripped.to_string());
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+fn workflow_remove(id: &str) -> Result<(), String> {
+    let path = workflows_dir().join(format!("{}.json", sanitize_id(id)));
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    SCHEDULED_WORKFLOWS.lock().unwrap().remove(id);
+    Ok(())
+}
+
+fn sanitize_id(id: &str) -> String {
+    id.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect()
+}
+
+/// Scheduler loop: every 10s walk the in-memory scheduled-workflow cache, run
+/// due ones (pure logic only; ExecuteNode without an action is reported as
+/// needing the app), and update `lastExecutionTime` so intervals advance.
+/// Hydrates the cache once from disk on the first tick (a daemon restart must
+/// pick up previously scheduled workflows without re-reading files every tick).
+fn workflow_scheduler_loop() {
+    thread::spawn(|| loop {
+        let now_ms = operit_host_api::TimeUtils::currentTimeMillis();
+        {
+            let mut cache = SCHEDULED_WORKFLOWS.lock().unwrap();
+            if cache.is_empty() {
+                // First tick (or all removed): hydrate from disk.
+                let dir = workflows_dir();
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().map(|e| e == "json").unwrap_or(false) {
+                            if let Ok(text) = std::fs::read_to_string(&path) {
+                                if let Ok(wf) = serde_json::from_str::<operit_model::Workflow::Workflow>(&text) {
+                                    cache.insert(wf.id.clone(), wf);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let workflows: Vec<operit_model::Workflow::Workflow> =
+            SCHEDULED_WORKFLOWS.lock().unwrap().values().cloned().collect();
+        if !workflows.is_empty() {
+            let due = operit_workflow_core::WorkflowScheduler::WorkflowScheduler::poll(&workflows, now_ms);
+            for id in due {
+                let Some(workflow) = workflows.iter().find(|w| w.id == id) else {
+                    continue;
+                };
+                log_line(&format!("workflow due: {} ({}), executing", workflow.id, workflow.name));
+                let executor = operit_workflow_core::WorkflowExecutor::WorkflowExecutor::new();
+                let result = executor.execute(workflow, &std::collections::HashMap::new());
+                log_line(&format!(
+                    "workflow {} done success={} msg={}",
+                    workflow.id,
+                    result.success,
+                    result.message
+                ));
+                // Persist lastExecutionTime so the interval advances.
+                let mut updated = workflow.clone();
+                updated.lastExecutionTime = Some(now_ms);
+                updated.lastExecutionStatus = Some(if result.success {
+                    operit_model::Workflow::ExecutionStatus::SUCCESS
+                } else {
+                    operit_model::Workflow::ExecutionStatus::FAILED
+                });
+                let path = workflows_dir().join(format!("{}.json", sanitize_id(&workflow.id)));
+                if let Ok(text) = serde_json::to_string(&updated) {
+                    let _ = std::fs::write(&path, text);
+                }
+                // Keep the cache in sync with the persisted lastExecutionTime.
+                SCHEDULED_WORKFLOWS
+                    .lock()
+                    .unwrap()
+                    .insert(workflow.id.clone(), updated);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(10));
+    });
 }
 
 fn handle_client(mut stream: TcpStream) {
@@ -257,6 +420,8 @@ fn main() {
         "operit-agent daemon v{} 启动, tcp=127.0.0.1:{}",
         DAEMON_VERSION, AGENT_PORT
     ));
+    // Daemon-side workflow scheduler (survives app termination).
+    workflow_scheduler_loop();
     let listener = bind_agent_sock();
     for conn in listener.incoming() {
         if let Ok(stream) = conn {

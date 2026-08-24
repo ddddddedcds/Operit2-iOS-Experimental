@@ -28,6 +28,7 @@ operit-providers = { path = "../operit-providers" }
 operit-store = { path = "../operit-store" }
 operit-tools = { path = "../operit-tools", default-features = false }
 operit-util = { path = "../operit-util" }
+operit-workflow-core = { path = "../operit-workflow-core" }
 reqwest.workspace = true
 regex.workspace = true
 serde.workspace = true

@@ -75,31 +75,46 @@ impl OperitApplication {
     #[allow(non_snake_case)]
     pub fn newWithContext(hostManager: HostManager) -> Self {
         if let Some(runtimeStorageHost) = hostManager.runtimeStorageHost.clone() {
-            let runtimeRoot = runtimeStorageHost
-                .runtimeRootDir()
-                .expect("runtime storage host must provide a runtime root directory");
-            let workspaceRoot = runtimeStorageHost
-                .workspaceRootDir()
-                .expect("runtime storage host must provide a workspace root directory");
-            let fileSystemHost = hostManager
-                .fileSystemHost
-                .clone()
-                .expect("runtime storage host requires a file-system host for logging");
-            let pathMapper = PathMapper::new(runtimeRoot.clone(), workspaceRoot.clone());
-            let logFile = pathMapper
-                .resolve("/app/data/logs/operit.log")
-                .expect("runtime log path must resolve through the file-system host")
-                .physicalPath;
-            let packageLogFile = pathMapper
-                .resolve("/app/data/logs/toolpkg.log")
-                .expect("ToolPkg log path must resolve through the file-system host")
-                .physicalPath;
-            AppLogger::configure_log_files(fileSystemHost, logFile, packageLogFile)
-                .expect("runtime log files must be configured through the file-system host");
-            setDefaultRuntimeStoreRootConfig(RuntimeStoreRootConfig::new(
-                runtimeRoot,
-                workspaceRoot,
-            ));
+            // Storage-root / log setup must NEVER panic: a broken log path (e.g.
+            // a fresh jailbroken install where the data dir does not exist yet)
+            // previously crashed the whole app at startup via `.expect()`.
+            // Degrade gracefully instead — the runtime keeps working, file logs
+            // just stay unbound (stderr fallback) until the dir is fixable.
+            match runtimeStorageHost.runtimeRootDir() {
+                Some(runtimeRoot) => match runtimeStorageHost.workspaceRootDir() {
+                    Some(workspaceRoot) => {
+                        let fileSystemHost = hostManager.fileSystemHost.clone();
+                        if let Some(fileSystemHost) = fileSystemHost {
+                            let pathMapper = PathMapper::new(runtimeRoot.clone(), workspaceRoot.clone());
+                            match pathMapper.resolve("/app/data/logs/operit.log") {
+                                Ok(resolved) => {
+                                    let logFile = resolved.physicalPath;
+                                    let packageLogFile = pathMapper
+                                        .resolve("/app/data/logs/toolpkg.log")
+                                        .map(|r| r.physicalPath)
+                                        .unwrap_or_else(|_| logFile.clone());
+                                    if let Err(error) = AppLogger::configure_log_files(fileSystemHost, logFile, packageLogFile) {
+                                        eprintln!("[operit] warn: file logging unavailable (continuing without file logs): {error}");
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!("[operit] warn: runtime log path unresolved (continuing without file logs): {error}");
+                                }
+                            }
+                        }
+                        setDefaultRuntimeStoreRootConfig(RuntimeStoreRootConfig::new(
+                            runtimeRoot,
+                            workspaceRoot,
+                        ));
+                    }
+                    None => {
+                        eprintln!("[operit] warn: workspace root unavailable; runtime storage defaults not installed");
+                    }
+                },
+                None => {
+                    eprintln!("[operit] warn: runtime root unavailable; runtime storage defaults not installed");
+                }
+            }
             setDefaultRuntimeStorageHost(runtimeStorageHost);
         }
         if let Some(runtimeSqliteHost) = hostManager.runtimeSqliteHost.clone() {

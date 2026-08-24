@@ -1902,6 +1902,7 @@ dependencies = [
  "operit-store",
  "operit-tools",
  "operit-util",
+ "operit-workflow-core",
  "regex",
  "reqwest",
  "rquickjs",
@@ -1930,6 +1931,7 @@ dependencies = [
  "operit-host-api",
  "operit-model",
  "operit-util",
+ "operit-workflow-core",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1984,6 +1986,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "operit-workflow-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "operit-host-api",
+ "operit-model",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

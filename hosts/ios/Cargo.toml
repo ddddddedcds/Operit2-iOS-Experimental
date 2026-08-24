@@ -10,6 +10,8 @@ operit-host-api = { path = "../../core/crates/operit-host-api" }
 operit-host-apple-native = { path = "../apple" }
 operit-ios-env = { path = "../../core/crates/operit-ios-env" }
 operit-host-native-common = { path = "../common/operit-host-native-common", default-features = false, features = ["storage", "terminal"] }
+operit-workflow-core = { path = "../../core/crates/operit-workflow-core" }
+operit-model = { path = "../../core/crates/operit-model" }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 base64 = "0.22"

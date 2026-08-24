@@ -15,6 +15,7 @@ members = [
     "crates/operit-local-models",
     "crates/operit-providers",
     "crates/operit-runtime",
+    "crates/operit-workflow-core",
     "crates/operit-ios-env",
 ]
 resolver = "2"

@@ -196,6 +196,11 @@ class CoreApplicationService with WidgetsBindingObserver {
         'runtime services start done elapsedMs=${stopwatch.elapsedMilliseconds}',
         tag: _logTag,
       );
+      // Cold-start prewarm: force the Rust core construction (OperitApplication
+      // + tool registration) to happen NOW, in parallel with first-frame
+      // rendering, instead of lazily on the first UI proxy call (which used to
+      // stall the first interaction). Best-effort; failures are swallowed.
+      unawaited(_prewarmCore());
     } catch (error, stackTrace) {
       ClientLogger.e(
         'Core application service failed during startup',
@@ -208,6 +213,23 @@ class CoreApplicationService with WidgetsBindingObserver {
       } else {
         _pendingStartupError = error;
       }
+    }
+  }
+
+  /// Forces the Rust core (OperitApplication + tool registration) to construct
+  /// during startup instead of on the first UI proxy call. `coreVersion()` is a
+  /// trivially cheap call that still walks the full proxy dispatch path, so the
+  /// one-time initialization cost lands before first frame paints.
+  Future<void> _prewarmCore() async {
+    final prewarmStopwatch = Stopwatch()..start();
+    try {
+      await _coreClients.application.coreVersion();
+      ClientLogger.i(
+        'core prewarm done elapsedMs=${prewarmStopwatch.elapsedMilliseconds}',
+        tag: _logTag,
+      );
+    } catch (error) {
+      ClientLogger.w('core prewarm failed: $error', tag: _logTag);
     }
   }
 
