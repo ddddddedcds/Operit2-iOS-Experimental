@@ -94,7 +94,17 @@ static NSString *operit_data_dir(void) {
 /// See PATH POLICY above.
 static NSString *operit_env_path(NSString *path) {
     if (!path) return path;
-    if (!operit_is_roothide()) return path; // rootless: already the real path
+    if (!operit_is_roothide()) {
+        // Rootless: /var/jb/var is procursus's OWN var (different physical
+        // directory from the real /var). The app (containerized) cannot write
+        // into procursus and hits EACCES; the real /var/mobile/.operit is the
+        // shared, mobile-writable data root. Map the old /var/jb-prefixed data
+        // path onto the real one.
+        if ([path hasPrefix:@"/var/jb/var/mobile/.operit"]) {
+            return [path substringFromIndex:7]; // drop "/var/jb" → /var/mobile/.operit/…
+        }
+        return path; // rootless: already the real path
+    }
     if ([path isEqualToString:@"/var/jb"]) return @"/";
     NSString *rel = nil;
     if ([path hasPrefix:@"/var/jb/var/mobile/.operit"]) {

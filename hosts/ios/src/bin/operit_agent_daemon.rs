@@ -253,7 +253,113 @@ fn dispatch(line: &str) -> String {
                 Err(e) => format!("ERR|{e}"),
             }
         }
+        _ if line.starts_with("tool.trustCacheAdd ") => {
+            // "tool.trustCacheAdd <path>" — add an arbitrary binary's cdhash to
+            // the jailbreak trustcache via jbctl (Dopamine), so freshly
+            // re-signed binaries are trusted by AMFI without a reboot.
+            match jbctl_trustcache_add(line[19..].trim()) {
+                Ok(()) => "OK|trustcache add issued".to_string(),
+                Err(e) => format!("ERR|{e}"),
+            }
+        }
+        _ if line.starts_with("tool.procSetDebugged ") => {
+            // "tool.procSetDebugged <pid>" — mark a process as debugged
+            // (Dopamine jbctl), allowing invalid code pages inside it.
+            let pid = line[20..].trim();
+            match jbctl_proc_set_debugged(pid) {
+                Ok(()) => format!("OK|proc {pid} set debugged"),
+                Err(e) => format!("ERR|{e}"),
+            }
+        }
+        _ if line.starts_with("dbg.root") => {
+            // Debug: print the resolved data/binary roots + jailbreak type.
+            format!(
+                "OK|data={} bin={:?} jb={:?}",
+                operit_ios_env::data_root().display(),
+                operit_ios_env::binary_root(),
+                operit_ios_env::detect_jailbreak()
+            )
+        }
+        _ if line.starts_with("dbg.openSqlite ") => {
+            // Debug: attempt to open an SQLite db at the given path through the
+            // same host stack the app uses (IosRuntimeStorageHost), to isolate
+            // whether EACCES is path/permission-based or app-process-specific.
+            let p = line[15..].trim();
+            match dbg_open_sqlite(p) {
+                Ok(msg) => format!("OK|{msg}"),
+                Err(e) => format!("ERR|{e}"),
+            }
+        }
         _ => "ERR|unknown".to_string(),
+    }
+}
+
+/// Debug helper mirroring `AppleRuntimeStorageHost::openSqliteDatabase`.
+fn dbg_open_sqlite(path: &str) -> Result<String, String> {
+    use operit_host_api::RuntimeSqliteHost;
+    let host = operit_host_apple_native::AppleRuntimeStorageHost::new(
+        operit_ios_env::data_root().join("runtime"),
+        operit_ios_env::data_root().join("workspaces"),
+    );
+    let _conn = host
+        .openSqliteDatabase(path)
+        .map_err(|e| format!("open failed: {e}"))?;
+    Ok(format!("opened: {path}"))
+}
+
+/// Runs `jbctl trustcache add <cdhash>` for the binary at `path` by computing
+/// its cdhash first (CDHash = the `CodeDirectory` hash, i.e. cdhash of the
+/// Mach-O). Simplest robust approach: use `ldid -H <path>` output when
+/// available, else derive via `codesign -dr` on macOS — but on-device we rely
+/// on `ldid` (always present in Procursus). Falls back to returning the raw
+/// jbctl output on failure so callers see what happened.
+fn jbctl_trustcache_add(path: &str) -> Result<(), String> {
+    // Compute cdhash with ldid (Procursus ships it; same tool postinst uses).
+    let ldid_out = std::process::Command::new("/var/jb/usr/bin/ldid")
+        .arg("-H")
+        .arg(path)
+        .output();
+    let cdhash = match ldid_out {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|l| {
+                let l = l.trim();
+                if l.len() >= 40 && l.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    Some(l.to_string())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| "ldid -H produced no cdhash".to_string())?,
+        Ok(out) => {
+            return Err(format!(
+                "ldid -H failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ))
+        }
+        Err(e) => return Err(format!("ldid missing: {e}")),
+    };
+    let status = std::process::Command::new("/var/jb/usr/bin/jbctl")
+        .args(["trustcache", "add", &cdhash])
+        .status()
+        .map_err(|e| format!("jbctl missing: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("jbctl trustcache add exit {:?}", status.code()))
+    }
+}
+
+/// Runs `jbctl proc_set_debugged <pid>` (Dopamine).
+fn jbctl_proc_set_debugged(pid: &str) -> Result<(), String> {
+    let status = std::process::Command::new("/var/jb/usr/bin/jbctl")
+        .args(["proc_set_debugged", pid])
+        .status()
+        .map_err(|e| format!("jbctl missing: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("jbctl proc_set_debugged exit {:?}", status.code()))
     }
 }
 
@@ -319,6 +425,25 @@ fn sanitize_id(id: &str) -> String {
     id.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
         .collect()
+}
+
+/// Reads a boolean from the mobile-user preferences plist
+/// (`~/Library/Preferences/com.ai.assistance.operit.plist`), which the iOS
+/// Settings page (PreferenceLoader → operit2.plist) writes. Falls back to
+/// `default_value` when the plist/key is missing or unreadable.
+fn daemon_pref_bool(key: &str, default_value: bool) -> bool {
+    let home = std::env::var_os("HOME").unwrap_or_default();
+    let path = std::path::Path::new(&home)
+        .join("Library")
+        .join("Preferences")
+        .join("com.ai.assistance.operit.plist");
+    match plist::Value::from_file(&path) {
+        Ok(plist::Value::Dictionary(map)) => match map.get(key) {
+            Some(plist::Value::Boolean(v)) => *v,
+            _ => default_value,
+        },
+        _ => default_value,
+    }
 }
 
 /// Scheduler loop: every 10s walk the in-memory scheduled-workflow cache, run
@@ -420,8 +545,15 @@ fn main() {
         "operit-agent daemon v{} 启动, tcp=127.0.0.1:{}",
         DAEMON_VERSION, AGENT_PORT
     ));
-    // Daemon-side workflow scheduler (survives app termination).
-    workflow_scheduler_loop();
+    // Daemon-side workflow scheduler (survives app termination). Honours the
+    // iOS Settings toggle "后台调度" (PreferenceLoader → defaults key
+    // workflowDaemonScheduling under com.ai.assistance.operit).
+    if daemon_pref_bool("workflowDaemonScheduling", true) {
+        log_line("workflow scheduling enabled (prefs), starting scheduler");
+        workflow_scheduler_loop();
+    } else {
+        log_line("workflow scheduling disabled by prefs");
+    }
     let listener = bind_agent_sock();
     for conn in listener.incoming() {
         if let Ok(stream) = conn {

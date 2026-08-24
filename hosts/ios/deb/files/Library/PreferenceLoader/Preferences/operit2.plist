@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>title</key>
+	<string>Operit2</string>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Agent Daemon</string>
+			<key>footerText</key>
+			<string>控制后台常驻 agent 进程（operit_agent_daemon，launchd 托管）。关闭后需要重启设备或手动 launchctl 生效。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>启用 agent daemon</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.ai.assistance.operit</string>
+			<key>key</key>
+			<string>daemonEnabled</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Workflow 调度</string>
+			<key>footerText</key>
+			<string>开启后 daemon 独立轮询已注册 workflow 的定时触发（app 被杀仍执行）。纯逻辑节点由 daemon 执行；需要 app 工具的节点标记待补跑。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>后台调度</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.ai.assistance.operit</string>
+			<key>key</key>
+			<string>workflowDaemonScheduling</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>关于</string>
+			<key>footerText</key>
+			<string>Operit2 iOS 越狱版（rootless-only，Dopamine/ElleKit）。数据目录 /var/jb/var/mobile/.operit。roothide 兼容层保留但未启用。</string>
+		</dict>
+	</array>
+</dict>
+</plist>
