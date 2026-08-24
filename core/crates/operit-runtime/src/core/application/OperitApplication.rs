@@ -90,8 +90,8 @@ impl OperitApplication {
                             // against the same root but adds an indirection
                             // that has no value on iOS and delayed the root
                             // config registration in the old flow.
-                            let logFile = runtimeRoot.join("logs/operit.log");
-                            let packageLogFile = runtimeRoot.join("logs/toolpkg.log");
+                            let logFile = runtimeRoot.join("logs/operit.log").to_string_lossy().to_string();
+                            let packageLogFile = runtimeRoot.join("logs/toolpkg.log").to_string_lossy().to_string();
                             if let Err(error) = AppLogger::configure_log_files(fileSystemHost, logFile, packageLogFile) {
                                 eprintln!("[operit] warn: file logging unavailable (continuing without file logs): {error}");
                             }
