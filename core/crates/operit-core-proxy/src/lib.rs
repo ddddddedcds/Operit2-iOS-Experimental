@@ -234,6 +234,59 @@ impl LocalCoreProxy {
                 split_message_by_sentences(&content, remove_punctuation);
             return to_core_value(sentences);
         }
+        // Workflow engine: execute a workflow or poll schedule triggers.
+        //   workflow.execute        (args: workflowJson, triggerExtras) -> node results
+        //   workflow.schedulerPoll  (args: workflowsJson, nowMs) -> due ids
+        if request.targetPath.key() == "workflow" {
+            return match request.methodName.as_str() {
+                "execute" => {
+                    let mut args = object_args(request.args)?;
+                    let workflow_json: String = decode_core_arg(&mut args, "workflowJson")?;
+                    let extras_json: String = decode_core_arg(&mut args, "triggerExtras")?;
+                    let workflow: operit_model::Workflow::Workflow = serde_json::from_str(&workflow_json)
+                        .map_err(|error| CoreLinkError::new("INVALID_ARGS", format!("workflowJson: {error}")))?;
+                    let extras: std::collections::HashMap<String, String> =
+                        serde_json::from_str(&extras_json).unwrap_or_default();
+                    // Build a tool-capable action from the application.
+                    let application = self.application.lock().await;
+                    let tool_handler = application.aiToolHandler();
+                    let package_manager = application.packageManager();
+                    drop(application);
+                    let action = operit_runtime::core::workflow::ToolSystemWorkflowAction::ToolSystemWorkflowAction::new(
+                        tool_handler,
+                        package_manager,
+                    );
+                    let executor = operit_runtime::core::workflow::WorkflowExecutor::WorkflowExecutor::with_action(Box::new(action));
+                    let result = executor.execute(&workflow, &extras);
+                    let payload = serde_json::json!({
+                        "success": result.success,
+                        "message": result.message,
+                        "nodes": result.node_results.iter().map(|(id, state)| {
+                            serde_json::json!({
+                                "id": id,
+                                "state": match state {
+                                    operit_runtime::core::workflow::WorkflowExecutor::NodeExecutionState::Success(v) => serde_json::json!({"kind": "success", "value": v}),
+                                    operit_runtime::core::workflow::WorkflowExecutor::NodeExecutionState::Skipped(r) => serde_json::json!({"kind": "skipped", "value": r}),
+                                    operit_runtime::core::workflow::WorkflowExecutor::NodeExecutionState::Failed(e) => serde_json::json!({"kind": "failed", "value": e}),
+                                    _ => serde_json::json!({"kind": "pending"}),
+                                }
+                            })
+                        }).collect::<Vec<_>>(),
+                    });
+                    to_core_value(payload)
+                }
+                "schedulerPoll" => {
+                    let mut args = object_args(request.args)?;
+                    let workflows_json: String = decode_core_arg(&mut args, "workflowsJson")?;
+                    let now_ms: i64 = decode_core_arg(&mut args, "nowMs")?;
+                    let workflows: Vec<operit_model::Workflow::Workflow> = serde_json::from_str(&workflows_json)
+                        .map_err(|error| CoreLinkError::new("INVALID_ARGS", format!("workflowsJson: {error}")))?;
+                    let due = operit_runtime::core::workflow::WorkflowScheduler::WorkflowScheduler::poll(&workflows, now_ms);
+                    to_core_value(due)
+                }
+                _ => Err(CoreLinkError::methodNotFound(&request.registryKey())),
+            };
+        }
         generated_dispatch_core_proxy_call(self, request).await
     }
 

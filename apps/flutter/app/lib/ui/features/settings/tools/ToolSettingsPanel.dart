@@ -10,6 +10,7 @@ import '../../../../core/proxy/generated/CoreProxyModels.g.dart' as core_proxy;
 import '../../../../l10n/generated/app_localizations.dart';
 import '../../../common/components/M3LoadingIndicator.dart';
 import '../../../theme/OperitGlassSurface.dart';
+import '../../workflow/WorkflowCanvasScreen.dart';
 import '../components/SettingsControlStyles.dart';
 
 class ToolSettingsPanel extends StatefulWidget {
@@ -118,6 +119,19 @@ class _ToolSettingsPanelState extends State<ToolSettingsPanel> {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
           children: <Widget>[
+            _SectionCard(
+              title: '工作流',
+              children: <Widget>[
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.account_tree_outlined),
+                  title: const Text('工作流编辑器'),
+                  subtitle: const Text('拖拽节点、连线、运行自动化工作流'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => WorkflowCanvasScreen.push(context),
+                ),
+              ],
+            ),
             _SectionCard(
               title: l10n.settingsToolsPermissionMode,
               children: <Widget>[
