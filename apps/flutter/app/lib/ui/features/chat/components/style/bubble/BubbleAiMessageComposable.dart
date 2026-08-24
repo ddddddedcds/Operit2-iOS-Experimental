@@ -7,12 +7,14 @@ import 'package:flutter/material.dart';
 import '../../../../../common/markdown/MarkdownNodeGrouper.dart';
 import '../../../../../common/markdown/StreamMarkdownRendererState.dart';
 import '../../../../../../data/preferences/UserPreferencesManager.dart';
+import '../../../../../../core/proxy/WaifuRuntime.dart';
 import '../../../../../theme/OperitTheme.dart';
 import '../../../../../theme/OperitThemeAssets.dart';
 import '../../part/StructuredMessagePartRenderer.dart';
 import '../../part/ThinkToolsXmlNodeGrouper.dart';
 import '../../../viewmodel/ChatViewModel.dart';
 import 'BubbleSurface.dart';
+import 'WaifuTypewriterReveal.dart';
 
 class BubbleAiMessageComposable extends StatefulWidget {
   const BubbleAiMessageComposable({
@@ -141,20 +143,25 @@ class _BubbleAiMessageComposableState extends State<BubbleAiMessageComposable> {
         ),
         child: KeyedSubtree(
           key: ValueKey<int>(widget.message.timestamp),
-          child: StreamingStructuredMessageRenderer(
-            parts: widget.message.parts,
-            contentStream: widget.message.contentStream,
+          child: WaifuTypewriterReveal(
+            enabled: WaifuRuntime.enabled,
             isStreaming: widget.isStreaming,
-            textColor: textColor,
-            backgroundColor: backgroundColor,
-            nodeGrouper: nodeGrouper,
-            streamState: _rendererState,
-            onLinkClick: widget.enableDialogs ? widget.onLinkClick : null,
-            rendererId: 'bubble-ai-${widget.message.timestamp}',
-            showThinkingProcess: showThinkingProcess,
-            initialThinkingExpanded: widget.initialThinkingExpanded,
-            allowExpandedThinkingFullHeight:
-                widget.allowExpandedThinkingFullHeight,
+            content: widget.message.displayText,
+            child: StreamingStructuredMessageRenderer(
+              parts: widget.message.parts,
+              contentStream: widget.message.contentStream,
+              isStreaming: widget.isStreaming,
+              textColor: textColor,
+              backgroundColor: backgroundColor,
+              nodeGrouper: nodeGrouper,
+              streamState: _rendererState,
+              onLinkClick: widget.enableDialogs ? widget.onLinkClick : null,
+              rendererId: 'bubble-ai-${widget.message.timestamp}',
+              showThinkingProcess: showThinkingProcess,
+              initialThinkingExpanded: widget.initialThinkingExpanded,
+              allowExpandedThinkingFullHeight:
+                  widget.allowExpandedThinkingFullHeight,
+            ),
           ),
         ),
       ),

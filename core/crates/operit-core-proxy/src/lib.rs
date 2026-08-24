@@ -223,6 +223,17 @@ impl CoreLinkSharedClient for LocalCoreProxy {
 impl LocalCoreProxy {
     #[allow(non_snake_case)]
     async fn dispatchCall(&self, request: CoreCallRequest) -> Result<CoreValue, CoreLinkError> {
+        // Waifu-mode sentence splitting: exposed to the Flutter layer without
+        // touching the generated dispatch codegen. Method name:
+        //   waifu.splitMessageBySentences  (targetPath key "waifu", methodName "splitMessageBySentences")
+        if request.targetPath.key() == "waifu" && request.methodName == "splitMessageBySentences" {
+            let mut args = object_args(request.args)?;
+            let content: String = decode_core_arg(&mut args, "content")?;
+            let remove_punctuation: bool = decode_core_arg(&mut args, "removePunctuation")?;
+            let sentences = operit_util::WaifuMessageProcessor::WaifuMessageProcessor::
+                split_message_by_sentences(&content, remove_punctuation);
+            return to_core_value(sentences);
+        }
         generated_dispatch_core_proxy_call(self, request).await
     }
 
