@@ -192,6 +192,7 @@ Future<String> runCoreMarketInstall({
   required String type,
   required String entryId,
   String? versionId,
+  bool forceVersion = false,
 }) async {
   final normalizedType = type.trim();
   if (normalizedType.isEmpty) {
@@ -209,6 +210,7 @@ Future<String> runCoreMarketInstall({
           entryId,
           currentAppVersion,
           if (versionId?.trim().isNotEmpty == true) versionId!.trim(),
+          if (forceVersion) 'force',
         ],
       },
     ),

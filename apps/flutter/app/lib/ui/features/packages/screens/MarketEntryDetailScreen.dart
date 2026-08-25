@@ -366,6 +366,8 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
           maxAppVersion: version.maxAppVer,
         );
         if (compatibility != null &&
+            compatibility.kind ==
+                MarketAppVersionCompatibilityKind.belowMinimum &&
             !(await _confirmVersionOverride(compatibility))) {
           return;
         }
@@ -374,12 +376,10 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
           type: entry.type,
           entryId: entry.id,
           versionId: version.versionId,
+          forceVersion: compatibility != null,
         );
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text(result)));
-        }
+        await _showInstallReport(result);
+        return;
       } catch (error, stackTrace) {
         debugPrint('Failed to install artifact: $error\n$stackTrace');
         if (mounted) {
@@ -402,24 +402,22 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
         entry: entry,
       );
       if (compatibility != null &&
+          compatibility.kind ==
+              MarketAppVersionCompatibilityKind.belowMinimum &&
           !(await _confirmVersionOverride(compatibility))) {
         return;
       }
+      String? result;
       if (entry.type == 'skill') {
         final repoUrl = entry.source?.url.trim() ?? '';
         if (repoUrl.isEmpty) throw StateError('技能缺少仓库地址');
-        final result = await widget.clients.application
+        result = await widget.clients.application
             .skillRepository()
             .importSkillFromGitHubRepo(repoUrl: repoUrl);
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text(result)));
-        }
       } else if (entry.type == 'mcp') {
         final repoUrl = entry.source?.url.trim() ?? '';
         if (repoUrl.isEmpty) throw StateError('MCP 缺少仓库地址');
-        final result = await widget.clients.application
+        result = await widget.clients.application
             .mcpRepository()
             .installMcpServerWithObjectForFlutter(
               pluginId: _safePackageId(entry.title),
@@ -431,14 +429,10 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
                   entry.latestVersion?.installConfig ??
                   '',
             );
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text(result)));
-        }
       } else {
         throw StateError('请在脚本/包详情页安装资产');
       }
+      await _showInstallReport(result);
     } catch (error, stackTrace) {
       debugPrint('Failed to install market entry: $error\n$stackTrace');
       if (mounted) {
@@ -479,6 +473,68 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
       ),
     );
     return confirmed ?? false;
+  }
+
+  /// Shows the install result, plus a conversion report when the core emitted
+  /// an `[android-deps]` line (Android-only APIs in a ToolPkg converted to iOS).
+  Future<void> _showInstallReport(String result) async {
+    final depsMatch = RegExp(
+      r'\[android-deps\]\s*(.+)$',
+      multiLine: true,
+    ).firstMatch(result);
+    final depsText = depsMatch?.group(1)?.trim() ?? '';
+    final cleanResult = result
+        .replaceAll(RegExp(r'\[android-deps\][^\n]*\n?'), '')
+        .trim();
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(cleanResult.isEmpty ? '安装完成' : cleanResult),
+      ),
+    );
+    if (depsText.isEmpty || depsText == 'none') {
+      if (depsText == 'none' && mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('✓ 无 Android 专属依赖，插件可直接使用'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+      }
+      return;
+    }
+    final deps = depsText
+        .split(',')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+    if (!mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('转化安装完成，含 Android 专属 API'),
+        content: SingleChildScrollView(
+          child: Text(
+            '插件已安装（已自动忽略版本限制）。检测到 ${deps.length} 处 '
+            'Android 专属 API，iOS 上对应功能可能不可用：\n\n'
+            '${deps.map((dep) => '· $dep').join('\n')}\n\n'
+            '纯 UI/数据功能通常正常；涉及系统能力（剪贴板/通知/文件等）可能报错。',
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
   }
 
   bool _canPublishArtifactVersion(core_proxy.MarketEntrySummary entry) {

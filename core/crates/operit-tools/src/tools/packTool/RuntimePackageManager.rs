@@ -2609,6 +2609,58 @@ impl RuntimePackageManager {
         Ok(leftBytes == rightBytes)
     }
 
+    /// Scans a ToolPkg archive for Android-only JavaScript APIs.
+    ///
+    /// Android ecosystem ToolPkg packages frequently call platform bridges that do
+    /// not exist on iOS (Java/OkHttp/SystemManager/...). This returns the set of
+    /// detected Android-specific tokens so the client can warn the user which
+    /// plugin features will be unavailable on iOS.
+    #[allow(non_snake_case)]
+    pub fn scanAndroidApiDependencies(&self, toolpkgPath: &str) -> Vec<String> {
+        const ANDROID_TOKENS: [&str; 14] = [
+            "Java.android",
+            "Java.",
+            "OkHttpClient",
+            "OkHttp.",
+            "RequestBuilder",
+            "SystemManager",
+            "DeviceController",
+            "ContentProvider",
+            "PackageManager",
+            "ClipboardManager",
+            "ClipData",
+            "Shizuku",
+            "Android.",
+            "adb ",
+        ];
+        let mut hits: Vec<String> = Vec::new();
+        let Ok(file) = std::fs::File::open(toolpkgPath) else {
+            return hits;
+        };
+        let Ok(mut archive) = zip::ZipArchive::new(file) else {
+            return hits;
+        };
+        for index in 0..archive.len() {
+            let Ok(mut entry) = archive.by_index(index) else {
+                continue;
+            };
+            let entryName = entry.name().to_string();
+            if !entryName.ends_with(".js") && !entryName.ends_with(".ts") {
+                continue;
+            }
+            let mut content = String::new();
+            if std::io::Read::read_to_string(&mut entry, &mut content).is_err() {
+                continue;
+            }
+            for token in ANDROID_TOKENS {
+                if content.contains(token) && !hits.iter().any(|hit| hit == token) {
+                    hits.push(token.to_string());
+                }
+            }
+        }
+        hits
+    }
+
     #[allow(non_snake_case)]
     /// Imports a package file from external storage into package storage.
     pub fn addPackageFileFromExternalStorage(&mut self, filePath: &str) -> String {

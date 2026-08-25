@@ -94,6 +94,14 @@ impl PackageManagerCommand {
             .expect("package manager mutex poisoned")
             .addPackageFileFromExternalStorage(path)
     }
+
+    fn scan_android_api_dependencies(&self, path: &str) -> Result<Vec<String>, String> {
+        Ok(self
+            .manager
+            .lock()
+            .expect("package manager mutex poisoned")
+            .scanAndroidApiDependencies(path))
+    }
 }
 
 // ── Entry point ──────────────────────────────────────────────
@@ -166,15 +174,20 @@ pub fn run_market_command(
             let entry_id = args
                 .get(1)
                 .ok_or_else(|| {
-                    "usage: operit2 market install <entryId> <clientAppVersion> [versionId]"
+                    "usage: operit2 market install <entryId> <clientAppVersion> [versionId] [force]"
                         .to_string()
                 })?;
             let client_app_version = args.get(2).ok_or_else(|| {
-                "usage: operit2 market install <entryId> <clientAppVersion> [versionId]"
+                "usage: operit2 market install <entryId> <clientAppVersion> [versionId] [force]"
                     .to_string()
             })?;
             let version_id = args.get(3).map(String::as_str);
-            install_entry(core, entry_id, client_app_version, version_id)
+            let force = args
+                .get(4)
+                .map(String::as_str)
+                .map(|value| value.eq_ignore_ascii_case("force"))
+                .unwrap_or(false);
+            install_entry(core, entry_id, client_app_version, version_id, force)
         }
         "download" => {
             let asset_id = args
@@ -681,9 +694,10 @@ fn install_entry(
     entry_id: &str,
     client_app_version: &str,
     version_id: Option<&str>,
+    force: bool,
 ) -> Result<(), String> {
     let entry = core.api().get_entry_by_id(entry_id)?;
-    ensure_entry_app_version_supported(&entry, client_app_version, version_id)?;
+    ensure_entry_app_version_supported(&entry, client_app_version, version_id, force)?;
     match entry.r#type.as_str() {
         "skill" => install_skill_from_entry(core, entry),
         "mcp" => install_mcp_from_entry(core, entry),
@@ -706,7 +720,11 @@ fn ensure_entry_app_version_supported(
     entry: &MarketEntrySummary,
     client_app_version: &str,
     version_id: Option<&str>,
+    force: bool,
 ) -> Result<(), String> {
+    if force {
+        return Ok(());
+    }
     let client_version = parse_market_app_version(client_app_version, "客户端版本")?;
     let target_version = resolve_market_install_version(entry, version_id)?;
 
@@ -903,6 +921,11 @@ fn install_artifact_from_entry(
     };
     let temp_file = download_asset_to_temp_file(core, asset)?;
     let package_manager = core.package_manager();
+    // Scan the downloaded ToolPkg for Android-only APIs so the client can warn
+    // which plugin features will not work on iOS (conversion installs).
+    let android_deps = package_manager
+        .scan_android_api_dependencies(&temp_file.to_string_lossy())
+        .unwrap_or_default();
     let result = package_manager.add_from_external(&temp_file.to_string_lossy());
     let _ = fs::remove_file(&temp_file);
     if !result
@@ -912,6 +935,11 @@ fn install_artifact_from_entry(
         return Err(result);
     }
     println!("{result}");
+    if android_deps.is_empty() {
+        println!("[android-deps] none");
+    } else {
+        println!("[android-deps] {}", android_deps.join(", "));
+    }
     Ok(())
 }
 
