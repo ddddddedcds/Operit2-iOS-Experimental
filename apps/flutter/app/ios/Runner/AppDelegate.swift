@@ -17,9 +17,6 @@ import UserNotifications
   private func bootLog(_ msg: String) {
     let stamp = "\(Date()) [operit-boot] \(msg)\n"
     var paths = ["/var/mobile/trace.log", "/var/mobile/.operit/trace.log"]
-    if FileManager.default.fileExists(atPath: "/var/jb/usr/lib") {
-      paths.append("/var/jb/var/mobile/.operit/trace.log")
-    }
     paths.append("/tmp/trace.log")
     let data = stamp.data(using: .utf8)!
     for p in paths {

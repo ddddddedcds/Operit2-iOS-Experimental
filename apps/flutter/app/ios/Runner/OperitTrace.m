@@ -21,7 +21,6 @@ static int g_trace_nfds = 0;
 static const char *kTracePaths[] = {
     "/var/mobile/trace.log",
     "/var/mobile/.operit/trace.log",
-    "/var/jb/var/mobile/.operit/trace.log",
     "/tmp/trace.log",
     NULL
 };

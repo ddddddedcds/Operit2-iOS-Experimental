@@ -1769,11 +1769,11 @@ static void clipboard_start(void) {
 // 当前会话 id：runtime/state/current_chat_id.preferences.json
 
 static NSString *siri_db_path(void) {
-    return @"/var/mobile/.operit/operit2/runtime/data/database/operit2.sqlite";
+    return @"/var/mobile/.operit/runtime/data/database/operit2.sqlite";
 }
 
 static NSString *siri_current_chat_id(void) {
-    NSString *p = @"/var/mobile/.operit/operit2/runtime/state/current_chat_id.preferences.json";
+    NSString *p = @"/var/mobile/.operit/runtime/state/current_chat_id.preferences.json";
     NSData *d = [NSData dataWithContentsOfFile:p];
     if (!d) return nil;
     NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
@@ -1896,7 +1896,7 @@ static NSString *siri_clean_md(NSString *md) {
 //（角色 intro = characterSetting + otherContentChat + advancedCustomPrompt，\n\n 连接；
 //   记忆 = 该角色的 USER.md，拼在末尾 "USER.md:\n<内容>"，与 ConversationService 一致）
 static NSString *siri_build_system_prompt(void) {
-    NSString *prefsPath = @"/var/mobile/.operit/operit2/runtime/config/preferences/character_cards.preferences.json";
+    NSString *prefsPath = @"/var/mobile/.operit/runtime/config/preferences/character_cards.preferences.json";
     NSDictionary *cards = [NSDictionary dictionaryWithContentsOfFile:prefsPath];
     if (!cards) return @"你是 Operit，一个全能 AI 助手。";
     NSString *activeId = cards[@"active_character_card_id"];
@@ -1909,7 +1909,7 @@ static NSString *siri_build_system_prompt(void) {
     NSString *adv = cards[[NSString stringWithFormat:@"character_card_%@_advanced_custom_prompt", activeId]];
     if (adv.length) [parts addObject:adv];
     NSString *intro = parts.count ? [parts componentsJoinedByString:@"\n\n"] : @"你是 Operit，一个全能 AI 助手。";
-    NSString *mdPath = [NSString stringWithFormat:@"%@/operit2/runtime/data/memory/characters/%@/USER.md", @"/var/mobile/.operit", activeId];
+    NSString *mdPath = [NSString stringWithFormat:@"%@/runtime/data/memory/characters/%@/USER.md", @"/var/mobile/.operit", activeId];
     NSString *md = [NSString stringWithContentsOfFile:mdPath encoding:NSUTF8StringEncoding error:nil];
     if (md.length) {
         return [intro stringByAppendingFormat:@"\n\nUSER.md:\n%@", md];

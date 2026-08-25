@@ -90,7 +90,7 @@ if [ -d "$APP_SRC" ]; then
   # com.apple.security.iokit-user-client-class (AGXDeviceUserClient /
   # IOSurfaceRootUserClient) -> the kernel System Policy denies Metal/IOSurface
   # at launch and Flutter's Impeller engine aborts (SIGABRT). app-sandbox=false
-  # lets the app reach /var/jb/var/mobile/.operit/agent.sock and its own caches.
+  # lets the app reach the daemon control channel (loopback TCP 127.0.0.1:8890) and its own caches.
   echo "   ad-hoc signing app (macOS codesign) with entitlements ..."
   codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$FILES/Applications/Runner.app" 2>&1 | tail -3 || \
     echo "   (codesign unavailable; rely on postinst ldid + AppSync Unified)"

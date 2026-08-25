@@ -6,8 +6,8 @@
         "en": "Device Automation (AutoGLM subagent)"
     },
     "description": {
-        "zh": "将设备自动化封装为可供主聊天 AI 调用的子代理工具包：给定自然语言目标，由 AutoGLM 云端大脑看屏决策、ios-mcp 系统级手执行，循环直至完成。需配套 native 桥 Tools.Net.deviceAgentStart / deviceAgentStop / deviceAgentStatus（连 /var/jb/var/mobile/.operit/agent.sock 驱动 operit_agent_daemon）。",
-        "en": "Wraps device automation as a subagent tool callable by the main chat AI: given a natural-language goal, AutoGLM (cloud VLM) decides and ios-mcp (system-level hand) executes, looping until done. Requires companion native bridge Tools.Net.deviceAgentStart / deviceAgentStop / deviceAgentStatus (talking to /var/jb/var/mobile/.operit/agent.sock to drive operit_agent_daemon)."
+        "zh": "将设备自动化封装为可供主聊天 AI 调用的子代理工具包：给定自然语言目标，由 AutoGLM 云端大脑看屏决策、ios-mcp 系统级手执行，循环直至完成。需配套 native 桥 Tools.Net.deviceAgentStart / deviceAgentStop / deviceAgentStatus（通过 loopback TCP 127.0.0.1:8890 驱动 operit_agent_daemon）。",
+        "en": "Wraps device automation as a subagent tool callable by the main chat AI: given a natural-language goal, AutoGLM (cloud VLM) decides and ios-mcp (system-level hand) executes, looping until done. Requires companion native bridge Tools.Net.deviceAgentStart / deviceAgentStop / deviceAgentStatus (talking to loopback TCP 127.0.0.1:8890 to drive operit_agent_daemon)."
     },
     "enabledByDefault": false,
     "category": "System",
@@ -56,7 +56,7 @@ type DeviceAutomationParams = {
 // 注意：以下三个方法依赖 native 桥 Tools.Net.deviceAgentStart / deviceAgentStop /
 // deviceAgentStatus。若未注册，调用会抛错，这里捕获后返回清晰提示而非静默失败。
 // native 端应在 js_sdk 注册 schema 并在 js_tools_host_impl.rs 实现，内部连接
-// Unix socket /var/jb/var/mobile/.operit/agent.sock，向 operit_agent_daemon 写
+// 控制通道为 loopback TCP 127.0.0.1:8890，向 operit_agent_daemon 写
 // "goal <文本>" + "start" / "stop" / "status"。
 
 async function run_subagent_main(params: DeviceAutomationParams = {}) {

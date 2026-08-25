@@ -6,7 +6,7 @@
          apps and ad-hoc signing can't normally carry private entitlements — but with
          AppSync Unified (amfid patch) installed on the device, these private keys ARE
          honored, giving the app full filesystem access: it can write its container
-         AND reach /var/jb/var/mobile/.operit/agent.sock (daemon control channel).
+         AND reach the daemon control channel at loopback TCP 127.0.0.1:8890.
          Without AppSync this is stripped and the app falls back to the standard
          (container-only, no /var/jb) sandbox. -->
     <key>com.apple.security.app-sandbox</key>

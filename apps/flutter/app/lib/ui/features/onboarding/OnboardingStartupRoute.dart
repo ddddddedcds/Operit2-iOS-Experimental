@@ -694,7 +694,7 @@ class _AiSetupGuidePageState extends State<_AiSetupGuidePage>
     String? path;
     if (Platform.isIOS) {
       // iOS 无系统目录选择器，改为手动输入路径。
-      var hint = '/var/mobile/.operit/operit2/runtime';
+      var hint = '/var/mobile/.operit/runtime';
       try {
         final defaults = await RuntimeConnectionManager.instance.localRuntimeStorageDefaultPaths();
         hint = defaults.runtimeRoot;
@@ -723,7 +723,7 @@ class _AiSetupGuidePageState extends State<_AiSetupGuidePage>
   Future<void> _selectWorkspaceRoot() async {
     String? path;
     if (Platform.isIOS) {
-      var hint = '/var/mobile/.operit/operit2/workspaces';
+      var hint = '/var/mobile/.operit/workspaces';
       try {
         final defaults = await RuntimeConnectionManager.instance.localRuntimeStorageDefaultPaths();
         hint = defaults.workspaceRoot;
