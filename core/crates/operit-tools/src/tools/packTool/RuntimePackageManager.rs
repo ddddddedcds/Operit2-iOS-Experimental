@@ -43,6 +43,8 @@ use operit_util::AppLogger::AppLogger;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::AndroidToolPkgPathRewriter;
+
 const ENABLED_PACKAGES_KEY: &str = "imported_packages";
 const DISABLED_PACKAGES_KEY: &str = "disabled_packages";
 const BUNDLED_EXTERNAL_IMPORTS_KEY: &str = "bundled_external_imports";
@@ -2716,6 +2718,24 @@ impl RuntimePackageManager {
                     return format!("Error importing package: {error}");
                 }
             }
+            // Static Android-path rewrite (iOS hosts only): the stored .toolpkg
+            // becomes the iOS-converted plugin permanently. Encrypted entries
+            // are skipped (runtime rewrite covers those).
+            if !cfg!(target_os = "android") {
+                let compat_root = self.storePaths.runtime_dir().join("android-compat");
+                if let Ok(bytes) = self.fileSystemHost.readFileBytes(&hostPath(&destinationFile)) {
+                    if let Ok(rewritten) =
+                        AndroidToolPkgPathRewriter::rewrite_toolpkg_android_paths_in_zip(
+                            &bytes,
+                            &compat_root.to_string_lossy(),
+                        )
+                    {
+                        let _ = self
+                            .fileSystemHost
+                            .writeFileBytes(&hostPath(&destinationFile), &rewritten);
+                    }
+                }
+            }
             let importedLoadResult = match self.loadToolPkgFromExternalFile(&destinationFile) {
                 Ok(value) => value,
                 Err(error) => return format!("Error importing package: {error}"),
@@ -2874,6 +2894,22 @@ impl RuntimePackageManager {
             }
             Err(error) => return format!("Error installing market ToolPkg: {error}"),
         }
+        // Static Android-path rewrite (iOS hosts only). Runs before the install
+        // seal is attached so the seal digest covers the rewritten archive and
+        // verification still passes. Encrypted entries are skipped by the
+        // rewriter (runtime rewrite covers those).
+        let rawArchive = if cfg!(target_os = "android") {
+            rawArchive
+        } else {
+            let compat_root = self.storePaths.runtime_dir().join("android-compat");
+            match AndroidToolPkgPathRewriter::rewrite_toolpkg_android_paths_in_zip(
+                &rawArchive,
+                &compat_root.to_string_lossy(),
+            ) {
+                Ok(rewritten) => rewritten,
+                Err(error) => return format!("Error rewriting Android paths: {error}"),
+            }
+        };
         let installationId = match self.marketToolPkgInstallationId() {
             Ok(value) => value,
             Err(error) => return format!("Error installing market ToolPkg: {error}"),
