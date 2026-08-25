@@ -81,7 +81,12 @@ impl FlutterBrowserSessionBridge {
         })?;
         let response = requestOwnerBrowserSession(
             RuntimeHostInteractionBrowserSessionPayload { commandJson },
-            Duration::from_secs(60),
+            // On a healthy device the owner responds in single-digit ms; a
+            // broken WebView (no-sandbox jailbreak: WebContent never starts)
+            // never responds and the old 60s wait blocked the bridge thread,
+            // making every browser-touching page take ~60s to load. 3s is
+            // plenty for the real path and fails fast on the broken one.
+            Duration::from_secs(3),
         )
         .map_err(operit_host_api::HostError::new)?;
         serde_json::from_str(&response.resultJson).map_err(|error| {
