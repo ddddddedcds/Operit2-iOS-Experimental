@@ -2634,10 +2634,12 @@ impl RuntimePackageManager {
             "adb ",
         ];
         let mut hits: Vec<String> = Vec::new();
-        let Ok(file) = std::fs::File::open(toolpkgPath) else {
+        // 走 Host 抽象读文件字节（platform API guard 禁止直接文件 IO，
+        // wasm 构建会 panic；readFileBytes 跨平台可用）
+        let Ok(bytes) = self.fileSystemHost.readFileBytes(toolpkgPath) else {
             return hits;
         };
-        let Ok(mut archive) = zip::ZipArchive::new(file) else {
+        let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
             return hits;
         };
         for index in 0..archive.len() {
