@@ -907,7 +907,7 @@ class _ComposeDslRenderer extends StatelessWidget {
           pathPrefix: '$nodePath:content',
           modifierScope: _ComposeDslModifierScope.row,
         );
-        return Row(
+        final row = Row(
           mainAxisSize: _nodesRequireRowFlex(contentNodes)
               ? MainAxisSize.max
               : MainAxisSize.min,
@@ -915,6 +915,16 @@ class _ComposeDslRenderer extends StatelessWidget {
           mainAxisAlignment: _mainAxis(node.props['horizontalArrangement']),
           children: children,
         );
+        // On narrow phones an unconstrained Row can overflow horizontally
+        // (RenderFlex overflow). Wrap it in a horizontal scroll view so the
+        // plugin content stays reachable instead of clipping/overlapping.
+        if (_isNarrowWidth(context)) {
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: row,
+          );
+        }
+        return row;
       case 'LazyRow':
         return SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -3959,8 +3969,13 @@ FontWeight? _fontWeight(String value) {
   };
 }
 
-MainAxisAlignment _mainAxis(Object? raw) {
-  return switch (_string(raw)) {
+/// True when the current screen width is narrow (phone). Used to apply compact
+/// layouts and horizontal-scroll fallbacks for plugin UI built for wide screens.
+bool _isNarrowWidth(BuildContext context) {
+  return MediaQuery.sizeOf(context).width < 600;
+}
+
+MainAxisAlignment _mainAxis(Object? raw) {  return switch (_string(raw)) {
     'center' => MainAxisAlignment.center,
     'end' => MainAxisAlignment.end,
     'spaceBetween' => MainAxisAlignment.spaceBetween,

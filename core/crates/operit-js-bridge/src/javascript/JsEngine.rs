@@ -381,6 +381,11 @@ impl JsEngine {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // operit2 fork: rewrite Android path literals so subpackage tool
+            // scripts (e.g. movie_room.js, conversation_lock.js) can persist
+            // state on iOS. No-op on Android (see helper).
+            let rewritten = rewrite_toolpkg_script_paths(script);
+            let script: &str = rewritten.as_deref().unwrap_or(script);
             if self.worker.control.isDestroyed() {
                 let reason = "JS execution worker was destroyed";
                 if let Some(listener) = executionListener.as_ref() {
@@ -580,6 +585,8 @@ impl JsEngine {
         envOverrides: &BTreeMap<String, String>,
         textResources: Arc<ToolPkgTextResources>,
     ) -> JsExecutionResult<Option<String>> {
+        let rewritten = rewrite_toolpkg_script_paths(script);
+        let script: &str = rewritten.as_deref().unwrap_or(script);
         self.executeComposeDslFunction(
             &buildComposeDslRuntimeWrappedScript(script),
             "__operit_render_compose_dsl",
