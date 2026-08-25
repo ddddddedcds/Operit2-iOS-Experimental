@@ -1923,7 +1923,9 @@ static NSString *siri_ask_ai(NSString *prompt, NSArray *history) {
     NSString *key = cfg[@"apiKey"];
     NSString *base = cfg[@"apiBaseUrl"];
     NSString *model = cfg[@"apiModel"] ?: @"deepseek-chat";
-    if (!key.length || !base.length) return @"ERR|no ai config in /var/mobile/.operit/config.plist";
+    // 未配置 AI 凭证（用户没在 Operit2 设置里填 key）时静默降级：
+    // 返回空串让调用方走"无回答"分支，不打印 ERR、不弹报错卡片。
+    if (!key.length || !base.length) return @"";
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:base]];
     req.HTTPMethod = @"POST";
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];

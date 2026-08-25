@@ -137,6 +137,8 @@
 	<string>Operit2 accesses your photo library to attach photos to a chat.</string>
 	<key>NSRemindersUsageDescription</key>
 	<string>Operit2 reads and creates reminders for you.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
