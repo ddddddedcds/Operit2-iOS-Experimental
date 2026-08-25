@@ -902,29 +902,26 @@ class _ComposeDslRenderer extends StatelessWidget {
         );
       case 'Row':
         final contentNodes = _slotNodes('content', useChildren: true);
-        final children = _buildNodeWidgets(
-          contentNodes,
-          pathPrefix: '$nodePath:content',
-          modifierScope: _ComposeDslModifierScope.row,
+        // Upstream operit2: when the Row has bounded width, text children
+        // without an explicit flex spec are wrapped in Flexible(loose) so they
+        // can shrink/wrap instead of overflowing — no scroll wrapper needed.
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final children = _buildRowChildren(
+              contentNodes,
+              pathPrefix: '$nodePath:content',
+              boundedWidth: constraints.hasBoundedWidth,
+            );
+            return Row(
+              mainAxisSize: _nodesRequireRowFlex(contentNodes)
+                  ? MainAxisSize.max
+                  : MainAxisSize.min,
+              crossAxisAlignment: _crossAxis(node.props['verticalAlignment']),
+              mainAxisAlignment: _mainAxis(node.props['horizontalArrangement']),
+              children: children,
+            );
+          },
         );
-        final row = Row(
-          mainAxisSize: _nodesRequireRowFlex(contentNodes)
-              ? MainAxisSize.max
-              : MainAxisSize.min,
-          crossAxisAlignment: _crossAxis(node.props['verticalAlignment']),
-          mainAxisAlignment: _mainAxis(node.props['horizontalArrangement']),
-          children: children,
-        );
-        // On narrow phones an unconstrained Row can overflow horizontally
-        // (RenderFlex overflow). Wrap it in a horizontal scroll view so the
-        // plugin content stays reachable instead of clipping/overlapping.
-        if (_isNarrowWidth(context)) {
-          return SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: row,
-          );
-        }
-        return row;
       case 'LazyRow':
         return SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -2523,6 +2520,36 @@ class _ComposeDslRenderer extends StatelessWidget {
     return nodes.any((child) => _rowFlexSpec(child.props) != null);
   }
 
+  /// Builds Row children, wrapping text children in Flexible(loose) when the
+  /// Row has bounded width so they can shrink/wrap instead of overflowing.
+  /// Aligned with upstream operit2's ToolPkgUiLauncherScreen.
+  List<Widget> _buildRowChildren(
+    List<_ComposeDslNode> nodes, {
+    required String pathPrefix,
+    required bool boundedWidth,
+  }) {
+    final widgets = _buildNodeWidgets(
+      nodes,
+      pathPrefix: pathPrefix,
+      modifierScope: _ComposeDslModifierScope.row,
+    );
+    if (!boundedWidth) {
+      return widgets;
+    }
+    return nodes
+        .asMap()
+        .entries
+        .map((entry) {
+          final child = entry.value;
+          if ((child.type == 'Text' || child.type == 'BasicText') &&
+              _rowFlexSpec(child.props) == null) {
+            return Flexible(fit: FlexFit.loose, child: widgets[entry.key]);
+          }
+          return widgets[entry.key];
+        })
+        .toList(growable: false);
+  }
+
   Widget _slotColumn(String name) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     mainAxisSize: MainAxisSize.min,
@@ -3967,12 +3994,6 @@ FontWeight? _fontWeight(String value) {
     'light' || 'w300' || '300' => FontWeight.w300,
     _ => null,
   };
-}
-
-/// True when the current screen width is narrow (phone). Used to apply compact
-/// layouts and horizontal-scroll fallbacks for plugin UI built for wide screens.
-bool _isNarrowWidth(BuildContext context) {
-  return MediaQuery.sizeOf(context).width < 600;
 }
 
 MainAxisAlignment _mainAxis(Object? raw) {  return switch (_string(raw)) {
