@@ -7,6 +7,7 @@ import 'dart:io';
 import '../../../../core/bridge/ProxyCoreRuntimeBridge.dart';
 import '../../../../core/proxy/generated/CoreProxyClients.g.dart';
 import '../../../../core/proxy/generated/CoreProxyModels.g.dart' as core_proxy;
+import '../../../../core/proxy/WaifuRuntime.dart';
 import '../../../../l10n/generated/app_localizations.dart';
 import '../../../common/components/M3LoadingIndicator.dart';
 import '../../../theme/OperitGlassSurface.dart';
@@ -129,6 +130,22 @@ class _ToolSettingsPanelState extends State<ToolSettingsPanel> {
                   subtitle: const Text('拖拽节点、连线、运行自动化工作流'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => WorkflowCanvasScreen.push(context),
+                ),
+              ],
+            ),
+            _SectionCard(
+              title: '显示',
+              children: <Widget>[
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: const Text('Waifu 模式'),
+                  subtitle: const Text('AI 回复以打字机方式逐字展示'),
+                  value: WaifuRuntime.enabled,
+                  onChanged: (bool value) {
+                    WaifuRuntime.setEnabled(value);
+                    setState(() {});
+                  },
                 ),
               ],
             ),

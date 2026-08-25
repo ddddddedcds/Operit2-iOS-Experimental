@@ -10,6 +10,7 @@ import 'core/application/CoreApplicationService.dart';
 import 'core/errors/UnhandledErrorReporter.dart';
 import 'core/logging/ClientLogger.dart';
 import 'core/notifications/NotificationActivationService.dart';
+import 'core/proxy/WaifuRuntime.dart';
 import 'core/runtime/RuntimeConnectionManager.dart';
 import 'ui/main/OperitApp.dart';
 import 'ui/window/DetachedChatWindowApp.dart';
@@ -98,6 +99,7 @@ void main(List<String> arguments) async {
         NotificationActivationService.instance.initialize(arguments);
         final runtimeStopwatch = Stopwatch()..start();
         try {
+          await WaifuRuntime.load();
           await RuntimeConnectionManager.instance.initialize();
           ClientLogger.attachPersistentStorage();
           ClientLogger.i(

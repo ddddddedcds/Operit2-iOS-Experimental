@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:webview_all/webview_all.dart';
 
+import '../../../../core/logging/ClientLogger.dart';
 import '../../../../core/proxy/generated/CoreProxyClients.g.dart';
 import '../../../../core/proxy/generated/CoreProxyModels.g.dart';
 import '../market/ArtifactMarketSupport.dart';
@@ -28,9 +29,11 @@ class _GitHubOAuthLoginDialogState extends State<GitHubOAuthLoginDialog> {
   static const double _dialogHeight = 720;
 
   late final WebViewController _browserController;
+  final TextEditingController _patController = TextEditingController();
   GitHubOAuthBrokerLoginStart? _loginStart;
   bool _isPageLoading = true;
   bool _isCompleting = false;
+  bool _isSubmittingPat = false;
   String? _browserError;
 
   @override
@@ -74,7 +77,79 @@ class _GitHubOAuthLoginDialogState extends State<GitHubOAuthLoginDialog> {
       });
       await _browserController.loadRequest(Uri.parse(start.authorizationUrl));
     } catch (error, stackTrace) {
+      ClientLogger.e(
+        'GitHub OAuth startLogin failed',
+        tag: 'GitHubOAuth',
+        error: error,
+        stackTrace: stackTrace,
+      );
       _closeWithError(error, stackTrace);
+    }
+  }
+
+  /// Submits a manually-pasted Personal Access Token and skips the in-dialog
+  /// WebView OAuth flow entirely. Used when the embedded WebView cannot
+  /// reach GitHub (network / ATS / no-sandbox) and the user wants to
+  /// authenticate via a token from another device.
+  Future<void> _submitPat() async {
+    final raw = _patController.text.trim();
+    if (raw.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请先粘贴 GitHub Personal Access Token'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (_isSubmittingPat || _isCompleting) {
+      return;
+    }
+    setState(() {
+      _isSubmittingPat = true;
+    });
+    try {
+      await widget.clients.preferencesGitHubAuthPreferences.updateAccessToken(
+        accessToken: raw,
+        tokenType: 'bearer',
+        grantedScope: null,
+      );
+      final usable = await widget.clients.preferencesGitHubAuthPreferences
+          .isLoggedIn();
+      if (!usable) {
+        throw StateError('Token rejected by GitHub (isLoggedIn=false)');
+      }
+      ClientLogger.i(
+        'GitHub OAuth PAT login succeeded',
+        tag: 'GitHubOAuth',
+      );
+      await widget.onLoginCompleted();
+      if (!mounted) {
+        return;
+      }
+      Navigator.of(context).pop();
+    } catch (error, stackTrace) {
+      ClientLogger.e(
+        'GitHub OAuth PAT login failed',
+        tag: 'GitHubOAuth',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('PAT 登录失败：$error'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmittingPat = false;
+        });
+      }
     }
   }
 
@@ -102,6 +177,12 @@ class _GitHubOAuthLoginDialogState extends State<GitHubOAuthLoginDialog> {
       }
       Navigator.of(context).pop();
     } catch (error, stackTrace) {
+      ClientLogger.e(
+        'GitHub OAuth completeLogin failed',
+        tag: 'GitHubOAuth',
+        error: error,
+        stackTrace: stackTrace,
+      );
       _closeWithError(error, stackTrace);
     }
   }
@@ -151,6 +232,11 @@ class _GitHubOAuthLoginDialogState extends State<GitHubOAuthLoginDialog> {
     if (error.isForMainFrame == false || !mounted || _isCompleting) {
       return;
     }
+    ClientLogger.e(
+      'GitHub OAuth WebView main-frame error: ${error.errorCode} '
+      '${error.description}',
+      tag: 'GitHubOAuth',
+    );
     setState(() {
       _isPageLoading = false;
       _browserError = error.description;
@@ -159,7 +245,12 @@ class _GitHubOAuthLoginDialogState extends State<GitHubOAuthLoginDialog> {
 
   /// Logs the failure, closes this dialog, and presents the error in the market screen.
   void _closeWithError(Object error, StackTrace stackTrace) {
-    debugPrint('GitHub OAuth login failed: $error\n$stackTrace');
+    ClientLogger.e(
+      'GitHub OAuth dialog closing with error',
+      tag: 'GitHubOAuth',
+      error: error,
+      stackTrace: stackTrace,
+    );
     if (!mounted) {
       return;
     }
@@ -179,6 +270,12 @@ class _GitHubOAuthLoginDialogState extends State<GitHubOAuthLoginDialog> {
       return;
     }
     Navigator.of(context).pop();
+  }
+
+  @override
+  void dispose() {
+    _patController.dispose();
+    super.dispose();
   }
 
   @override
@@ -222,6 +319,11 @@ class _GitHubOAuthLoginDialogState extends State<GitHubOAuthLoginDialog> {
               ),
             ),
             const Divider(height: 1),
+            _PatLoginBar(
+              controller: _patController,
+              submitting: _isSubmittingPat,
+              onSubmit: _submitPat,
+            ),
             Expanded(
               child: Stack(
                 children: <Widget>[
@@ -261,6 +363,75 @@ class _GitHubOAuthLoginDialogState extends State<GitHubOAuthLoginDialog> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Compact fallback bar that lets the user authenticate with a GitHub
+/// Personal Access Token when the in-dialog WebView cannot reach GitHub.
+/// The token is written via [preferencesGitHubAuthPreferences.updateAccessToken]
+/// and validated through [preferencesGitHubAuthPreferences.isLoggedIn].
+class _PatLoginBar extends StatelessWidget {
+  const _PatLoginBar({
+    required this.controller,
+    required this.submitting,
+    required this.onSubmit,
+  });
+
+  final TextEditingController controller;
+  final bool submitting;
+  final Future<void> Function() onSubmit;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      color: colors.surfaceContainerHighest,
+      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+      child: Row(
+        children: <Widget>[
+          Icon(Icons.key_outlined, size: 18, color: colors.onSurfaceVariant),
+          const SizedBox(width: 8),
+          const Text(
+            '或粘贴 Personal Access Token 登录',
+            style: TextStyle(fontSize: 13),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: TextField(
+              controller: controller,
+              enabled: !submitting,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: 'ghp_... 或 github_pat_...',
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 10,
+                ),
+              ),
+              style: const TextStyle(fontSize: 13),
+              onSubmitted: (_) => onSubmit(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.tonal(
+            onPressed: submitting ? null : onSubmit,
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
+            child: submitting
+                ? const SizedBox.square(
+                    dimension: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('用 Token 登录'),
+          ),
+        ],
       ),
     );
   }
