@@ -53,6 +53,59 @@ pub fn buildExecutionPreludeSource() -> String {
             error: function() { return __operitInvokeCallRuntimeConsole('error', arguments); }
         };
         var reportDetailedError = function() { return __operitInvokeCallRuntime('reportDetailedError', arguments); };
+        // ── iOS 兼容层：Android 专属全局的安全 stub ─────────────────────────
+        // 市场 ToolPkg（Android 生态）常直接调用 Java/OkHttp/SystemManager 等
+        // Android 宿主 API。iOS 上没有这些宿主实现，直接引用会 ReferenceError
+        // 导致整个插件脚本崩。这里在它们缺失时注入"无限链 Proxy stub"：
+        // 属性读取返回嵌套 stub，函数调用返回 undefined 并 warn 一次（no-op 降级），
+        // 插件 UI/数据逻辑可继续运行，只有系统级调用静默失效。
+        function __operitAndroidStub(name) {
+            var warned = false;
+            var proxy;
+            var handler = {
+                get: function(target, prop) {
+                    if (typeof prop === 'symbol') { return undefined; }
+                    var key = String(prop);
+                    if (key === 'toString' || key === 'valueOf' || key === 'then' ||
+                        key === 'constructor' || key === 'toJSON') { return undefined; }
+                    return __operitAndroidStub(name + '.' + key);
+                },
+                apply: function() {
+                    if (!warned) {
+                        warned = true;
+                        try {
+                            console.warn('[iOS 兼容层] Android API ' + name +
+                                ' 在 iOS 不可用，调用已降级为 no-op');
+                        } catch (ignored) {}
+                    }
+                    return proxy;
+                },
+                construct: function() {
+                    if (!warned) {
+                        warned = true;
+                        try {
+                            console.warn('[iOS 兼容层] Android API ' + name +
+                                ' 在 iOS 不可用，new 调用已降级为 no-op');
+                        } catch (ignored) {}
+                    }
+                    return proxy;
+                }
+            };
+            var fn = function() { return proxy; };
+            proxy = new Proxy(fn, handler);
+            return proxy;
+        }
+        var __operitAndroidGlobals = [
+            'Java', 'Android', 'PackageManager', 'ContentProvider',
+            'SystemManager', 'DeviceController', 'OkHttpClientBuilder',
+            'OkHttpClient', 'RequestBuilder', 'OkHttp'
+        ];
+        for (var __i = 0; __i < __operitAndroidGlobals.length; __i++) {
+            var __g = __operitAndroidGlobals[__i];
+            if (typeof globalThis[__g] === 'undefined') {
+                globalThis[__g] = __operitAndroidStub(__g);
+            }
+        }
         var ToolPkg = globalThis.ToolPkg;
         var Tools = globalThis.Tools;
         var Java = globalThis.Java;
