@@ -822,7 +822,7 @@ class RuntimeBrowserSessionRegistry extends ChangeNotifier {
       userAgent: command.userAgent,
       headers: command.headers,
     );
-    await waitForSession(timeout: const Duration(seconds: 20));
+    await waitForSession(timeout: const Duration(seconds: 3));
     final openedSession = _latestOpenedSession(before);
     final session = openedSession ?? _requireActiveSession();
     return _commandResult(success: true, command: command, session: session);

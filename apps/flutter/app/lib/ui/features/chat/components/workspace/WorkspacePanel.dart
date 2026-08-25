@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
 import 'package:operit2/core/browser/BrowserSessions.dart';
 import 'package:operit2/core/bridge/ProxyCoreRuntimeBridge.dart';
+import 'package:operit2/core/logging/ClientLogger.dart';
 import 'package:operit2/core/proxy/generated/CoreProxyClients.g.dart';
 import 'package:operit2/core/proxy/generated/CoreProxyModels.g.dart'
     as core_proxy;
@@ -221,20 +222,39 @@ class _WorkspacePanelState extends State<WorkspacePanel> {
     String? userAgent,
     Map<String, String>? headers,
   }) async {
-    final htmlPath = workspaceHtmlPath?.trim();
-    if (htmlPath != null && htmlPath.isNotEmpty) {
-      await _browserViewStore.openWorkspaceHtmlTab(htmlPath, initialUrl: url);
-    } else {
-      final filePath = localFilePath?.trim();
-      if (filePath != null && filePath.isNotEmpty) {
-        await _browserViewStore.openLocalFileTab(filePath);
+    try {
+      final htmlPath = workspaceHtmlPath?.trim();
+      if (htmlPath != null && htmlPath.isNotEmpty) {
+        await _browserViewStore.openWorkspaceHtmlTab(htmlPath, initialUrl: url);
       } else {
-        await _browserViewStore.openTab(
-          url: url,
-          userAgent: userAgent,
-          headers: headers,
+        final filePath = localFilePath?.trim();
+        if (filePath != null && filePath.isNotEmpty) {
+          await _browserViewStore.openLocalFileTab(filePath);
+        } else {
+          await _browserViewStore.openTab(
+            url: url,
+            userAgent: userAgent,
+            headers: headers,
+          );
+        }
+      }
+    } catch (error) {
+      // WKWebView unavailable on no-sandbox jailbroken iOS: the URL was
+      // already handed to the system Safari by the owner fallback. Surface
+      // that clearly instead of leaving the user with a dead "open browser".
+      ClientLogger.w(
+        'openBrowserTab failed (likely WebView degraded): $error',
+        tag: 'WorkspacePanel',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.toString()),
+            behavior: SnackBarBehavior.floating,
+          ),
         );
       }
+      return;
     }
     if (!mounted) {
       return;

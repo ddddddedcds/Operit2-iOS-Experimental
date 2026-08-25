@@ -12,6 +12,7 @@ import 'package:operit2/core/proxy/generated/CoreProxyClients.g.dart';
 import 'package:operit2/core/proxy/generated/CoreProxyModels.g.dart';
 import 'package:webview_all/webview_all.dart';
 import 'package:webview_all_windows/webview_all_windows.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:operit2/ui/features/chat/components/workspace/browser/WorkspaceBrowserStores.dart';
 import 'package:operit2/ui/features/chat/components/workspace/browser/WorkspaceBrowserUrlUtils.dart';
@@ -58,6 +59,13 @@ class RuntimeBrowserOwner extends ChangeNotifier {
   }
 
   static final RuntimeBrowserOwner instance = RuntimeBrowserOwner._();
+
+  /// True once any WKWebView main-frame load has failed. On no-sandbox
+  /// jailbroken iOS the WebContent process cannot start, so every in-app
+  /// WebView is broken; once detected we fall back to the system Safari
+  /// (external app) instead of spinning broken WebViews (which burned CPU
+  /// and got the app Jetsam-killed).
+  static bool webViewDegraded = false;
 
   static const String _homeUrl = 'https://www.bing.com';
   static const String _logTag = 'WorkspaceBrowser';
@@ -241,6 +249,24 @@ class RuntimeBrowserOwner extends ChangeNotifier {
     try {
       final rawUrl = url?.trim();
       final nextUrl = rawUrl == null || rawUrl.isEmpty ? _homeUrl : rawUrl;
+      if (webViewDegraded) {
+        // In-app WKWebView is broken on this device (no-sandbox jailbreak);
+        // hand the URL to the system Safari instead of spawning a doomed
+        // WebView (which previously spun CPU until Jetsam killed the app).
+        final externalUrl = normalizeWorkspaceBrowserUrl(nextUrl);
+        ClientLogger.w(
+          'openTab fallback to system Safari url=$externalUrl '
+          '(webViewDegraded=true)',
+          tag: _logTag,
+        );
+        await launchUrl(
+          Uri.parse(externalUrl),
+          mode: LaunchMode.externalApplication,
+        );
+        throw StateError(
+          '内置浏览器在当前越狱环境不可用，已用系统 Safari 打开：$externalUrl',
+        );
+      }
       await ensureLoaded();
       final normalizedUrl = normalizeWorkspaceBrowserUrl(nextUrl);
       final requestHeaders = headers ?? const <String, String>{};
@@ -825,8 +851,10 @@ class RuntimeBrowserOwner extends ChangeNotifier {
           if (tab.isDisposed) {
             return;
           }
+          webViewDegraded = true;
           ClientLogger.e(
-            'web resource error tab=${tab.id} url=${error.url} description=${error.description}',
+            'web resource error tab=${tab.id} url=${error.url} description=${error.description} '
+            '-> webViewDegraded=true',
             tag: _logTag,
           );
           tab.update(errorText: error.description, isLoading: false);
