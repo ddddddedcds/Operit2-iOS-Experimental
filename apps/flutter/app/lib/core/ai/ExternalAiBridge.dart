@@ -12,6 +12,7 @@ import '../bridge/PlatformCoreProxy.dart';
 import '../bridge/ProxyCoreRuntimeBridge.dart';
 import '../proxy/generated/CoreProxyClients.g.dart';
 import '../proxy/generated/CoreProxyModels.g.dart' as core_proxy;
+import '../proxy/WaifuRuntime.dart';
 
 /// 接收来自 iOS 原生（Swift）的 AI 任务注入。
 class ExternalAiBridge {
@@ -53,6 +54,7 @@ class ExternalAiBridge {
           disableWarning: false,
           chatInputSubmitRequestedHandled: false,
         ),
+        waifuEnabled: WaifuRuntime.enabled,
       );
       return 'ok';
     }

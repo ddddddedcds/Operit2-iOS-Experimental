@@ -488,6 +488,7 @@ impl ChatServiceCore {
         attachments: Vec<AttachmentInfo>,
         replyToMessage: Option<ChatMessage>,
         turnOptions: ChatTurnOptions,
+        waifuEnabled: bool,
     ) {
         let hookChatId = match chatIdOverride.as_ref() {
             Some(chatId) => chatId.clone(),
@@ -557,6 +558,7 @@ impl ChatServiceCore {
                     attachments,
                     replyToMessage,
                     turnOptions,
+                    waifuEnabled,
                 )
                 .await;
             self.chatHistoryDelegate = delegate.chatHistoryDelegate.clone_for_core();
@@ -1187,6 +1189,7 @@ impl ChatServiceCore {
             Vec::new(),
             None,
             ChatTurnOptions::default(),
+            false,
         )
         .await;
         true

@@ -10,6 +10,7 @@ import '../../../../core/bridge/ProxyCoreRuntimeBridge.dart';
 import '../../../../core/link/CoreLinkProtocol.dart';
 import '../../../../core/proxy/generated/CoreProxyClients.g.dart';
 import '../../../../core/proxy/generated/CoreProxyModels.g.dart' as core_proxy;
+import '../../../../core/proxy/WaifuRuntime.dart';
 import 'WorkspaceFileModels.dart';
 
 typedef ChatMessageLocatorPreview = core_proxy.ChatMessageLocatorPreview;
@@ -193,6 +194,7 @@ class ChatViewModel {
         disableWarning: false,
         chatInputSubmitRequestedHandled: true,
       ),
+      waifuEnabled: WaifuRuntime.enabled,
     );
     if (attachments.isNotEmpty) {
       await _chat.clearAttachments();

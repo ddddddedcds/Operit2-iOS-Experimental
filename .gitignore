@@ -198,6 +198,11 @@ plugins/**/*.pack.log
 plugins/**/.sync_state.json
 plugins/**/.sync_hot_reload_state.json
 
+# Local ToolPkg working directories (DSH plugin source + node_modules + build
+# outputs). These are iterated in toolpkg-work/ and shipped as .toolpkg files,
+# never committed to the operit2 source tree.
+toolpkg-work/
+
 # Archives generated during local packaging
 *.zip
 *.tar

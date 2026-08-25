@@ -138,6 +138,9 @@ pub struct SendUserMessageProcessingRequest<'a> {
     pub suppressUserMessageInHistory: bool,
     pub isAutoContinuation: bool,
     pub turnOptions: ChatTurnOptions,
+    /// When true, injects the waifu emotion rule so the model emits
+    /// `<emotion>xxx</emotion>` tags that the UI renders as local emoji.
+    pub waifuEnabled: bool,
 }
 
 /// Result returned after a user message send finishes and history is updated.
@@ -1017,6 +1020,7 @@ impl MessageProcessingDelegate {
             chatProviderIdOverride: request.chatProviderIdOverride.clone(),
             chatModelIdOverride: request.chatModelIdOverride.clone(),
             disableWarning: request.turnOptions.disableWarning,
+            waifuEnabled: request.waifuEnabled,
             callbacks: Some(Arc::new(MessageProcessingCallbacks {
                 nonFatalErrorEventFlow: self.nonFatalErrorEventFlow.clone(),
             })),
@@ -1492,6 +1496,7 @@ impl MessageProcessingDelegate {
                 proxySenderNameOverride: None,
                 suppressUserMessageInHistory: true,
                 isAutoContinuation: false,
+                waifuEnabled: false,
                 turnOptions: ChatTurnOptions {
                     persistTurn: false,
                     ..ChatTurnOptions::default()

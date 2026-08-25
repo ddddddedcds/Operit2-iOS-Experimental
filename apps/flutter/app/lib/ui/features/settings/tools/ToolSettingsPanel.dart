@@ -13,6 +13,7 @@ import '../../../common/components/M3LoadingIndicator.dart';
 import '../../../theme/OperitGlassSurface.dart';
 import '../../workflow/WorkflowCanvasScreen.dart';
 import '../components/SettingsControlStyles.dart';
+import '../screens/CustomEmojiManagementScreen.dart';
 
 class ToolSettingsPanel extends StatefulWidget {
   const ToolSettingsPanel({super.key, GeneratedCoreProxyClients? clients})
@@ -145,6 +146,21 @@ class _ToolSettingsPanelState extends State<ToolSettingsPanel> {
                   onChanged: (bool value) {
                     WaifuRuntime.setEnabled(value);
                     setState(() {});
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: const Icon(Icons.emoji_emotions_outlined, size: 20),
+                  title: const Text('管理自定义表情'),
+                  subtitle: const Text('为不同情绪添加/删除你自己的表情图'),
+                  trailing: const Icon(Icons.chevron_right, size: 18),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const CustomEmojiManagementScreen(),
+                      ),
+                    );
                   },
                 ),
               ],

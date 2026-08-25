@@ -7,6 +7,7 @@ use operit_store::PreferencesDataStore::MutableStateFlow;
 use regex::Regex;
 use serde_json::{json, Value};
 
+use crate::chat::config::FunctionalPrompts::FunctionalPrompts;
 use crate::chat::config::SystemPromptConfig::{
     PackageInfo, SystemPromptConfig, SystemPromptOptions, SystemPromptWithCustomOptions,
     ToolExposureMode as SystemToolExposureMode,
@@ -138,6 +139,9 @@ pub struct SendMessageOptions {
     pub chatModelIdOverride: Option<String>,
     pub stream: bool,
     pub disableWarning: bool,
+    /// When true, injects the waifu emotion rule so the model emits
+    /// `<emotion>xxx</emotion>` tags that the UI renders as local emoji.
+    pub waifuEnabled: bool,
 }
 
 impl SendMessageOptions {
@@ -170,6 +174,7 @@ impl SendMessageOptions {
             chatModelIdOverride: None,
             stream: true,
             disableWarning: false,
+            waifuEnabled: false,
         }
     }
 }
@@ -1045,7 +1050,11 @@ impl EnhancedAIService {
             useEnglish: false,
             userPreferencesText,
             introPrompt,
-            waifuRulesText: String::new(),
+            // waifu 表情：无条件注入情绪规则，让模型总是输出 <emotion>xxx</emotion> 标签。
+            // 渲染层按 waifu 开关决定"渲染成表情图"还是"剥掉标签"。
+            waifuRulesText: FunctionalPrompts::waifuEmotionRule(
+                "happy, sad, angry, confused, crying, surprised, like_you, miss_you, speechless",
+            ),
             avatarMoodRulesText: String::new(),
             disableUserPreferenceDescription: false,
             aiName,

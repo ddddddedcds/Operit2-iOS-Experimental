@@ -120,6 +120,8 @@ flutter:
   assets:
     - android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
     - assets/images/operit_avatar.png
+    - path: assets/emoji/
+      platforms: [android, ios, linux, macos, windows]
     - path: assets/web_access/
       platforms: [android, ios, linux, macos, windows]
     - path: assets/web_access/assets/

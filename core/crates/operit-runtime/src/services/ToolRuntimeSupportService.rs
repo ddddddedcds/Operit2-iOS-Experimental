@@ -401,6 +401,7 @@ impl ToolRuntimeSupport for RuntimeToolSupport {
                     Vec::new(),
                     None,
                     request.turnOptions,
+                    false,
                 )
                 .await;
             holder.observeStats();

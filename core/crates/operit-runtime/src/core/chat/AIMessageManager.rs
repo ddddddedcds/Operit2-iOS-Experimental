@@ -76,6 +76,9 @@ pub struct SendMessageRequest<'a> {
     pub disableWarning: bool,
     pub callbacks: Option<Arc<dyn SendMessageCallbacks + Send + Sync>>,
     pub onToolInvocation: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    /// When true, injects the waifu emotion rule so the model emits
+    /// `<emotion>xxx</emotion>` tags that the UI renders as local emoji.
+    pub waifuEnabled: bool,
 }
 
 pub struct StableContextWindowRequest<'a> {
@@ -312,6 +315,7 @@ impl AIMessageManager {
         options.chatProviderIdOverride = request.chatProviderIdOverride;
         options.chatModelIdOverride = request.chatModelIdOverride;
         options.disableWarning = request.disableWarning;
+        options.waifuEnabled = request.waifuEnabled;
         options.callbacks = request.callbacks;
         options.onToolInvocation = request.onToolInvocation;
         options.stream = enableStream;

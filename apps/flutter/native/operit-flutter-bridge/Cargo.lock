@@ -2101,6 +2101,8 @@ dependencies = [
  "operit-host-apple-native",
  "operit-host-native-common",
  "operit-ios-env",
+ "operit-model",
+ "operit-workflow-core",
  "plist",
  "reqwest",
  "serde_json",
@@ -2429,6 +2431,7 @@ dependencies = [
  "operit-store",
  "operit-tools",
  "operit-util",
+ "operit-workflow-core",
  "regex",
  "reqwest",
  "rquickjs",
@@ -2457,6 +2460,7 @@ dependencies = [
  "operit-host-api",
  "operit-model",
  "operit-util",
+ "operit-workflow-core",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -2507,6 +2511,19 @@ dependencies = [
  "operit-host-api",
  "regex",
  "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "operit-workflow-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "operit-host-api",
+ "operit-model",
+ "regex",
  "serde",
  "serde_json",
  "tokio",

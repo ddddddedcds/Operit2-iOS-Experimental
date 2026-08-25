@@ -248,6 +248,7 @@ impl MessageCoordinationDelegate {
         attachments: Vec<AttachmentInfo>,
         replyToMessage: Option<ChatMessage>,
         turnOptions: ChatTurnOptions,
+        waifuEnabled: bool,
     ) {
         AppLogger::i(
             "CoreSend",
@@ -320,6 +321,7 @@ impl MessageCoordinationDelegate {
             None,
             false,
             turnOptions,
+            waifuEnabled,
         )
         .await;
         AppLogger::i("CoreSend", "dispatch return");
@@ -451,6 +453,7 @@ impl MessageCoordinationDelegate {
         groupParticipantNamesText: Option<String>,
         suppressUserMessageInHistory: bool,
         turnOptions: ChatTurnOptions,
+        waifuEnabled: bool,
     ) {
         self.currentPromptFunctionType = promptFunctionType.clone();
         self.currentChatProviderIdOverride = chatProviderIdOverride.clone();
@@ -571,6 +574,7 @@ impl MessageCoordinationDelegate {
                 suppressUserMessageInHistory: suppressUserMessageInHistory || isContinuation,
                 isAutoContinuation,
                 turnOptions: turnOptions.clone(),
+                waifuEnabled,
             })
             .await;
         let result = match result {
@@ -928,6 +932,7 @@ impl MessageCoordinationDelegate {
                     Some(groupParticipantNamesText.clone()),
                     true,
                     turnOptions.clone(),
+                    false,
                 )
                 .await;
                 if !self
@@ -1580,6 +1585,7 @@ impl MessageCoordinationDelegate {
                         groupParticipantNamesText,
                         false,
                         ChatTurnOptions::default(),
+                        false,
                     )
                     .await;
                 }

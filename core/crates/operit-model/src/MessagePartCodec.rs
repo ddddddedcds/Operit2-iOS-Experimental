@@ -11,8 +11,48 @@ impl MessagePartCodec {
     /// Parses one complete assistant message into ordered semantic parts.
     pub fn parseAssistantMarkup(content: &str) -> Result<Vec<MessagePart>, String> {
         let mut state = AssistantMarkupStreamState::new();
-        state.push(content)?;
+        // Convert waifu <emotion>xxx</emotion> tags into markdown images so the
+        // chat renderer can display a local emoji (emoji://happy → asset). This
+        // must happen before XML parsing so the emotion tag is not misread as a
+        // status/tool block. Non-emotion text is untouched.
+        state.push(&Self::emotionTagsToMarkdownImages(content))?;
         state.finish()
+    }
+
+    /// Replaces `<emotion>happy</emotion>` (and `<emotion ...>..</emotion>`)
+    /// with `![happy](emoji://happy)` so the renderer can load a local emoji.
+    /// If the inner text is empty the whole tag is removed.
+    fn emotionTagsToMarkdownImages(content: &str) -> String {
+        let mut out = String::with_capacity(content.len());
+        let mut rest = content;
+        let open = "<emotion";
+        let close = "</emotion>";
+        while let Some(oi) = rest.find(open) {
+            out.push_str(&rest[..oi]);
+            let after_open = &rest[oi..];
+            // Find the closing '>' of the opening tag.
+            let Some(gt) = after_open.find('>') else {
+                out.push_str(after_open);
+                return out;
+            };
+            // Find the matching close tag.
+            let after_gt = &after_open[gt + 1..];
+            let Some(ci) = after_gt.find(close) else {
+                out.push_str(after_open);
+                return out;
+            };
+            let inner = after_gt[..ci].trim();
+            if !inner.is_empty() {
+                out.push_str("![");
+                out.push_str(inner);
+                out.push_str("](emoji://");
+                out.push_str(inner);
+                out.push(')');
+            }
+            rest = &after_gt[ci + close.len()..];
+        }
+        out.push_str(rest);
+        out
     }
 
     /// Serializes canonical parts for a text-only provider protocol boundary.

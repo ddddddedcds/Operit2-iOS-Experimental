@@ -619,6 +619,7 @@ async fn dispatch_chat_message_with_application(
         attachments,
         replyToMessage,
         turnOptions,
+        false,
     )
     .await;
     let currentChatId = core
