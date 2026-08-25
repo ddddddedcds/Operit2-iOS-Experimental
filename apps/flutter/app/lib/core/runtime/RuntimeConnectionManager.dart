@@ -1,6 +1,7 @@
 // ignore_for_file: file_names
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -203,11 +204,28 @@ class RuntimeConnectionManager extends ChangeNotifier {
     ClientLogger.i('initialize start', tag: _logTag);
     try {
       final readStopwatch = Stopwatch()..start();
-      final storedConfig = await RuntimeConnectionConfigStore.read();
+      var storedConfig = await RuntimeConnectionConfigStore.read();
       ClientLogger.i(
         'config read done localConfirmed=${storedConfig.localStorage.confirmed} elapsedMs=${readStopwatch.elapsedMilliseconds}',
         tag: _logTag,
       );
+      // Defensive: a persisted runtimeRoot that is not writable (e.g. a
+      // roothide-era stale path left in local_runtime_storage.json) would
+      // break every storage op. Fall back to the platform default instead of
+      // applying the poisoned root. Best-effort; never throws.
+      if (storedConfig.localStorage.confirmed) {
+        final ls = storedConfig.localStorage;
+        if (!await _isRuntimeRootWritable(ls.runtimeRoot)) {
+          ClientLogger.w(
+            'stored runtimeRoot is not writable (${ls.runtimeRoot}) '
+            '-> falling back to platform default',
+            tag: _logTag,
+          );
+          storedConfig = storedConfig.copyWith(
+            localStorage: LocalRuntimeStorageConfig.platformDefault(),
+          );
+        }
+      }
       if (storedConfig.localStorage.confirmed) {
         final storageStopwatch = Stopwatch()..start();
         ClientLogger.i(
@@ -233,6 +251,23 @@ class RuntimeConnectionManager extends ChangeNotifier {
         stackTrace: stackTrace,
       );
       rethrow;
+    }
+  }
+
+  /// Returns whether one local runtime root can actually be created/written.
+  /// Best-effort probe (create a leaf dir and delete it); never throws.
+  static Future<bool> _isRuntimeRootWritable(String root) async {
+    try {
+      final dir = Directory(root);
+      await dir.create(recursive: true);
+      final probe = Directory(
+        '$root/.write_probe_${DateTime.now().microsecondsSinceEpoch}',
+      );
+      await probe.create(recursive: true);
+      await probe.delete();
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 

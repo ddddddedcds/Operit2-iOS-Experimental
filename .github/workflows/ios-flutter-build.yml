@@ -89,7 +89,7 @@ jobs:
             hosts/apple/target
             hosts/web/target
             target/operit-build-tools
-          key: ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-ios-${{ hashFiles('core/Cargo.lock', 'core/crates/**/Cargo.toml', 'apps/flutter/native/operit-flutter-bridge/Cargo.lock', 'apps/flutter/native/operit-flutter-bridge/Cargo.toml', 'hosts/apple/Cargo.lock', 'hosts/apple/Cargo.toml', 'hosts/web/Cargo.lock', 'hosts/web/Cargo.toml') }}
+          key: ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-ios-${{ hashFiles('core/Cargo.lock', 'core/crates/**/Cargo.toml', 'core/crates/**/*.rs', 'apps/flutter/native/operit-flutter-bridge/Cargo.lock', 'apps/flutter/native/operit-flutter-bridge/Cargo.toml', 'apps/flutter/native/operit-flutter-bridge/src/**/*.rs', 'hosts/apple/Cargo.lock', 'hosts/apple/Cargo.toml', 'hosts/apple/src/**/*.rs', 'hosts/web/Cargo.lock', 'hosts/web/Cargo.toml', 'hosts/web/src/**/*.rs') }}
           restore-keys: |
             ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-ios-
             ${{ runner.os }}-rust-${{ env.RUST_TOOLCHAIN_VERSION }}-cargo-

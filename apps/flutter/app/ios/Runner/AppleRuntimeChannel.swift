@@ -480,8 +480,11 @@ final class AppleRuntimeChannel: NSObject {
   /// panics on create_dir_all().unwrap(). Pre-create the (environment-resolved)
   /// data root before handing it to the runtime.
   private func defaultStorageRoots() -> (runtime: URL, workspace: URL) {
-    let basePath = (Self.iosDataRoot() as NSString).appendingPathComponent("operit2")
-    let base = URL(fileURLWithPath: basePath, isDirectory: true)
+    // Canonical roots live directly under the REAL data root — no "operit2"
+    // sub-directory. postinst/daemon/Rust all resolve
+    // /var/mobile/.operit/runtime; the old "/operit2" segment was a roothide-era
+    // leftover that silently split storage when this fallback ran.
+    let base = URL(fileURLWithPath: Self.iosDataRoot(), isDirectory: true)
     let runtime = base.appendingPathComponent("runtime", isDirectory: true)
     let workspace = base.appendingPathComponent("workspaces", isDirectory: true)
     for url in [base, runtime, workspace] {

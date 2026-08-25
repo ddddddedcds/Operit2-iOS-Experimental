@@ -53,7 +53,14 @@ pub fn log_app_error(file: &str, line: u32, message: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let line_text = format!("[{}][ERROR] {}:{} {}\n", ts, file, line, message);
+    // Tag each line with the emitting process so one shared operit-error.log
+    // can be attributed to the app vs the agent daemon over SSH.
+    let proc = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "?".to_string());
+    let pid = std::process::id();
+    let line_text = format!("[{ts}][{pid}][{proc}][ERROR] {file}:{line} {message}\n");
     append_error_log(&line_text);
 
     if let Some(holder) = HOST_LOG_SINK.get() {
