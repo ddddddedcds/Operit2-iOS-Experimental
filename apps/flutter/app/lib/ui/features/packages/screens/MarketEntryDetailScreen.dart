@@ -423,7 +423,18 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
                   '',
             );
       } else {
-        throw StateError('请在脚本/包详情页安装资产');
+        // Fallback for artifact-less packages / ToolPkg entries (e.g. a market
+        // entry whose artifact is null, or a package type that isn't skill/mcp):
+        // install via the core's generic `market install` path with force=true,
+        // so ToolPkg / package entries can be installed right from the detail
+        // screen instead of being rejected with a "use the package page" error.
+        result = await runCoreMarketInstall(
+          clients: widget.clients,
+          type: entry.type,
+          entryId: entry.id,
+          versionId: entry.latestVersion?.id,
+          forceVersion: true,
+        );
       }
       await _showInstallReport(result);
     } catch (error, stackTrace) {
