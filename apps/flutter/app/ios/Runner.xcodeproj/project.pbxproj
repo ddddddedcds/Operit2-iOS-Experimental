@@ -31,6 +31,8 @@
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
+		3D2A10242D000001003D2A10 /* IshTerminalBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 3D2A10252D000001003D2A10 /* IshTerminalBridge.mm */; };
+		3D2A10222D000001003D2A10 /* ish-root.tar.gz in Resources */ = {isa = PBXBuildFile; fileRef = 3D2A10232D000001003D2A10 /* ish-root.tar.gz */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -96,6 +98,8 @@
 		A3DBECAFFD01CA94272E1FFA /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		A4C9FE5FA80E7429E0D93DEC /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		E263042404A1AC251036BB08 /* libPods-RunnerTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-RunnerTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		3D2A10252D000001003D2A10 /* IshTerminalBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IshTerminalBridge.mm; sourceTree = "<group>"; };
+		3D2A10232D000001003D2A10 /* ish-root.tar.gz */ = {isa = PBXFileReference; lastKnownFileType = archive.gzip; path = "ish-root.tar.gz"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -199,6 +203,8 @@
 				3D2A10062D000001003D2A10 /* AppleLocalInferenceBridge.mm */,
 				3D2A10022D000001003D2A10 /* OperitFlutterBridge.h */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
+				3D2A10252D000001003D2A10 /* IshTerminalBridge.mm */,
+				3D2A10232D000001003D2A10 /* ish-root.tar.gz */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -245,6 +251,7 @@
 			buildPhases = (
 				004696F3E1CF43FF99750B3E /* [CP] Check Pods Manifest.lock */,
 				3D2A10102D000002003D2A10 /* Build Rust Bridge */,
+				3D2A10212D000001003D2A10 /* Build iSH Runtime */,
 				9740EEB61CF901F6004384FC /* Run Script */,
 				97C146EA1CF9000F007C117D /* Sources */,
 				97C146EB1CF9000F007C117D /* Frameworks */,
@@ -317,6 +324,7 @@
 				3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */,
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
+				3D2A10222D000001003D2A10 /* ish-root.tar.gz in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -380,6 +388,34 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "/bin/sh \"$PROJECT_DIR/build_rust_bridge.sh\"\n";
+		};
+		3D2A10212D000001003D2A10 /* Build iSH Runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/ish-root.tar.gz",
+			);
+			name = "Build iSH Runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinux.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinuxUser.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libfakefs.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish_emu.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libarchive.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHFakefs.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHFchdir.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "OPERIT_REPO_ROOT=\"$PROJECT_DIR/../../../..\"\n/bin/bash \"$OPERIT_REPO_ROOT/tools/ios-runtime/ish/build_ish_ios.sh\" \"$CONFIGURATION\" \"$SDK_NAME\" \"$PLATFORM_NAME\" \"$ARCHS\"\n";
 		};
 		7FE49B747460A44EED96C242 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -463,6 +499,7 @@
 				5A7F10072D000001005A7F10 /* OpenURLServer.swift in Sources */,
 				5A7F100B2D000001005A7F10 /* TCCServer.swift in Sources */,
 				5A7F10092D000001005A7F10 /* AppLockUI.swift in Sources */,
+				3D2A10242D000001003D2A10 /* IshTerminalBridge.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -559,6 +596,8 @@
 				INFOPLIST_FILE = Runner/Info.plist;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish",
+					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish/app",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -567,10 +606,19 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Flutter/ephemeral/rust/$(PLATFORM_NAME)/$(CURRENT_ARCH)",
+					"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)",
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-loperit_flutter_bridge",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinux.a",
+					"-liSHLinuxUser",
+					"-liSHFakefs",
+					"-liSHFchdir",
+					"-lfakefs",
+					"-lish_emu",
+					"-larchive",
 					"-lbz2",
 					"-liconv",
 					"-lresolv",
@@ -755,6 +803,8 @@
 				INFOPLIST_FILE = Runner/Info.plist;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish",
+					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish/app",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -763,10 +813,19 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Flutter/ephemeral/rust/$(PLATFORM_NAME)/$(CURRENT_ARCH)",
+					"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)",
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-loperit_flutter_bridge",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinux.a",
+					"-liSHLinuxUser",
+					"-liSHFakefs",
+					"-liSHFchdir",
+					"-lfakefs",
+					"-lish_emu",
+					"-larchive",
 					"-lbz2",
 					"-liconv",
 					"-lresolv",
@@ -791,6 +850,8 @@
 				INFOPLIST_FILE = Runner/Info.plist;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish",
+					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish/app",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -799,10 +860,19 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Flutter/ephemeral/rust/$(PLATFORM_NAME)/$(CURRENT_ARCH)",
+					"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)",
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-loperit_flutter_bridge",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinux.a",
+					"-liSHLinuxUser",
+					"-liSHFakefs",
+					"-liSHFchdir",
+					"-lfakefs",
+					"-lish_emu",
+					"-larchive",
 					"-lbz2",
 					"-liconv",
 					"-lresolv",
