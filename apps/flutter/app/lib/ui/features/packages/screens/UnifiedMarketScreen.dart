@@ -862,7 +862,9 @@ class _MarketListPaneState extends State<_MarketListPane> {
       _busyEntryIds.add(item.id);
     });
     try {
-      ensureMarketEntryVersionSupported(entry: item);
+      // operit2 is a fork; the upstream market's min/maxSupportedAppVersion range
+      // does not apply. Skip the throw-on-incompatible guard so installs succeed.
+      // Version compatibility is still surfaced on the detail page for awareness.
       if (item.type == 'skill') {
         await _installSkill(item);
       } else if (item.type == 'mcp') {

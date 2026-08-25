@@ -192,7 +192,12 @@ Future<String> runCoreMarketInstall({
   required String type,
   required String entryId,
   String? versionId,
-  bool forceVersion = false,
+  // operit2 is a fork; the upstream market's min/maxSupportedAppVersion range is
+  // meaningless here (our hard-coded currentAppVersion differs from upstream).
+  // Always pass force=true so the backend skips the version bound check and the
+  // user can install any market entry. The version compatibility is still
+  // computed and displayed on the detail page for transparency.
+  bool forceVersion = true,
 }) async {
   final normalizedType = type.trim();
   if (normalizedType.isEmpty) {

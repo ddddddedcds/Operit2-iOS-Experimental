@@ -360,23 +360,16 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
       if (version == null || !mounted) return;
       setState(() => _installing = true);
       try {
-        final compatibility = resolveMarketAppVersionCompatibility(
-          appVersion: currentAppVersion,
-          minAppVersion: version.minAppVer,
-          maxAppVersion: version.maxAppVer,
-        );
-        if (compatibility != null &&
-            compatibility.kind ==
-                MarketAppVersionCompatibilityKind.belowMinimum &&
-            !(await _confirmVersionOverride(compatibility))) {
-          return;
-        }
+        // operit2 is a fork; the upstream market's min/maxSupportedAppVersion
+        // range does not apply. Install unconditionally with forceVersion=true so
+        // the backend skips the bound check. Compatibility is still surfaced
+        // elsewhere on the detail page for awareness.
         final result = await runCoreMarketInstall(
           clients: widget.clients,
           type: entry.type,
           entryId: entry.id,
           versionId: version.versionId,
-          forceVersion: compatibility != null,
+          forceVersion: true,
         );
         await _showInstallReport(result);
         return;
