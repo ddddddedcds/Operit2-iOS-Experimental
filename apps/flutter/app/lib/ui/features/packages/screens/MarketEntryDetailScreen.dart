@@ -360,10 +360,15 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
       if (version == null || !mounted) return;
       setState(() => _installing = true);
       try {
-        ensureMarketAppVersionSupported(
+        final compatibility = resolveMarketAppVersionCompatibility(
+          appVersion: currentAppVersion,
           minAppVersion: version.minAppVer,
           maxAppVersion: version.maxAppVer,
         );
+        if (compatibility != null &&
+            !(await _confirmVersionOverride(compatibility))) {
+          return;
+        }
         final result = await runCoreMarketInstall(
           clients: widget.clients,
           type: entry.type,
@@ -393,7 +398,13 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
 
     setState(() => _installing = true);
     try {
-      ensureMarketEntryVersionSupported(entry: entry);
+      final compatibility = resolveMarketEntryVersionCompatibility(
+        entry: entry,
+      );
+      if (compatibility != null &&
+          !(await _confirmVersionOverride(compatibility))) {
+        return;
+      }
       if (entry.type == 'skill') {
         final repoUrl = entry.source?.url.trim() ?? '';
         if (repoUrl.isEmpty) throw StateError('技能缺少仓库地址');
@@ -441,6 +452,33 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
     } finally {
       if (mounted) setState(() => _installing = false);
     }
+  }
+
+  /// Asks the user to confirm overriding a client-version incompatibility.
+  Future<bool> _confirmVersionOverride(
+    MarketAppVersionCompatibility compatibility,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('版本不兼容'),
+        content: Text(
+          '${compatibility.message}\n\n是否忽略版本限制，继续安装？'
+          '（功能可能不完整）',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('忽略并继续安装'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
   }
 
   bool _canPublishArtifactVersion(core_proxy.MarketEntrySummary entry) {
@@ -643,10 +681,12 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
             ),
         ],
         badges: <String>[
+          if (entry.featured) '精选',
           entry.type,
           entry.categoryId ?? '',
           entry.latestVersion?.version ?? '',
           entry.stateCode,
+          ..._compatibilityBadges(entry),
         ].where((value) => value.trim().isNotEmpty).toList(growable: false),
         metrics: <UnifiedMarketDetailMetric>[
           UnifiedMarketDetailMetric(
@@ -797,4 +837,24 @@ int _entryDownloads(core_proxy.MarketEntrySummary entry) {
   return entry.downloadCount > entry.downloads
       ? entry.downloadCount
       : entry.downloads;
+}
+
+/// Derives client-compatibility badges from the entry's latest version.
+List<String> _compatibilityBadges(core_proxy.MarketEntrySummary entry) {
+  final version = entry.latestVersion;
+  if (version == null) {
+    return const [];
+  }
+  final compatibility = resolveMarketAppVersionCompatibility(
+    appVersion: currentAppVersion,
+    minAppVersion: version.minAppVer,
+    maxAppVersion: version.maxAppVer,
+  );
+  if (compatibility == null) {
+    return const ['兼容当前版本'];
+  }
+  return switch (compatibility.kind) {
+    MarketAppVersionCompatibilityKind.belowMinimum => const ['需更新客户端'],
+    MarketAppVersionCompatibilityKind.aboveMaximum => const ['客户端版本过高'],
+  };
 }

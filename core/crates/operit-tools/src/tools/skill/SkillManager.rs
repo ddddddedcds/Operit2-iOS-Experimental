@@ -437,16 +437,20 @@ impl SkillManager {
             None => tmpDir.to_path_buf(),
         };
         let searchRoot = if let Some(subDir) = normalizedSubDir.as_ref() {
-            match safeChildPath(&zipRootDir, subDir) {
-                Ok(path) => match self.fileSystemHost.fileExists(&hostPath(&path)) {
-                    Ok(info) if info.exists && info.isDirectory => path,
-                    Ok(_) => return format!("Import path not found: {}", subDir),
-                    Err(error) => return format!("Failed to import skill: {}", error),
-                },
-                Err(error) => return error,
+            // 优先精确匹配子目录；若仓库结构与元数据不一致（如 subDir 给错/大小写不同），
+            // 回退到 zip 根全扫 SKILL.md，而不是直接报 "Import path not found"。
+            let resolved = safeChildPath(&zipRootDir, subDir).ok().filter(|path| {
+                matches!(
+                    self.fileSystemHost.fileExists(&hostPath(path)),
+                    Ok(info) if info.exists && info.isDirectory
+                )
+            });
+            match resolved {
+                Some(path) => path,
+                None => zipRootDir.to_path_buf(),
             }
         } else {
-            tmpDir.to_path_buf()
+            zipRootDir.to_path_buf()
         };
 
         let skillMdCandidates = match directSkillFile(self.fileSystemHost.as_ref(), &searchRoot) {

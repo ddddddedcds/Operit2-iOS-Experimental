@@ -171,10 +171,19 @@ impl MCPRepository {
         progressCallback(InstallProgress::Preparing);
 
         let pluginDir = joinHostPath(&self.pluginsBaseDir, pluginId);
-        if let Err(error) = self.fileSystemHost.deleteFile(&pluginDir, true) {
-            return InstallResult::Error {
-                message: format!("Failed to reset plugin directory: {error}"),
-            };
+        // 幂等 reset：首次安装时插件目录尚不存在，deleteFile 会报
+        // "File or directory does not exist"（iOS fs host 语义），先检查再删。
+        let existsBeforeReset = self
+            .fileSystemHost
+            .fileExists(&pluginDir)
+            .map(|info| info.exists)
+            .unwrap_or(false);
+        if existsBeforeReset {
+            if let Err(error) = self.fileSystemHost.deleteFile(&pluginDir, true) {
+                return InstallResult::Error {
+                    message: format!("Failed to reset plugin directory: {error}"),
+                };
+            }
         }
         if let Err(error) = self.fileSystemHost.makeDirectory(&pluginDir, true) {
             return InstallResult::Error {
@@ -253,10 +262,19 @@ impl MCPRepository {
         }
 
         let pluginDir = joinHostPath(&self.pluginsBaseDir, pluginId);
-        if let Err(error) = self.fileSystemHost.deleteFile(&pluginDir, true) {
-            return InstallResult::Error {
-                message: format!("Failed to reset plugin directory: {error}"),
-            };
+        // 幂等 reset：首次安装时插件目录尚不存在，deleteFile 会报
+        // "File or directory does not exist"（iOS fs host 语义），先检查再删。
+        let existsBeforeReset = self
+            .fileSystemHost
+            .fileExists(&pluginDir)
+            .map(|info| info.exists)
+            .unwrap_or(false);
+        if existsBeforeReset {
+            if let Err(error) = self.fileSystemHost.deleteFile(&pluginDir, true) {
+                return InstallResult::Error {
+                    message: format!("Failed to reset plugin directory: {error}"),
+                };
+            }
         }
         if let Err(error) = self.fileSystemHost.makeDirectory(&pluginDir, true) {
             return InstallResult::Error {

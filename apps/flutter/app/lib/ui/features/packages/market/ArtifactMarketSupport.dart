@@ -103,6 +103,28 @@ void ensureMarketEntryVersionSupported({
   );
 }
 
+/// Returns the compatibility issue of an entry's selected version, when one exists.
+MarketAppVersionCompatibility? resolveMarketEntryVersionCompatibility({
+  required MarketEntrySummary entry,
+  String? versionId,
+}) {
+  final normalizedVersionId = versionId?.trim();
+  final version = switch (normalizedVersionId) {
+    null || '' => entry.latestVersion,
+    final selectedVersionId => entry.versions
+        .where((candidate) => candidate.id == selectedVersionId)
+        .firstOrNull,
+  };
+  if (version == null) {
+    return null;
+  }
+  return resolveMarketAppVersionCompatibility(
+    appVersion: currentAppVersion,
+    minAppVersion: version.minAppVer,
+    maxAppVersion: version.maxAppVer,
+  );
+}
+
 /// Parses and compares the app-version format used by marketplace metadata.
 class _MarketAppVersion implements Comparable<_MarketAppVersion> {
   const _MarketAppVersion({

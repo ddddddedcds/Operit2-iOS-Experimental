@@ -227,6 +227,134 @@ class _UnifiedMarketScreenState extends State<UnifiedMarketScreen>
     _syncTopBar();
   }
 
+  Future<void> _showUrlInstallDialog() async {
+    if (!mounted) {
+      return;
+    }
+    String kind = 'skill';
+    final urlController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('URL 安装'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('从 GitHub 链接直接安装（支持 tree/blob 子路径，多模块仓库可选节点）：'),
+              const SizedBox(height: 8),
+              SelectableText(
+                'https://github.com/owner/repo/tree/main/skills/my-skill',
+                style: Theme.of(dialogContext).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'skill', label: Text('技能')),
+                  ButtonSegment(value: 'mcp', label: Text('MCP')),
+                ],
+                selected: {kind},
+                onSelectionChanged: (selection) {
+                  setDialogState(() => kind = selection.first);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: urlController,
+                autofocus: true,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'GitHub URL',
+                  hintText: 'https://github.com/owner/repo/...',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (urlController.text.trim().isEmpty) {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(content: Text('请输入 GitHub URL')),
+                  );
+                  return;
+                }
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('安装'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final url = urlController.text.trim();
+    if (confirmed != true || url.isEmpty || !mounted) {
+      return;
+    }
+    try {
+      final clients = widget.clients;
+      final String result;
+      if (kind == 'mcp') {
+        result = await clients.application
+            .mcpRepository()
+            .installMcpServerWithObjectForFlutter(
+              pluginId: _urlPluginId(url),
+              repoUrl: url,
+              name: 'URL 安装的 MCP',
+              description: '',
+              mcpConfig: '',
+            );
+      } else {
+        result = await clients.application
+            .skillRepository()
+            .importSkillFromGitHubRepo(repoUrl: url);
+      }
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result), behavior: SnackBarBehavior.floating),
+      );
+    } catch (error, stackTrace) {
+      debugPrint('URL install failed: $error\n$stackTrace');
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.toString()),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  /// Derives a stable plugin id from a GitHub URL (owner-repo).
+  String _urlPluginId(String url) {
+    final parts = url
+        .split('?')
+        .first
+        .split('#')
+        .first
+        .split('/')
+        .where((part) => part.isNotEmpty)
+        .toList();
+    final repo = parts.length > 1 ? parts[parts.length - 1] : 'url_install';
+    final owner = parts.length > 2 ? parts[parts.length - 2] : '';
+    final raw = owner.isEmpty ? repo : '$owner-$repo';
+    final normalized = raw
+        .replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return normalized.isEmpty ? 'url_install' : normalized;
+  }
+
   void _syncTopBar() {
     final controller = _topBarController;
     if (controller == null) {
@@ -242,6 +370,11 @@ class _UnifiedMarketScreenState extends State<UnifiedMarketScreen>
         return const <Widget>[];
       }
       return <Widget>[
+        IconButton(
+          onPressed: _showUrlInstallDialog,
+          icon: const Icon(Icons.link),
+          tooltip: 'URL 安装',
+        ),
         IconButton(
           onPressed: () {
             setState(() {
