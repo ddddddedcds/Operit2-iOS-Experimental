@@ -9,12 +9,12 @@
 ## ⚠️ 重要声明（安装/使用前必读）
 
 - **这是 POC，不是产品。使用vibe coding进行改编。**：实验性、不稳定、整体设计存在先天问题，**bug 链式暴露**（已知遗留问题见 HANDOVER.md 第 8/10 节）。
-- **仅 Dopamine rootless（iOS 16.7）真机验证过**；roothide 版与非越狱（IPA）版**未验证，不可用**。
+- **仅 Dopamine rootless（iOS 16.7）真机验证过**；非越狱（IPA）版**未验证，不可用**。（roothide 版已停止支持）
 - **包含 root 权限与锁应用能力**：安装/使用有风险，可能导致数据丢失或系统异常。
 - **只建议有越狱经验的开发者安装测试**；请勿作为日常工具使用。
 目前环境测试：Dopamine ios16.7 a14 正常
                     ios15.7 a12 正常
-            Relaxin 和 Dopamine roothide版 会卡住欢迎界面（我认为这是个很简单的问题，但是我和ai太菜了解决不了。）
+            （roothide 版已停止支持、不再维护；Relaxin/Dopamine rootless 系适配见 HANDOVER）
             (rootful越狱和trollstore均未做专门适配）
 ---
 

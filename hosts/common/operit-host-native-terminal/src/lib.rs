@@ -93,7 +93,11 @@ impl PtyCommandSpec {
     /// Builds the default interactive bash command configuration.
     fn nativeBash() -> Self {
         Self {
-            program: "bash".to_string(),
+            program: if std::path::Path::new("/var/jb/bin/bash").exists() {
+                "/var/jb/bin/bash".to_string()
+            } else {
+                "bash".to_string()
+            },
             args: vec![
                 "--noprofile".to_string(),
                 "--norc".to_string(),
@@ -112,7 +116,11 @@ impl PtyCommandSpec {
     /// Builds the privileged system POSIX sh command configuration.
     fn systemShell() -> Self {
         Self {
-            program: "/bin/sh".to_string(),
+            program: if std::path::Path::new("/var/jb/bin/sh").exists() {
+                "/var/jb/bin/sh".to_string()
+            } else {
+                "/bin/sh".to_string()
+            },
             args: vec!["-i".to_string()],
             terminalType: "shell".to_string(),
             description: "Privileged system /bin/sh terminal".to_string(),

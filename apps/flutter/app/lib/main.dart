@@ -23,17 +23,6 @@ const String _appStartupLogTag = 'AppStartup';
 /// native tracer writes) so all startup diagnostics live in one place and are
 /// visible over SSH even when ClientLogger.initialize() throws. Best-effort;
 /// never throws.
-/// True only for a REAL rootless (Dopamine/ElleKit) install. A bare `/var/jb`
-/// directory proves nothing — on roothide our own code used to create one, and
-/// every `/var/jb`-based detection was poisoned from then on.
-final bool _isRootlessInstall = () {
-  try {
-    return Directory('/var/jb/usr/lib').existsSync();
-  } catch (_) {
-    return false;
-  }
-}();
-
 void _writeLaunchLog(String message) {
   try {
     final ts = DateTime.now().toIso8601String();
@@ -42,7 +31,6 @@ void _writeLaunchLog(String message) {
       '/var/mobile/.operit/launch.log',
       '/var/mobile/trace.log',
       '/var/mobile/.operit/trace.log',
-      if (_isRootlessInstall) '/var/jb/var/mobile/.operit/trace.log',
       '/tmp/trace.log',
     ];
     for (final p in paths) {
@@ -85,7 +73,7 @@ void main(List<String> arguments) async {
         _writeLaunchLog('CLIENT_LOGGER_INIT_OK');
       } catch (e, st) {
         // Logging must never block app startup. If the data directory is not
-        // writable (e.g. a root-owned .operit on roothide), degrade gracefully
+        // writable (e.g. a root-owned .operit), degrade gracefully
         // so runApp still executes instead of white-screening.
         _writeLaunchLog('CLIENT_LOGGER_INIT_FAILED: $e\n$st');
       }

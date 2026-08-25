@@ -1,12 +1,7 @@
 //! iOS (jailbreak) environment root resolution and capability detection.
 //!
 //! Rootless-only: this fork targets Dopamine / ElleKit rootless (everything
-//! under a fixed `/var/jb` symlink to the procursus root). All roothide
-//! support (random jbroot injection, per-process /var remap, JBROOT env, the
-//! whole `operit_env_path` / PathMapper abstraction) has been REMOVED — it was
-//! a compat shim for a jailbreak flavour this fork does not ship, and its
-//! `/var/jb/var/mobile/.operit == real /var/mobile/.operit` assumption was
-//! factually wrong on Dopamine (verified by inode: procursus has its own var).
+//! under a fixed `/var/jb` symlink to the procursus root).
 //!
 //! * `binary_root()` — where mach-o binaries live (daemon / tweak dylib / app):
 //!   `/var/jb` (symlink to the procursus root).
@@ -27,9 +22,6 @@ pub enum JailbreakType {
     Unknown,
     /// Dopamine / ElleKit style: everything under a fixed `/var/jb`.
     Rootless,
-    /// roothide — REMOVED: the fork is rootless-only. Variant kept so external
-    /// `match` arms still compile; `detect_jailbreak()` never returns it.
-    RootHide,
     /// No jailbreak: daemon / tweak are absent; only the local sandbox works.
     NonJailbreak,
 }
@@ -78,8 +70,7 @@ fn operit_data_writable() -> bool {
 ///
 /// Rootless-only: returns `Rootless` when a rootless marker is present
 /// (`/var/jb` symlink to a procursus root, current_exe under `/var/jb`, or
-/// `/var/jb/usr/lib`), `NonJailbreak` otherwise. The roothide symlink-target
-/// disambiguation (target == "/") is gone — there is no roothide anymore.
+/// `/var/jb/usr/lib`), `NonJailbreak` otherwise.
 pub fn detect_jailbreak() -> JailbreakType {
     if let Ok(exe) = std::env::current_exe() {
         if exe.starts_with("/var/jb/") {
@@ -126,11 +117,10 @@ pub fn relax_dir_permissions(dir: &Path) {
 
 /// Resolve the two roots for an explicit jailbreak type.
 ///
-/// Rootless-only. `RootHide` is treated identically to `Rootless` (defensive;
-/// the variant is never produced by `detect_jailbreak` anymore).
+/// Rootless-only.
 pub fn resolve_roots_for(jb: JailbreakType) -> Roots {
     match jb {
-        JailbreakType::Rootless | JailbreakType::RootHide | JailbreakType::Unknown => Roots {
+        JailbreakType::Rootless | JailbreakType::Unknown => Roots {
             // binary_root is /var/jb: on rootless Dopamine this is a *symlink to
             // the procursus root* (e.g. /private/preboot/.../dopamine-.../procursus),
             // so mach-o we stage lands under /var/jb/usr/bin etc.
@@ -260,15 +250,6 @@ mod tests {
     #[test]
     fn rootless_roots() {
         let r = resolve_roots_for(JailbreakType::Rootless);
-        assert_eq!(r.binary, Some(PathBuf::from("/var/jb")));
-        assert_eq!(r.data, PathBuf::from("/var/mobile/.operit"));
-    }
-
-    #[test]
-    fn roothide_treated_as_rootless() {
-        // RootHide no longer exists; it must degrade to rootless, not to a
-        // jbroot-scanned data dir.
-        let r = resolve_roots_for(JailbreakType::RootHide);
         assert_eq!(r.binary, Some(PathBuf::from("/var/jb")));
         assert_eq!(r.data, PathBuf::from("/var/mobile/.operit"));
     }

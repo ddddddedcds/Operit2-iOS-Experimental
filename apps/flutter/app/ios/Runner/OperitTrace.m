@@ -1,6 +1,6 @@
 // OperitTrace.m
 // 最早期诊断追踪：在 main() 之前写入进程启动记录，并捕获 native 崩溃与未捕获异常。
-// 背景：roothide 设备无系统日志设施，且 Dart 之前崩溃无任何痕迹。
+// 背景：越狱设备启动早期无系统日志设施，且 Dart 之前崩溃无任何痕迹。
 // 本文件保证"只要进程被 dyn-loaded 起来就留痕"，无论之后闪退还是白屏。
 // 同时追踪 dyld 镜像加载（死在加载期也能看到最后一个加载的库）、进程退出、环境快照。
 #import <Foundation/Foundation.h>
@@ -17,7 +17,7 @@
 static int g_trace_fds[8];
 static int g_trace_nfds = 0;
 
-// 候选路径：优先 .operit，/tmp 兜底（roothide 双视图下至少有一处可写）
+// 候选路径：优先 .operit，/tmp 兜底（rootless 下至少有一处可写）
 static const char *kTracePaths[] = {
     "/var/mobile/trace.log",
     "/var/mobile/.operit/trace.log",
@@ -52,7 +52,7 @@ void OperitTraceAppend(const char *msg) {
 
 static void trace_open(void) {
     // 只创建真实根下属于我们自己的目录。绝不 mkdir /var/jb 下任何东西：
-    // roothide 上那会凭空造出 /var/jb，进而毒化所有基于它的环境判定
+    // 那会凭空造出 /var/jb，进而毒化所有基于它的环境判定
     // （真机已坐实：正是这样白屏的）。0777 是为了 root 先建时 mobile 仍可写。
     mkdir("/var/mobile/.operit", 0777);
     chmod("/var/mobile/.operit", 0777);
@@ -106,7 +106,6 @@ static void operit_env_snapshot(void) {
     char buf[2048];
     snprintf(buf, sizeof(buf), "UID=%d EUID=%d\n", getuid(), geteuid());
     trace_raw(buf);
-    trace_raw(access("/.jbroot", F_OK) == 0 ? "JBROOT_EXISTS=YES\n" : "JBROOT_EXISTS=NO\n");
     trace_raw(access("/var/jb", F_OK) == 0 ? "VAR_JB_EXISTS=YES\n" : "VAR_JB_EXISTS=NO\n");
     char exep[1024]; uint32_t exesz = sizeof(exep);
     if (_NSGetExecutablePath(exep, &exesz) == 0) {

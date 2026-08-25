@@ -25,26 +25,19 @@ class OperitClientPaths {
       await directory.create(recursive: true);
       return directory;
     } catch (_) {
-      // No-container jailbreak builds (roothide/rootless) have no creatable
+      // No-container jailbreak builds (Dopamine rootless) have no creatable
       // sandbox path from path_provider. Pick a root that is actually WRITABLE
-      // by the app user (mobile, uid 501). On roothide the shared
-      // /var/mobile/.operit may be owned by root (the agent daemon runs as
-      // root and creates it), so we PROBE writability and fall back to a
-      // mobile-owned directory instead of throwing — otherwise
-      // ClientLogger.initialize() fails and the app white-screens.
-      // NOTE: `/var/jb` EXISTS on roothide too (verified on device), so it can
-      // never be used to tell rootless from roothide — see _isRootHide.
-      // A `/var/jb/...` candidate is only offered when this really IS a
-      // rootless install; otherwise `create(recursive: true)` below would
-      // CREATE `/var/jb` on a roothide device and poison every later probe.
+      // by the app user (mobile, uid 501). The shared /var/mobile/.operit may be
+      // owned by root (the agent daemon runs as root and creates it), so we
+      // PROBE writability and fall back to a mobile-owned directory instead of
+      // throwing — otherwise ClientLogger.initialize() fails and the app
+      // white-screens.
       final candidates = <String>[
         _operitDataRoot(),
-        // roothide/real-root data root (matches Swift iosDataRoot()/Rust data_root)
+        // Real-root data root (matches Swift iosDataRoot()/Rust data_root()).
         '/var/mobile/.operit',
-        if (_isRootless) '/var/jb/var/mobile/.operit',
         // app-private fallbacks when the shared root is root-owned
         '/var/mobile/operit2_client',
-        if (_isRootless) '/var/jb/var/mobile/operit2_client',
         '/var/mobile',
       ];
       for (final candidate in candidates) {
@@ -65,38 +58,10 @@ class OperitClientPaths {
     }
   }
 
-  /// True when roothide installed us, decided by our OWN executable path.
-  ///
-  /// roothide puts the whole jailbreak tree inside
-  /// `/var/containers/Bundle/Application/.jbroot-XXXXXXXX/`, so the app binary
-  /// carries that segment. Verified on device:
-  ///   /var/containers/Bundle/Application/.jbroot-58EAA282AAFACD0F/Applications/Runner.app/Runner
-  ///
-  /// This replaces the old `/var/jb` existence test, which was provably wrong:
-  /// our own tweak created a real `/var/jb` on roothide, after which every
-  /// component mis-detected the device as rootless, aimed its data root at a
-  /// root-owned directory it could not write, and the app white-screened.
-  /// A detection rule must not be falsifiable by the thing it detects.
-  static bool get _isRootHide {
-    if (!Platform.isIOS) return false;
-    try {
-      if (Platform.resolvedExecutable.contains('/.jbroot-')) return true;
-    } catch (_) {}
-    // roothide: /var/jb is a symlink to / (compat layer). A real rootless
-    // /var/jb is a directory, never a symlink. This test is reliable even when
-    // the executable path is remapped and hides the .jbroot- segment.
-    try {
-      Link('/var/jb').targetSync();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   /// True for a real rootless (Dopamine/ElleKit) install. Requires an actual
   /// subtree, not the bare `/var/jb` directory that anything can create.
   static bool get _isRootless {
-    if (!Platform.isIOS || _isRootHide) return false;
+    if (!Platform.isIOS) return false;
     try {
       return Directory('/var/jb/usr/lib').existsSync();
     } catch (_) {
@@ -104,14 +69,11 @@ class OperitClientPaths {
     }
   }
 
-  /// Mirrors Swift iosDataRoot() / Rust data_root() for iOS jailbreak builds.
+  /// Mirrors Swift iosDataRoot() / Rust data_root(): the REAL /var/mobile/.operit.
+  /// The procursus-mirrored /var/jb/var/mobile/.operit is a different physical
+  /// directory the app cannot write into (EACCES), so it is never used.
   static String _operitDataRoot() {
     if (Platform.isIOS) {
-      if (_isRootless) {
-        return '/var/jb/var/mobile/.operit';
-      }
-      // roothide and everything else: the real-root data dir, shared with the
-      // agent daemon and the tweaks.
       return '/var/mobile/.operit';
     }
     // Non-iOS fallback (should not normally be reached).

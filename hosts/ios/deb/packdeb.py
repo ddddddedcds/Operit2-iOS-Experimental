@@ -9,7 +9,6 @@ import os, io, tarfile, gzip, stat, sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 FILES = os.path.join(ROOT, "files")
 DEBIAN = os.path.join(ROOT, "DEBIAN")
-_SCHEME0 = os.environ.get("OPERIT_PACK_SCHEME", "rootless")
 
 
 def read_control_version():
@@ -24,24 +23,14 @@ def read_control_version():
     return "0.0.0"
 
 
-# roothide packages are tagged with the `iphoneos-arm64e` Architecture value
-# (per theapplewiki/roothide docs). NOTE: this is purely a package-manager
-# marker string — it has nothing to do with the actual arm64e CPU slice, so a
-# pure arm64 binary is fine inside such a package.
-OUT = os.path.join(ROOT, "operit2-ios_%s_%s.deb" %
-                   (read_control_version(),
-                    "iphoneos-arm64e" if _SCHEME0 == "roothide" else "iphoneos-arm64"))
+OUT = os.path.join(ROOT, "operit2-ios_%s_iphoneos-arm64.deb" %
+                   (read_control_version(),))
 
-# Package scheme is selected via the OPERIT_PACK_SCHEME env var (set by
-# build_deb.sh). roothide: the process rootfs view IS the jbroot, so the deb is
-# laid out directly at the jbroot root (no /var/jb prefix); roothide's dpkg
-# installs it there. rootless: prefix every data.tar member with "var/jb/" so a
-# plain `dpkg -i` extracts into the writable /var/jb tree. Do NOT install with
+# Rootless-only: prefix every data.tar member with "var/jb/" so a plain
+# `dpkg -i` extracts into the writable /var/jb tree. Do NOT install with
 # `dpkg --root=/var/jb` (would double-prefix). Use plain `sudo dpkg -i` / Sileo.
-SCHEME = os.environ.get("OPERIT_PACK_SCHEME", "rootless")
-if SCHEME not in ("rootless", "roothide"):
-    SCHEME = "rootless"
-JB_PREFIX = "var/jb/" if SCHEME == "rootless" else ""
+SCHEME = "rootless"
+JB_PREFIX = "var/jb/"
 
 
 def tar_add(tar, path, arcname, mode=None):
@@ -113,13 +102,12 @@ def make_data_tar():
                     if m & 0o111:
                         m |= 0o111
                     # rootless path fix: the daemon is staged into /var/jb/usr/bin, but
-                    # ai.operit.agent.plist hardcodes /usr/bin/operit_agent_daemon
-                    # (correct for roothide — its dpkg installs to a real /usr/bin; WRONG
-                    # for rootless, where /usr/bin is the read-only system dir and the
-                    # binary lives at /var/jb/usr/bin). launchd resolves the absolute
+                    # ai.operit.agent.plist hardcodes /usr/bin/operit_agent_daemon.
+                    # On rootless /usr/bin is the read-only system dir and the binary
+                    # lives at /var/jb/usr/bin, so launchd resolves the absolute
                     # ProgramArguments path verbatim, fails to find the daemon, and 8890
                     # never comes up. Rewrite the path inside the plist for the rootless
-                    # scheme only; roothide keeps the original /usr/bin path.
+                    # scheme (this fork is rootless-only).
                     # 幂等保护（2026-08-14 回归修复）：若源文件已是 /var/jb 前缀
                     # （fb9d01c3 曾直接写死 /var/jb/usr/bin，str.replace 把子串再替换
                     # 成 /var/jb/var/jb/usr/bin 双前缀，daemon 起不来），不再二次加前缀。
@@ -151,27 +139,11 @@ def compute_installed_size_kb():
 
 
 def make_control_tar():
-    # NOTE: intentionally ship NO maintainer scripts for the *rootless* scheme —
-    # its dpkg/AMFI layout lacks /bin/sh and accepts ad-hoc signatures, so a
-    # script is both unrunnable and unnecessary. For *roothide*, however, AMFI
-    # REJECTS the macOS ldid cert (SIGKILL on the daemon), and only the device's
-    # own ldid can produce an AMFI-trusted signature. So roothide MUST ship a
-    # postinst that re-signs the daemon on-device at install time. roothide's dpkg
-    # does run maintainer scripts, so this is safe there.
+    # Rootless-only: ship NO maintainer scripts — its dpkg/AMFI layout lacks
+    # /bin/sh and accepts ad-hoc signatures, so a script is both unrunnable and
+    # unnecessary. Use plain `sudo dpkg -i` / Sileo.
     items = []
-    if SCHEME == "roothide":
-        pinst = open(os.path.join(DEBIAN, "postinst"), "rb").read()
-        items.append(("postinst", pinst, 0o755))
     ctrl = open(os.path.join(DEBIAN, "control"), "rb").read()
-    # roothide: rewrite the Architecture marker + human-readable rootless labels
-    # to roothide. (Architecture `iphoneos-arm64e` is the Sileo/roothide-dpkg
-    # discriminator; the bare file layout is already correct for roothide.)
-    if SCHEME == "roothide":
-        ctrl = ctrl.replace(b"Architecture: iphoneos-arm64\n",
-                            b"Architecture: iphoneos-arm64e\n")
-        ctrl = ctrl.replace(b"(device automation, rootless)",
-                            b"(device automation, roothide)")
-        ctrl = ctrl.replace(b"(iOS, rootless)", b"(iOS, roothide)")
     kb = compute_installed_size_kb()
     lines = [l for l in ctrl.split(b"\n") if not l.lower().startswith(b"installed-size:")]
     body = b"\n".join(lines).rstrip() + b"\n"

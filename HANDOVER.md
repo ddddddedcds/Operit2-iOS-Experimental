@@ -2,7 +2,7 @@
 
 > **项目定位**：**POC（概念验证）**——验证"越狱 iOS + AI 深度集成"这条路是否可行。结论：**可行，但 Operit2 的 Flutter+Rust 架构硬移植进越狱 iOS 不划算（bug 链式暴露），接手前应先评估架构重做**。本手册记录全部架构、运行原理、坑与遗留问题，供 operit 官方 / 越狱社区开发者接手。
 >
-> **目标平台**：Dopamine rootless（iOS 16.7，主测试机 iPhone13,4（iPhone 12 Pro Max）/ A14）+ roothide；非越狱（TrollStore/自签 IPA 降级支持）
+> **目标平台**：Dopamine rootless（iOS 16.7，主测试机 iPhone13,4（iPhone 12 Pro Max）/ A14）；非越狱（TrollStore/自签 IPA 降级支持）。⚠️ roothide 版已停止支持、不再维护。
 > **主分支**：`feat/ios-jailbreak-preview4`（截至 2026-08-11 共 10 commit）
 
 ---
@@ -27,12 +27,12 @@ operit2-fork-src/
 │   │   └── managed_runtime.rs          #   运行时托管（数据目录初始化等）
 │   ├── deb/                            # 打包目录
 │   │   ├── build_deb.sh                #   一键打包（换 app → 签名 → packdeb）
-│   │   ├── packdeb.py                  #   ar 打包器（OPERIT_PACK_SCHEME 切 rootless/roothide）
-│   │   ├── build_all_0.3.66.sh         #   三产物批量打包（rootless+roothide deb + nonjb IPA）
+│   │   ├── packdeb.py                  #   ar 打包器（rootless-only，固定 scheme）
+│   │   ├── build_all_0.3.66.sh         #   历史脚本（rootless+roothide deb + nonjb IPA），已废弃
 │   │   ├── DEBIAN/control              #   版本/依赖（Version 0.3.70 起；Depends: com.witchan.ios-mcp, preferenceloader, com.opa334.ccsupport）
 │   │   ├── DEBIAN/postinst             #   装机后：ldid 重签 daemon + trustcache 注册 + 启动 LaunchDaemon
 │   │   ├── Runner.entitlements         #   rootless 签名 entitlement（app-sandbox=false + iokit-user-client-class + healthkit）
-│   │   ├── Runner.roothide.entitlements #  roothide 用（+platform-application 等 4 项）
+│   │   ├── Runner.roothide.entitlements #  历史文件（roothide 用，+platform-application 等 4 项），已不再使用
 │   │   ├── Runner-nonjb.entitlements   #   非越狱 IPA 用
 │   │   └── files/                      #   deb 内容 staging（见下）
 │   └── target/                         # Rust iOS 交叉编译产物（daemon 二进制源）
@@ -226,7 +226,7 @@ cd hosts/ios/deb && OPERIT_PACK_SCHEME=rootless APP_SRC="/Users/mac/Downloads/<C
 ```
 
 - **⚠️ 为什么不能单独跑 `python3 packdeb.py`**：packdeb.py 只做最后的 ar 打包，**不做 staging**——daemon 复制+预签、entitlements 复制、operit-sb/operit-app 两个 dylib+plist 复制、app 重签、3 个 app extension（ScreenTimeMonitor/LiveActivityWidget/OperitShieldConfig）嵌入签名、IPA 生成，全在 build_deb.sh 里。单独跑会打出**缺 daemon/缺 app/缺 extension 的残废包**。只有 files/ 已被 build_deb.sh 完整 staging 过、且只改了 files/ 里的文件时，才可跳过 build_deb.sh 直接 packdeb.py
-- **rootless**：data 带 var/jb/ 前缀，Architecture `iphoneos-arm64`；**roothide**：裸布局，Architecture **必须 `iphoneos-arm64e`**（Sileo 识别唯一判据）；roothide 走 build_deb.sh 自动换 Runner.roothide.entitlements（platform-application 等 4 项）
+- **rootless-only**：data 落在真实 `/var/mobile/.operit`，mach-o 在 `/var/jb`，Architecture `iphoneos-arm64`。本 fork 已停止 roothide 支持，不再产出 arm64e deb。
 - **绝不用 `dpkg --root=/var/jb`**（会双前缀），用 `sudo dpkg -i` / Sileo
 - 依赖：com.witchan.ios-mcp, preferenceloader, com.opa334.ccsupport（rootless 还建议 AppSync Unified）
 - daemon 预签 + postinst 装机时 ldid 重签 + trustcache 注册（关键，否则 -9）
@@ -488,10 +488,8 @@ ssh mobile@192.168.1.xx 'curl -s http://127.0.0.1:8090/mcp -H "Content-Type: app
 - 与 10.1 同法：先对照设备上正常工作的第三方面板（如 SiriPlus 的 Prefs bundle）的 Info.plist 键集合 diff
 - 确认 preferenceloader 是否整体工作：设置里有无其他第三方面板；无 → 查 preferenceloader 本身；有 → 查我们的 bundle
 
-### 10.6 roothide 全量回归（8.7）
-- 打包 roothide deb：`OPERIT_PACK_SCHEME=roothide bash build_deb.sh`（Architecture 自动 iphoneos-arm64e；不要单独跑 packdeb.py）
-- 装 roothide 设备 → 逐项回归：daemon 起（ps）、通知拦截、锁屏 sessions、Siri（说一句看卡片）、权限（contacts list）、设置面板、CC 模块
-- 任何一步挂 → 按 8.7 的 5 个风险点逐个排查
+### 10.6 roothide 回归（已停止支持）
+- roothide 版已停止支持、不再维护（见上文目标平台）。本条原为 roothide 设备全量回归清单，现保留作历史参考，不再执行。
 
 ---
 
@@ -503,7 +501,7 @@ ssh mobile@192.168.1.xx 'curl -s http://127.0.0.1:8090/mcp -H "Content-Type: app
 - [x] 代码：feat/ios-jailbreak-preview4（11 commit）——Siri v14 / 权限全家桶 / 设置面板 / CC 模块 / 通知拦截记录 / 锁屏 / 应用锁 / screen_time 简化 / CI 修复 / 签名修复 / 文档
 - [x] 文档：本 HANDOVER.md（10 节工程手册 + 本 AI 指南）
 - [x] 方法论：jailbreak-ios-dev / roothide-ios-dev 技能
-- [ ] 遗留 bug：10.1-10.6（CC 模块 / 选图崩溃 / sessionId / PATH / 设置面板 / roothide 回归）
+- [ ] 遗留 bug：10.1-10.5（CC 模块 / 选图崩溃 / sessionId / PATH / 设置面板）
 - [ ] 可探索：AI 回复通知（BBServer action 回调；AutoResponder 是 iOS 6-9 短信层先例）
 
 ---

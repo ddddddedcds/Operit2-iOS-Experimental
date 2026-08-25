@@ -2,13 +2,10 @@
 # Loaded only into SpringBoard; exposes a Unix socket for device control.
 TARGET := iphone:clang:16.5:15.0
 ARCHS := arm64 arm64e
-# Package scheme: rootless (default) or roothide.
-# NOTE: there is deliberately NO compile-time roothide switch any more.
-# build_deb.sh ships ONE dylib pair (.theos/obj/debug/operit-*.dylib) into BOTH
-# the rootless and the roothide deb, so a -D flag chosen at build time can never
-# be right for both. roothide_compat.h detects the environment at RUNTIME from
-# the dylib's own install path (".jbroot-" segment) — correct in a single binary
-# and immune to a stray /var/jb directory.
+# Package scheme: rootless-only. This fork no longer ships a roothide build, and
+# the tweak no longer carries any runtime roothide detection (the old
+# roothide_compat.h path-resolution logic has been removed). THEOS_PACKAGE_SCHEME
+# is fixed to rootless; do not reintroduce a roothide branch.
 THEOS_PACKAGE_SCHEME ?= rootless
 
 include $(THEOS)/makefiles/common.mk

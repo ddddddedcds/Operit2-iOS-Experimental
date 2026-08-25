@@ -31,12 +31,12 @@
 
 // ---- app lock（启动拦截名单）----
 // 名单文件：/var/mobile/.operit/app_lock.plist（真实根，SpringBoard mobile 可写/读；
-// rootless app 无沙箱也可写同一路径；roothide 双视图问题由写端负责，见 ScreenTimeServer）。
+// rootless app 无沙箱也可写同一路径）。
 // 格式：{ "<bundleId>": { "title": "...", "subtitle": "...", "button": "..." }, ... }
 // 拦截点：FBSSystemService / FBSOpenApplicationService（FrontBoard 统一启动入口，
 // SpringBoard 前台启动与外部请求都汇聚于此）+ 本 tweak 的 cmd_launch（AI 主动启动一致拦截）。
 
-static NSString *g_lockPath; // 由 operit_tweak_init_paths() 在 load 时按环境解析（roothide→jbroot 物理目录）
+static NSString *g_lockPath; // 由 operit_tweak_init_paths() 在 load 时解析（rootless 真实根）
 
 // ---- 设置面板（PreferenceLoader：设置 → Operit2）总开关 ----
 // NSUserDefaults 域 com.operit；与 AI 命令的文件开关（app_lock.plist /
@@ -1345,7 +1345,7 @@ static void lock_monitor_tick(void) {
 
 // ---- 锁屏/解锁 Darwin 信号（iOS 16 可靠主信号；轮询 KVC 兜底保留）----
 // com.apple.springboard.lockstate 在锁屏/解锁时必广播，notify_get_state 直接给状态，
-// 不依赖私有 KVC key（SBLockScreenManager.isLocked 在 iOS 16.7 roothide 实测拿不到）。
+// 不依赖私有 KVC key（SBLockScreenManager.isLocked 在 iOS 16.7 实测拿不到）。
 static BOOL g_notifLocked = NO;
 static time_t g_notifLockSince = 0;
 
@@ -1676,9 +1676,7 @@ static BOOL notif_clear_section(NSString *bid) {
 static NSString *g_clipboardPath; // 由 operit_tweak_init_paths() 解析
 static NSString *g_clipboardEnablePath; // 由 operit_tweak_init_paths() 解析
 
-// 数据路径统一在 dylib 加载时按环境解析：rootless 原样；roothide 映射到
-// <jbroot>/var/mobile/.operit 物理目录（SpringBoard 是 real-root 视图，
-// 裸 /var/mobile/.operit 会落到 rootfs 而与 app/daemon 的数据目录分离）。
+// 数据路径统一在 dylib 加载时解析为真实根 /var/mobile/.operit（rootless）。
 __attribute__((constructor)) static void operit_tweak_init_paths(void) {
     g_lockPath = @"/var/mobile/.operit/app_lock.plist";
     g_usagePath = @"/var/mobile/.operit/usage.json";

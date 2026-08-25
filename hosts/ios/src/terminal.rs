@@ -15,7 +15,7 @@ const NATIVE_TERMINAL: &str = "native";
 
 /// Full PATH injected into every spawned shell. Covers both the stock system
 /// dirs and the rootless (/var/jb/*) jailbreak dirs, so ordinary commands like
-/// `uname` resolve regardless of whether the process sees the jbroot view or
+/// `uname` resolve regardless of whether the process runs in the jailbreak view or
 /// the real root (HANDOVER 8.4: inherited app PATH was missing /usr/bin etc.
 /// and `uname` failed with "not found").
 const IOS_SHELL_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:\

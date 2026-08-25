@@ -600,7 +600,7 @@ mod AndroidJni;
 
 /// Syncs the App-configured LLM credentials into the Operit2 device-agent
 /// daemon, so the jailbroken daemon process (which runs separately from the App
-/// and, on rootless/roothide, in a different filesystem view) picks up the API
+/// and, on rootless, in a different filesystem view) picks up the API
 /// key the user typed in the App's model settings panel — without anyone
 /// hand-editing a file on disk. iOS only; no-op on other platforms.
 ///
@@ -613,13 +613,11 @@ mod AndroidJni;
 ///   rootless and non-jb, where the App and daemon resolve `data_root()` to the
 ///   SAME physical directory, so the daemon can simply read the plist back via
 ///   `load_config`.
-/// * **Path 2 — TCP push** (`push_config_over_tcp`, 127.0.0.1:8890): REQUIRED on
-///   roothide, where the per-process `/var` remap makes the App's `data_root()`
-///   resolve to a DIFFERENT physical dir than the daemon's — so the plist the
-///   App just wrote is INVISIBLE to the daemon. Loopback TCP is shared across
-///   the remap, so it is the only cross-view channel. The daemon stores the
-///   pushed credentials in `CachedConfig` and prefers them over the file
-///   (`resolve_config`).
+/// * **Path 2 — TCP push** (`push_config_over_tcp`, 127.0.0.1:8890): a reliable
+///   cross-process fallback used under every scheme; it complements the file
+///   path (which already works on rootless, where App and daemon share the same
+///   `data_root()` physical dir). The daemon stores the pushed credentials in
+///   `CachedConfig` and prefers them over the file (`resolve_config`).
 #[cfg(target_os = "ios")]
 #[no_mangle]
 pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
@@ -666,8 +664,8 @@ pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
         escape_plist(&model),
     );
     let _ = std::fs::write(path, xml);
-    // --- Delivery Path 2: TCP push (roothide-safe) ---
-    // Push credentials to the daemon over loopback TCP as well. On roothide the
+    // --- Delivery Path 2: TCP push (cross-process fallback) ---
+    // Push credentials to the daemon over loopback TCP as well. Under rootless the
     // app and daemon resolve data_root() to DIFFERENT physical dirs (per-process
     // /var remap), so the config.plist file written just above is invisible to
     // the daemon; the only cross-view channel is loopback TCP 127.0.0.1:8890.

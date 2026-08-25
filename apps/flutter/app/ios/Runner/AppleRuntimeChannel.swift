@@ -437,68 +437,26 @@ final class AppleRuntimeChannel: NSObject {
   /// Keep it in sync with that Rust logic; do NOT hardcode `/var/jb` or
   /// `/var/mobile` anywhere else in this file.
   ///
-  /// Detection order (must match Rust `detect_jailbreak`):
-  /// 1. roothide — our OWN executable path contains `/.jbroot-`
-  ///    ⇒ `/var/mobile/.operit` (real root, shared with the root daemon).
-  /// 2. rootless — `/var/jb/usr/lib` exists ⇒ `/var/jb/var/mobile/.operit`.
-  /// 3. writable `/var/mobile/.operit` ⇒ jailbroken, unknown flavour.
-  /// 4. non-jailbreak — app sandbox `Documents/.operit`.
+  /// Rootless-only detection (must match Rust `detect_jailbreak`):
+  /// 1. `/var/jb/usr/lib` exists ⇒ rootless (Dopamine/ElleKit).
+  /// 2. writable `/var/mobile/.operit` ⇒ jailbroken, unknown flavour.
+  /// 3. non-jailbreak — app sandbox `Documents/.operit`.
   ///
-  /// WHY NOT `fileExists("/var/jb")`?
-  /// That was the old rule and it is provably wrong: on roothide our own tweak
-  /// created a real `/var/jb` tree, after which the app mis-detected the device
-  /// as rootless, pointed its data root at a root-owned directory it could not
-  /// write, and white-screened. A detection rule must not be falsifiable by the
-  /// thing it detects. The `.jbroot-` segment answers "who installed me?", which
-  /// nothing can forge. Verified on device:
-  ///   /var/containers/Bundle/Application/.jbroot-58EAA282AAFACD0F/Applications/Runner.app/Runner
+  /// The canonical data root is the REAL `/var/mobile/.operit` (matches Rust
+  /// `operit_ios_env::data_root()`). The procursus-mirrored
+  /// `/var/jb/var/mobile/.operit` is a different physical directory the app
+  /// cannot write into (EACCES), so it is never used.
   ///
   /// The agent control channel + config travel over loopback TCP
-  /// (127.0.0.1:8890), shared across the per-process /var remap.
-  static func selfJbrootPrefix() -> String? {
-    let path = Bundle.main.executablePath
-      ?? ProcessInfo.processInfo.arguments.first
-      ?? ""
-    guard let marker = path.range(of: "/.jbroot-") else { return nil }
-    // Skip the leading '/', then cut at the next '/' (end of the jbroot dir).
-    let afterSlash = path.index(after: marker.lowerBound)
-    if let next = path[afterSlash...].firstIndex(of: "/") {
-      return String(path[path.startIndex..<next])
-    }
-    return path
-  }
-
-  /// True on roothide. `selfJbrootPrefix()` reads the executable path, which
-  /// roothide may remap (hiding the `.jbroot-` segment), so also accept the
-  /// roothide compat-layer symlink `/var/jb -> /`. Rootless Dopamine's `/var/jb`
-  /// is a symlink to the procursus root (or a real directory), so only the
-  /// target-"/" symlink case is genuinely roothide.
-  private static func isRootHideInstall() -> Bool {
-    if selfJbrootPrefix() != nil { return true }
-    guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: "/var/jb") else {
-      return false
-    }
-    return target == "/"
-  }
-
-  /// Cached because the answer cannot change while the process lives.
+  /// (127.0.0.1:8890).
   private static let resolvedDataRoot: String = computeIosDataRoot()
 
   private static func iosDataRoot() -> String { resolvedDataRoot }
 
   private static func computeIosDataRoot() -> String {
-    if isRootHideInstall() {
-      // roothide: the app runs in the jbroot view, so "/var/mobile/.operit"
-      // physically resolves to .jbroot-XXX/var/mobile/.operit — exactly the
-      // directory the daemon addresses via its .jbroot-XXX prefix. Keep them on
-      // the same physical location.
-      return "/var/mobile/.operit"
-    }
-    // rootless needs a REAL subtree, not the bare directory (which anything,
-    // including our own tweak, may have created by accident).
-    if FileManager.default.fileExists(atPath: "/var/jb/usr/lib") {
-      return "/var/jb/var/mobile/.operit"
-    }
+    // Rootless-only: the canonical data root is the REAL /var/mobile/.operit.
+    // The procursus-mirrored /var/jb/var/mobile/.operit is a different physical
+    // directory the app cannot write into (EACCES), so it is never used.
     let unsandboxedPath = "/var/mobile/.operit"
     let probe = (unsandboxedPath as NSString).appendingPathComponent(".writetest")
     if !FileManager.default.fileExists(atPath: unsandboxedPath) {
@@ -1112,9 +1070,8 @@ final class AppleRuntimeChannel: NSObject {
   }
 
   // The agent control channel now runs over loopback TCP (127.0.0.1:8890) —
-  // shared across the roothide per-process /var remap, which a unix-socket path
-  // could not guarantee. `operitSendLine` connects to the fixed loopback port;
-  // these path constants are retained only for backward compatibility.
+  // `operitSendLine` connects to the fixed loopback port; these path constants
+  // are retained only for backward compatibility.
   private static let operitDeviceSocketPath: String = {
     (iosDataRoot() as NSString).appendingPathComponent("operit.sock")
   }()
@@ -1123,11 +1080,9 @@ final class AppleRuntimeChannel: NSObject {
   }()
 
   /// Sends one line command to the local agent daemon over TCP loopback
-  /// (127.0.0.1:8890) and returns the full reply (read to EOF). Loopback TCP is
-  /// shared across the roothide per-process filesystem remap, unlike a unix
-  /// socket path (which resolves to different physical dirs for the app vs the
-  /// system-launched daemon). The `socketPath` argument is retained for API
-  /// compatibility but the address is fixed to the loopback port.
+  /// (127.0.0.1:8890) and returns the full reply (read to EOF). The
+  /// `socketPath` argument is retained for API compatibility but the address is
+  /// fixed to the loopback port.
   private static func operitSendLine(_ command: String, socketPath: String) throws -> String {
     var addr = sockaddr_in()
     addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)

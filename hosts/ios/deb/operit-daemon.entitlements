@@ -12,7 +12,7 @@
          It does NOT use Metal/IOSurface, keychain, or other apps' bundles, so it
          MUST NOT carry platform-application / AppBundles / AppDataContainers /
          application-identifier / keychain-access-groups / iokit-user-client-class.
-         Those keys brand it a "platform binary" that roothide's AMFI SIGKILLs when
+         Those keys brand it a "platform binary" that AMFI SIGKILLs when
          launchd execs it (launchctl ExitCode 9 -> 8890 never listens -> app cannot
          reach the agent). Confirmed by source scan: the daemon uses none of those
          APIs, so dropping the keys changes nothing about its behavior. -->

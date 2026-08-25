@@ -4,14 +4,14 @@ import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
-  // 诊断：roothide 下 Dart 不跑且设备无系统日志。把启动检查点【追加】写入 trace.log
+  // 诊断：启动早期 Dart 可能未跑且设备无系统日志。把启动检查点【追加】写入 trace.log
   // （与 OperitTrace.m 的 native tracer 同一文件），SSH 可读。/tmp 兜底保证可写。
   /// Candidates are tried in order and we STOP at the first success.
   ///
-  /// Two rules, both learned the hard way on a roothide device:
+  /// Two rules, both learned the hard way:
   ///  * never write to every candidate — the old loop created the parent dir of
   ///    each one, which is how a bogus `/var/jb/var/mobile/.operit` tree got
-  ///    created on roothide and poisoned every `/var/jb`-based detection.
+  ///    created and poisoned every `/var/jb`-based detection.
   ///  * only offer a `/var/jb/...` path when this really is a rootless install
   ///    (`/var/jb/usr/lib` present), never on the strength of `/var/jb` alone.
   private func bootLog(_ msg: String) {

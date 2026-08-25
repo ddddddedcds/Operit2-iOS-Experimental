@@ -136,8 +136,8 @@ final class ScreenTimeServer: NSObject {
 
   /// 锁应用名单文件：tweak（operit-sb.x）启动拦截读取的真实根路径。
   /// rootless 下 app 无沙箱，直接写真实根；SpringBoard（mobile）同路径可读。
-  /// roothide 双视图下 app 的 /var/mobile 落到 jbroot 视图，与 SpringBoard 不共享——
-  /// 该场景需走 daemon(8890) 中转（TODO，当前设备为 rootless）。
+  /// rootless 下 app 无沙箱，直接写真实根；SpringBoard（mobile）同路径可读。
+  /// （历史 roothide 双视图场景已停止支持。）
   private static let appLockPath = "/var/mobile/.operit/app_lock.plist"
   private static let appManagedPath = "/var/mobile/.operit/app_managed.plist"
 
