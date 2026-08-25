@@ -1065,6 +1065,7 @@ dependencies = [
  "operit-host-native-common",
  "operit-ios-env",
  "operit-model",
+ "operit-util",
  "operit-workflow-core",
  "plist",
  "reqwest",

@@ -50,13 +50,12 @@ fn rewrites_js_entries_inside_zip() {
         main.read_to_string(&mut main_content).unwrap();
     }
     assert!(
-        main_content.contains("/var/mobile/.operit/runtime/android-compat/sdcard/Download/Operit/x"),
-        "rewritten main.js missing sdcard compat path: {main_content}"
+        main_content.contains("/mnt/android/sdcard/Download/Operit/x"),
+        "rewritten main.js missing sdcard mount form: {main_content}"
     );
     assert!(
-        main_content
-            .contains("/var/mobile/.operit/runtime/android-compat/storage/emulated/0/y"),
-        "rewritten main.js missing storage compat path: {main_content}"
+        main_content.contains("/mnt/android/sdcard/y"),
+        "rewritten main.js missing storage mount form: {main_content}"
     );
 
     let mut manifest_content = String::new();
@@ -103,7 +102,5 @@ fn round_trips_real_plugin_zip() {
         let mut f = a.by_name("packages/movie_room.js").unwrap();
         f.read_to_string(&mut content).unwrap();
     }
-    assert!(content.contains(
-        "/var/mobile/.operit/runtime/android-compat/sdcard/movie_room_upload"
-    ));
+    assert!(content.contains(r#"find "/mnt/android/sdcard/movie_room_upload""#));
 }

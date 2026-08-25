@@ -7,6 +7,7 @@ use operit_host_api::{
     TerminalSessionListEntry, TerminalTypeInfo,
 };
 use operit_host_native_common::{NativePtyShellCommand, NativePtyTerminalHost};
+use operit_util::AndroidPathRewriter::rewrite_vfs_mount_paths;
 
 const SHELL_TERMINAL_TYPE: &str = "shell";
 const PLATFORM: &str = "ios";
@@ -29,6 +30,12 @@ fn iosShellEnvironment() -> Vec<(String, String)> {
         ("PATH".to_string(), IOS_SHELL_PATH.to_string()),
         ("SHELL".to_string(), "/bin/sh".to_string()),
     ]
+}
+
+/// Physical sandbox root backing the VFS android mount on iOS. Matches the
+/// compat target PathMapper and the static rewriter resolve to.
+fn iosAndroidCompatRoot() -> std::path::PathBuf {
+    std::path::Path::new("/var/mobile/.operit/runtime").join("android-compat")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -211,6 +218,10 @@ impl IosTerminalHost {
         timeoutMs: u64,
     ) -> HostResult<TerminalCommandOutput> {
         let command = requiredText(command, "command")?;
+        // The native shell bypasses the VFS: rewrite mount-form paths
+        // (/mnt/android/sdcard/…, top-level /data/…) to their physical compat
+        // dirs so commands from path-rewritten plugins resolve on iOS.
+        let command = rewrite_vfs_mount_paths(&command, &iosAndroidCompatRoot().to_string_lossy());
         match backend {
             IosTerminalBackend::SystemShell => systemCommandOutput(
                 self.systemShell
