@@ -553,19 +553,99 @@ class _ToolPkgUiLauncherScreenState extends State<ToolPkgUiLauncherScreen> {
         ],
       ),
       body: SafeArea(
-        child: Row(
-          children: <Widget>[
-            SizedBox(width: 300, child: _navigationPane()),
-            Expanded(child: content),
-          ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Narrow screens (iPhone ~375-430dp): stack the navigation pane above
+            // content so the plugin UI isn't squeezed into ~75dp and overflow.
+            // Wide screens (tablets/desktop): side-by-side as before.
+            final narrow = constraints.maxWidth < 600;
+            final navPane = SizedBox(
+              width: narrow ? double.infinity : 300,
+              height: narrow ? null : null,
+              child: _navigationPane(narrow: narrow),
+            );
+            if (narrow) {
+              return Column(
+                children: <Widget>[
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 140),
+                    child: navPane,
+                  ),
+                  const Divider(height: 1),
+                  Expanded(child: content),
+                ],
+              );
+            }
+            return Row(
+              children: <Widget>[navPane, Expanded(child: content)],
+            );
+          },
         ),
       ),
     );
   }
 
-  Widget _navigationPane() {
+  Widget _navigationPane({bool narrow = false}) {
     final colorScheme = Theme.of(context).colorScheme;
     final navigationEntries = _standaloneNavigationEntries();
+    if (narrow) {
+      // Compact horizontal tab strip for narrow screens: each route/module is a
+      // pill so the pane doesn't eat vertical space and the content gets the
+      // full width.
+      final tabs = <Widget>[
+        for (final route in widget.plugin.uiRoutes)
+          _CompactRouteChip(
+            label: localizedText(route.title).isEmpty
+                ? route.id
+                : localizedText(route.title),
+            selected: route.routeId == _selectedRouteId,
+            onTap: () {
+              setState(() {
+                _selectedRouteId = route.routeId;
+                _renderResult = null;
+              });
+              _loadRoute();
+            },
+          ),
+        for (final module in _standaloneUiModules())
+          _CompactRouteChip(
+            label: localizedText(module.title).isEmpty
+                ? module.id
+                : localizedText(module.title),
+            selected: module.id == _selectedRouteId,
+            onTap: () {
+              setState(() {
+                _selectedRouteId = module.id;
+                _renderResult = null;
+              });
+              _loadRoute();
+            },
+          ),
+      ];
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: colorScheme.outlineVariant),
+          ),
+        ),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: tabs.isEmpty
+                ? <Widget>[
+                    Text(
+                      '界面',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ]
+                : tabs,
+          ),
+        ),
+      );
+    }
     return DecoratedBox(
       decoration: BoxDecoration(
         border: Border(right: BorderSide(color: colorScheme.outlineVariant)),
@@ -3239,6 +3319,50 @@ class _ComposeDslNode {
       props: _stringMap(raw['props']),
       children: _nodeList(raw['children']),
       slots: _slotMap(raw['slots']),
+    );
+  }
+}
+
+class _CompactRouteChip extends StatelessWidget {
+  const _CompactRouteChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected ? colorScheme.primaryContainer : Colors.transparent,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: selected ? colorScheme.primary : colorScheme.outlineVariant,
+            ),
+          ),
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: selected
+                  ? colorScheme.onPrimaryContainer
+                  : colorScheme.onSurfaceVariant,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ),
     );
   }
 }
