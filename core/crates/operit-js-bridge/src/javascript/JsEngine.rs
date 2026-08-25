@@ -46,7 +46,9 @@ use operit_plugin_sdk::javascript::{
 use operit_plugin_sdk::toolpkg::ToolPkgComposeDslRuntimeScript::buildComposeDslRuntimeWrappedScript;
 use operit_plugin_sdk::toolpkg::ToolPkgRegistrationBridge::buildToolPkgRegistrationBridgeScript;
 use operit_util::stream::Stream::{CollectFuture, Stream};
+use operit_util::AndroidPathRewriter::rewrite_android_paths;
 use operit_util::AppLogger::AppLogger;
+use operit_store::RuntimeStorageHost::defaultRuntimeStorageHost;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -508,6 +510,11 @@ impl JsEngine {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // operit2 is a fork; rewrite Android-only path literals (e.g.
+            // /sdcard/...) to the sandboxed iOS compat dir so Android plugins
+            // can persist/read state on iOS. No-op on Android (see helper).
+            let rewritten = rewrite_toolpkg_script_paths(script);
+            let script: &str = rewritten.as_deref().unwrap_or(script);
             if self.worker.control.isDestroyed() {
                 return Err(JsExecutionError::worker_unavailable(
                     "JS execution worker was destroyed",
@@ -2699,4 +2706,23 @@ fn ensureRegistrationExecutionSucceeded(output: &str) -> Result<(), String> {
         return Err(message.to_string());
     }
     Ok(())
+}
+
+/// Rewrites Android-only path literals in a ToolPkg script to the sandboxed iOS
+/// compat dir so Android plugins can persist/read state on iOS. Returns None on
+/// Android (no rewrite needed) or when the runtime root is unavailable.
+#[allow(non_snake_case)]
+fn rewrite_toolpkg_script_paths(script: &str) -> Option<String> {
+    if cfg!(target_os = "android") {
+        return None;
+    }
+    let runtime_root = defaultRuntimeStorageHost().runtimeRootDir()?;
+    let compat_root = runtime_root.join("android-compat");
+    let rewritten = rewrite_android_paths(script, &compat_root.to_string_lossy());
+    // Only return a value if something actually changed (avoid churn / re-logging).
+    if rewritten == script {
+        None
+    } else {
+        Some(rewritten)
+    }
 }

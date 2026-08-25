@@ -1,4 +1,5 @@
 pub mod AndroidUserPathUtils;
+pub mod AndroidPathRewriter;
 pub mod AnrMonitor;
 pub mod AppLogger;
 pub mod ArchiveUtil;

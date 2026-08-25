@@ -144,7 +144,7 @@ impl PathMapper {
                     Ok(Some(entries))
                 }
             }
-            [ROOT_MNT, MNT_ANDROID] if androidSdcardMounted() => {
+            [ROOT_MNT, MNT_ANDROID] if androidSdcardMounted() || self.androidCompatEnabled() => {
                 Ok(Some(vec![directoryEntry(MNT_ANDROID_SDCARD)]))
             }
             [ROOT_MNT, MNT_WINDOWS] if windowsMounted() => Ok(Some(windowsDriveEntries())),
@@ -184,15 +184,16 @@ impl PathMapper {
                 })
             }
             [ROOT_MNT, MNT_ANDROID, MNT_ANDROID_SDCARD, rest @ ..] => {
-                if !androidSdcardMounted() {
+                if !androidSdcardMounted() && !self.androidCompatEnabled() {
                     return Err("/mnt/android/sdcard is not mounted".to_string());
                 }
+                let physicalRoot = self.androidCompatPhysicalRoot("/sdcard");
                 Ok(ResolvedVfsPath {
                     vfsPath: joinNormalizedSegments(
                         &[ROOT_MNT, MNT_ANDROID, MNT_ANDROID_SDCARD],
                         rest,
                     ),
-                    physicalPath: physicalPathString(joinUnixPhysical("/sdcard", rest)),
+                    physicalPath: physicalPathString(joinPhysical(&physicalRoot, rest)),
                 })
             }
             [ROOT_MNT, MNT_LINUX, rest @ ..] => {
@@ -205,24 +206,48 @@ impl PathMapper {
                 })
             }
             [ROOT_SDCARD, rest @ ..] => {
-                if !androidSdcardMounted() {
+                if !androidSdcardMounted() && !self.androidCompatEnabled() {
                     return Err("/sdcard is not mounted".to_string());
                 }
+                let physicalRoot = self.androidCompatPhysicalRoot("/sdcard");
                 Ok(ResolvedVfsPath {
                     vfsPath: joinNormalizedSegments(&[ROOT_SDCARD], rest),
-                    physicalPath: physicalPathString(joinUnixPhysical("/sdcard", rest)),
+                    physicalPath: physicalPathString(joinPhysical(&physicalRoot, rest)),
                 })
             }
             [ROOT_DATA, rest @ ..] => {
-                if !androidDataMounted() {
+                if !androidDataMounted() && !self.androidCompatEnabled() {
                     return Err("/data is not mounted".to_string());
                 }
+                let physicalRoot = self.androidCompatPhysicalRoot("/data");
                 Ok(ResolvedVfsPath {
                     vfsPath: joinNormalizedSegments(&[ROOT_DATA], rest),
-                    physicalPath: physicalPathString(joinUnixPhysical("/data", rest)),
+                    physicalPath: physicalPathString(joinPhysical(&physicalRoot, rest)),
                 })
             }
             _ => Err(format!("Unknown VFS root: {normalizedPath}")),
+        }
+    }
+
+    /// True when Android-style paths (/sdcard, /data, /mnt/android/...) should be
+    /// emulated under the operit2 runtime store instead of requiring a real Android
+    /// mount. Enabled on non-Android platforms (iOS etc.) so Android-only plugins
+    /// can persist their state under a sandboxed, safe directory (see
+    /// androidCompatPhysicalRoot). Android keeps its real mounts.
+    fn androidCompatEnabled(&self) -> bool {
+        !cfg!(target_os = "android")
+    }
+
+    /// Physical root used to emulate an Android path. On Android this is the real
+    /// mount (e.g. /sdcard); on non-Android it is a sandboxed directory under the
+    /// operit2 runtime store so plugin writes stay contained and safe:
+    ///   <runtimeStoreRoot>/android-compat/<androidRoot without leading slash>
+    fn androidCompatPhysicalRoot(&self, androidRoot: &str) -> PathBuf {
+        if cfg!(target_os = "android") {
+            PathBuf::from(androidRoot)
+        } else {
+            let relative = androidRoot.trim_start_matches('/');
+            self.runtimeStoreRoot.join("android-compat").join(relative)
         }
     }
 
@@ -471,7 +496,7 @@ fn mntMountEntries() -> Vec<FileEntry> {
     if windowsMounted() {
         entries.push(directoryEntry(MNT_WINDOWS));
     }
-    if androidSdcardMounted() {
+    if androidSdcardMounted() || !cfg!(target_os = "android") {
         entries.push(directoryEntry(MNT_ANDROID));
     }
     if linuxRootMounted() {
@@ -621,13 +646,41 @@ mod tests {
         {
             assert!(mapper().resolve("/mnt/windows/c").is_err());
         }
-        #[cfg(not(target_os = "android"))]
-        {
-            assert!(mapper().resolve("/mnt/android/sdcard/Download").is_err());
-        }
+        // Non-Android platforms emulate Android paths under a sandboxed compat dir,
+        // so /mnt/android/sdcard now resolves instead of erroring. See
+        // unmountedMntEntriesDoNotResolveAndroidCompat below.
         #[cfg(not(target_os = "linux"))]
         {
             assert!(mapper().resolve("/mnt/linux/home/user").is_err());
+        }
+    }
+
+    #[test]
+    fn androidCompatResolvesOnNonAndroid() {
+        #[cfg(not(target_os = "android"))]
+        {
+            let resolved = mapper().resolve("/sdcard/Download/Operit/eyesonyou").unwrap();
+            // runtimeStoreRoot = D:/operit → emulated under android-compat/sdcard.
+            assert_eq!(
+                resolved.physicalPath,
+                "D:/operit/android-compat/sdcard/Download/Operit/eyesonyou"
+            );
+
+            let data = mapper().resolve("/data/data/com.example/files").unwrap();
+            assert_eq!(
+                data.physicalPath,
+                "D:/operit/android-compat/data/data/com.example/files"
+            );
+
+            let mnt = mapper().resolve("/mnt/android/sdcard/x").unwrap();
+            assert_eq!(mnt.physicalPath, "D:/operit/android-compat/sdcard/x");
+        }
+        #[cfg(target_os = "android")]
+        {
+            assert_eq!(
+                mapper().resolve("/sdcard/a").unwrap().physicalPath,
+                "/sdcard/a"
+            );
         }
     }
 
