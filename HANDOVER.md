@@ -252,6 +252,7 @@ echo '<PASSWORD>' | sudo -S killall -9 SpringBoard   # respring
 - 深链唤起（微信裸 scheme、支付宝全系；weixin://dl/* 全废）
 - 屏幕使用时间授权 + 锁应用（0.3.70 起无需选应用）
 - 吃醋巡检（DeviceActivityMonitor）+ 快捷指令接入
+- iSH 终端（kernel=ish + aarch64 Alpine 3.19，0.3.86 起可打开、shell 交互正常；**网络半通见 8.9**）
 
 ### 🟡 已 push 未端到端验证
 - 权限全家桶（TCCServer + system_io 9 工具 + HealthKit，经 OperitLocalServer 8891）
@@ -378,6 +379,21 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
   4. 无完整权限（沙盒内）→ 部分 TCC 公开 API 可用但受容器限制
 - **nonjb 只剩**：AI 聊天 + app 手动打开时 OperitLocalServer（8891）的部分能力（且 app 挂起即断）
 - **验证状态**：仅历史打包过（从未装机功能验证）；**不要对 nonjb 版有任何功能预期**
+
+### 8.9 iSH 终端网络问题 ✅ 已解决（2026-08-26：根因是 resolv.conf 空，非代码 bug）
+- **现象**：iSH 终端可正常打开、shell 交互正常；但 `apk update` / 拉 APKINDEX 报
+  `temporary error (try again later)`，`4 unavailable, 0 stale; 51 distinct packages available`。
+- **真根因**：**rootfs `/etc/resolv.conf` 为空（无 nameserver）** → musl resolver 的
+  `getaddrinfo` 直接返回 `EAIAGAIN（Errno -3）` → 所有域名解析立即失败 → 一切网络操作"快速失败"。
+  （曾误判为 iSH socket 传输 bug，读代码查了一轮；最终靠 guest 内 python3 测试定位：
+  IP 直连下载 15575 字节全通、域名 getaddrinfo 报 EAIAGAIN。）
+- **修复**：`echo "nameserver 223.5.5.5" > /etc/resolv.conf` 即通（实测 `apk update` 拉到 22906 个包）。
+  已在烘焙脚本 `tools/ios-runtime/ish/build_alpine_rootfs_linux.sh` 的 `write_rootfs_config()`
+  固化 resolv.conf（223.5.5.5 / 119.29.29.29 / 8.8.8.8）→ **未来重建 rootfs 出场自带 DNS**。
+- **可复用的排查顺序（别再重蹈）**：先 `cat /etc/resolv.conf` / guest 内 `getaddrinfo` 测试，
+  再谈内核传输层；域名解析失败 ≠ 网络栈坏。
+- **环境备注**：设备 `/etc/apk/repositories` 已换清华镜像（HTTP v3.19）；烘焙脚本 `repository_base`/`root_url` 默认清华。
+- 相关修复（本日）：`8d15d09a`（桥注册前置 + 无条件 exit dump）、`5d02ccad`（Rust listSessions 补列 iSH 会话）。
 
 ---
 

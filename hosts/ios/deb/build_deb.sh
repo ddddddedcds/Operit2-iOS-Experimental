@@ -92,8 +92,13 @@ if [ -d "$APP_SRC" ]; then
   # at launch and Flutter's Impeller engine aborts (SIGABRT). app-sandbox=false
   # lets the app reach the daemon control channel (loopback TCP 127.0.0.1:8890) and its own caches.
   echo "   ad-hoc signing app (macOS codesign) with entitlements ..."
-  codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$FILES/Applications/Runner.app" 2>&1 | tail -3 || \
-    echo "   (codesign unavailable; rely on postinst ldid + AppSync Unified)"
+  codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$FILES/Applications/Runner.app" 2>&1 | tail -3
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo "FATAL: codesign of Runner.app FAILED (exit ${PIPESTATUS[0]}) - deb would ship an UNSIGNED app (AMFI SIGKILL on device)"
+    echo "       check disk space / app bundle integrity, then rerun"
+    exit 1
+  fi
+  codesign --verify --verbose=1 "$FILES/Applications/Runner.app" 2>&1 | tail -1 || { echo "FATAL: codesign verify FAILED"; exit 1; }
   # --- embed ScreenTimeMonitor app extension (DeviceActivityMonitor, iOS 16+) ---
   # Embed AFTER the app's --deep codesign so this ad-hoc sign is not overwritten
   # with the app's entitlements (the extension needs its own App Group keys).

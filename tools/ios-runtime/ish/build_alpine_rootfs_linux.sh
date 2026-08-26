@@ -16,9 +16,9 @@ root_dir="$work_dir/root"
 # We bootstrap from the official Alpine aarch64 minirootfs and layer the
 # interpreter packages on top with apk.static (which runs on the x86_64 Linux
 # build host and installs aarch64 packages via --arch aarch64).
-root_url="https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-minirootfs-3.19.1-aarch64.tar.gz"
+root_url="https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.19/releases/aarch64/alpine-minirootfs-3.19.1-aarch64.tar.gz"
 root_sha256="7ef5eef3a5b1d198dfb1610cde1ef5b0755ff5d838fb1e5e1b9f42b59214820f"
-repository_base="https://dl-cdn.alpinelinux.org/alpine/v3.19"
+repository_base="https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.19"
 repository_arch="aarch64"
 host_arch="x86_64"
 uv_version="0.12.1"
@@ -133,6 +133,15 @@ write_rootfs_config() {
     cat > "$root_dir/etc/apk/repositories" <<EOF
 $repository_base/main
 $repository_base/community
+EOF
+
+    # DNS: musl resolver needs an explicit nameserver, otherwise getaddrinfo
+    # returns EAIAGAIN immediately and every network op fails (apk update pulls
+    # nothing). Ali/Tencent public DNS + Google fallback.
+    cat > "$root_dir/etc/resolv.conf" <<EOF
+nameserver 223.5.5.5
+nameserver 119.29.29.29
+nameserver 8.8.8.8
 EOF
 
     mkdir -p \
