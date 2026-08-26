@@ -24,6 +24,61 @@ enum WorkflowNodeKind {
   extract,
 }
 
+/// Mirrors Rust `ParameterValue` (externally-tagged serde enum).
+/// Serializes to `{"StaticValue": {"value": "..."}}` or
+/// `{"NodeReference": {"nodeId": "..."}}` so the Rust engine can
+/// deserialize `actionConfig: HashMap<String, ParameterValue>` without
+/// hitting "unknown variant" on a bare string payload.
+class WorkflowParameterValue {
+  const WorkflowParameterValue.staticValue(this.value)
+      : nodeId = null,
+        isReference = false;
+  const WorkflowParameterValue.nodeReference(this.nodeId)
+      : value = null,
+        isReference = true;
+
+  final bool isReference;
+  final String? value;
+  final String? nodeId;
+
+  Map<String, Object?> toJson() {
+    if (isReference) {
+      return <String, Object?>{
+        'NodeReference': <String, Object?>{'nodeId': nodeId ?? ''},
+      };
+    }
+    return <String, Object?>{
+      'StaticValue': <String, Object?>{'value': value ?? ''},
+    };
+  }
+
+  factory WorkflowParameterValue.fromJson(Object? json) {
+    if (json is String) {
+      // Tolerate legacy plain-string payloads stored before this fix.
+      return WorkflowParameterValue.staticValue(json);
+    }
+    if (json is Map<String, Object?>) {
+      if (json.containsKey('NodeReference')) {
+        final n = json['NodeReference'];
+        final id = n is Map
+            ? (n['nodeId'] as String?) ?? ''
+            : (n?.toString() ?? '');
+        return WorkflowParameterValue.nodeReference(id);
+      }
+      if (json.containsKey('StaticValue')) {
+        final v = json['StaticValue'];
+        final val = v is Map
+            ? (v['value'] as String?) ?? ''
+            : (v?.toString() ?? '');
+        return WorkflowParameterValue.staticValue(val);
+      }
+    }
+    return const WorkflowParameterValue.staticValue('');
+  }
+
+  String get displayValue => isReference ? (nodeId ?? '') : (value ?? '');
+}
+
 class WorkflowNodeModel {
   const WorkflowNodeModel({
     required this.id,
@@ -34,7 +89,7 @@ class WorkflowNodeModel {
     this.triggerType = '',
     this.triggerConfig = const <String, String>{},
     this.actionType = '',
-    this.actionConfig = const <String, String>{},
+    this.actionConfig = const <String, WorkflowParameterValue>{},
     this.operator = 'EQ',
     this.left = '',
     this.right = '',
@@ -55,7 +110,7 @@ class WorkflowNodeModel {
 
   // execute
   final String actionType;
-  final Map<String, String> actionConfig;
+  final Map<String, WorkflowParameterValue> actionConfig;
 
   // condition
   final String operator;
@@ -80,7 +135,7 @@ class WorkflowNodeModel {
     String? mode,
     String? expression,
     String? triggerType,
-    Map<String, String>? actionConfig,
+    Map<String, WorkflowParameterValue>? actionConfig,
   }) {
     return WorkflowNodeModel(
       id: id,
@@ -116,7 +171,8 @@ class WorkflowNodeModel {
       case WorkflowNodeKind.execute:
         base['type'] = 'execute';
         base['actionType'] = actionType;
-        base['actionConfig'] = actionConfig;
+        base['actionConfig'] =
+            actionConfig.map((k, v) => MapEntry(k, v.toJson()));
       case WorkflowNodeKind.condition:
         base['type'] = 'condition';
         base['operator'] = operator;
@@ -150,7 +206,7 @@ class WorkflowNodeModel {
       triggerType: (json['triggerType'] as String?) ?? '',
       triggerConfig: _stringMap(json['triggerConfig']),
       actionType: (json['actionType'] as String?) ?? '',
-      actionConfig: _stringMap(json['actionConfig']),
+      actionConfig: _parameterMap(json['actionConfig']),
       operator: (json['operator'] as String?) ?? 'EQ',
       left: (json['left'] as String?) ?? '',
       right: (json['right'] as String?) ?? '',
@@ -165,6 +221,16 @@ class WorkflowNodeModel {
       return value.map((key, item) => MapEntry(key.toString(), item.toString()));
     }
     return <String, String>{};
+  }
+
+  static Map<String, WorkflowParameterValue> _parameterMap(Object? value) {
+    if (value is Map) {
+      return value.map(
+        (key, item) =>
+            MapEntry(key.toString(), WorkflowParameterValue.fromJson(item)),
+      );
+    }
+    return <String, WorkflowParameterValue>{};
   }
 }
 
