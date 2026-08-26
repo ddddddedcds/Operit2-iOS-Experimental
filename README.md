@@ -57,7 +57,11 @@
 # 2. Sideloadly / AltStore 用个人 Apple ID 重签安装
 ```
 
-**已测试环境**：Mac（Theos + Xcode iOS SDK + Rust iOS target）+ Dopamine rootless iOS 16.7（iPhone13,4 / A14）、iOS 15.7（A12）；nonjb 版任意非越狱 iPhone。
+**最低系统要求**：
+- **nonjb 版：iOS 16.2+**（Runner MinimumOSVersion，自签安装工具会检查）
+- **越狱版**：需 Dopamine rootless；dpkg 安装不卡版本，实测 iOS 16.7（A14）与 iOS 15.7（A12），但私有 API 按 16.7 开发，低版本功能可能有差异
+
+**已测试环境**：Mac（Theos + Xcode iOS SDK + Rust iOS target）+ Dopamine rootless iOS 16.7（iPhone13,4 / A14）、iOS 15.7（A12）；nonjb 版任意非越狱 iPhone（≥16.2）。
 
 ---
 
