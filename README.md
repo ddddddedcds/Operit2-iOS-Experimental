@@ -82,12 +82,22 @@
 
 ## 部分使用截图
 
-<img width="1284" height="2778" alt="IMG_4290" src="https://github.com/user-attachments/assets/e6817a6c-f73e-4b43-ad67-17675622b01e" />
-<img width="1284" height="2778" alt="IMG_4289" src="https://github.com/user-attachments/assets/db0296a8-cf94-4f88-a331-4af7e83956cc" />
-<img width="1284" height="2778" alt="IMG_4288" src="https://github.com/user-attachments/assets/b5ac3ddb-4732-4e14-a5f5-0298b19a9e10" />
-<img width="1284" height="2778" alt="IMG_4286" src="https://github.com/user-attachments/assets/081daae9-ad0d-49ee-8882-3ada1e28c425" />
-<img width="1284" height="2778" alt="IMG_4283" src="https://github.com/user-attachments/assets/3de87155-c4d0-4027-bfa0-28cbb7db1a8e" />
-<img width="1284" height="2778" alt="IMG_4271 2" src="https://github.com/user-attachments/assets/f40a12e5-55f0-4f69-83a2-e7d301f17a8e" />
-<img width="1284" height="1614" alt="IMG_4264 2" src="https://github.com/user-attachments/assets/7d0670a0-ceb0-420a-890d-e76465fe2499" />
-<img width="1284" height="2778" alt="IMG_4215" src="https://github.com/user-attachments/assets/50d6183a-baa0-4fd8-a5db-1f1dbca9c255" />
-<img width="1279" height="2769" alt="910" src="https://github.com/user-attachments/assets/5eef5348-0c48-456c-8d89-34500bc536fc" />
+> iOS 16.7 实测界面。不同 iOS 版本的私有 API 可能有变动，且本项目仅做实验验证，实际表现请以真机为准。
+
+<table align="center">
+  <tr>
+    <td align="center"><img width="250" alt="截图 1" src="https://github.com/user-attachments/assets/e6817a6c-f73e-4b43-ad67-17675622b01e" /><br/><sub>截图 1</sub></td>
+    <td align="center"><img width="250" alt="截图 2" src="https://github.com/user-attachments/assets/db0296a8-cf94-4f88-a331-4af7e83956cc" /><br/><sub>截图 2</sub></td>
+    <td align="center"><img width="250" alt="截图 3" src="https://github.com/user-attachments/assets/b5ac3ddb-4732-4e14-a5f5-0298b19a9e10" /><br/><sub>截图 3</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img width="250" alt="截图 4" src="https://github.com/user-attachments/assets/081daae9-ad0d-49ee-8882-3ada1e28c425" /><br/><sub>截图 4</sub></td>
+    <td align="center"><img width="250" alt="截图 5" src="https://github.com/user-attachments/assets/3de87155-c4d0-4027-bfa0-28cbb7db1a8e" /><br/><sub>截图 5</sub></td>
+    <td align="center"><img width="250" alt="截图 6" src="https://github.com/user-attachments/assets/f40a12e5-55f0-4f69-83a2-e7d301f17a8e" /><br/><sub>截图 6</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img width="250" alt="截图 7" src="https://github.com/user-attachments/assets/7d0670a0-ceb0-420a-890d-e76465fe2499" /><br/><sub>截图 7</sub></td>
+    <td align="center"><img width="250" alt="截图 8" src="https://github.com/user-attachments/assets/50d6183a-baa0-4fd8-a5db-1f1dbca9c255" /><br/><sub>截图 8</sub></td>
+    <td align="center"><img width="250" alt="截图 9" src="https://github.com/user-attachments/assets/5eef5348-0c48-456c-8d89-34500bc536fc" /><br/><sub>截图 9</sub></td>
+  </tr>
+</table>
