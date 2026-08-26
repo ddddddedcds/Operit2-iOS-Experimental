@@ -71,6 +71,12 @@
 
 - 改编自 [AAswordman/Operit2](https://github.com/AAswordman/Operit2)（非官方分支）
 - 设备自动化后端：[witchan/ios-mcp](https://github.com/witchan/ios-mcp)（本 fork 用适配版）
+- **内置 iSH 终端（本 fork 集成，非自研）**：
+  - iSH 用户态 Linux 模拟器（kernel=ish + asbestos JIT）：[ish-app/ish](https://github.com/ish-app/ish)
+  - arm64 guest 支持分支（A2 集成所用源码，pin commit 54ca185b）：[OpenMinis/ish-arm64](https://github.com/OpenMinis/ish-arm64)
+  - guest 根文件系统：Alpine Linux aarch64（v3.19 minirootfs，[alpinelinux.org](https://alpinelinux.org)）
+  - guest `/bin/sh`：busybox（静态链接，[busybox.net](https://busybox.net)）
+  - 文件系统层：iSH 的 fakefs（fs/fakefs，含 meta.db + data/ 布局）
 - 免责声明见 deb 包 control（实验性软件，使用风险自负）
 
 ## 部分使用截图（部分功能并不完全正常，因为每个ios版本的私有API可能会发生变动，而且仅做概念验证，可能会有潜在的使用风险！！！）
