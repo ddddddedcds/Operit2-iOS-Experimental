@@ -1,1 +1,3 @@
 *.ipa
+files-nonjb/
+.ldid.Entitlements.plist

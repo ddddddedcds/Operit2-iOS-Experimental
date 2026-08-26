@@ -231,6 +231,9 @@ cd hosts/ios/deb && OPERIT_PACK_SCHEME=rootless APP_SRC="/Users/mac/Downloads/<C
 - 依赖：com.witchan.ios-mcp, preferenceloader, com.opa334.ccsupport（rootless 还建议 AppSync Unified）
 - daemon 预签 + postinst 装机时 ldid 重签 + trustcache 注册（关键，否则 -9）
 - 本机**无法** `flutter build ios`（缺 Python xcframework），全量编译只能靠 CI：先手动 dispatch ios-flutter-build 选分支 → 下载 UNSIGNED Runner.app 到 Downloads → 打包时用 APP_SRC 指向它
+- **nonjb 最小可用版（聊天 + iSH 终端）打包**：`cd hosts/ios/deb && APP_SRC="/Users/mac/Downloads/<新包>.app" bash build_nonjb_ipa.sh`
+  产出 `operit2-ios_<ver>_nonjb_iphoneos-arm64.ipa`（ad-hoc 签名，标准沙盒；不含 daemon/tweak/appex）。
+  安装：Sideloadly/AltStore 用个人 Apple ID 重签。验证范围：AI 聊天 + iSH 终端（见 8.8）。
 
 ### 5.3 装机（SSH）
 ```bash
@@ -252,7 +255,8 @@ echo '<PASSWORD>' | sudo -S killall -9 SpringBoard   # respring
 - 深链唤起（微信裸 scheme、支付宝全系；weixin://dl/* 全废）
 - 屏幕使用时间授权 + 锁应用（0.3.70 起无需选应用）
 - 吃醋巡检（DeviceActivityMonitor）+ 快捷指令接入
-- iSH 终端（kernel=ish + aarch64 Alpine 3.19，0.3.86 起可打开、shell 交互正常；**网络半通见 8.9**）
+- iSH 终端（kernel=ish + aarch64 Alpine 3.19，0.3.86 起可打开、shell 交互正常；网络已解决见 8.9）
+- **nonjb 最小可用版（0.3.86 起）**：AI 聊天 + 内置 iSH 终端，标准沙盒实机验证（Sideloadly 自签）；脚本 `hosts/ios/deb/build_nonjb_ipa.sh`
 
 ### 🟡 已 push 未端到端验证
 - 权限全家桶（TCCServer + system_io 9 工具 + HealthKit，经 OperitLocalServer 8891）
@@ -370,15 +374,18 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
   - 回归：`scp hosts/ios/deb/scripts/roothide_regress.sh mobile@<ip>:/tmp/` → `sudo sh /tmp/roothide_regress.sh`
   - 冷启动：killall -9 Runner 后重开计时（roothide 用 stock dyld，预期秒级，无 Dopamine 60s）
 
-### 8.8 IPA 阉割版（nonjb / TrollStore / 自签）整体不可用 🔴
-- **本质**：nonjb 打包用 Runner-nonjb.entitlements（剥离 no-sandbox + container-required=false）→ app 落标准沙盒（data_root=$HOME/Documents/.operit），无 AppSync/amfid patch
+### 8.8 IPA 阉割版（nonjb / TrollStore / 自签）：完整自动化不可用，但聊天 + iSH 终端最小版 ✅ 实机验证（2026-08-26）
+- **本质**：nonjb 打包用 Runner-nonjb.entitlements（剥离 no-sandbox → 标准沙盒），无 AppSync/amfid patch
 - **缺失的深度能力**（全部依赖越狱环境，nonjb 全无）：
   1. tweak（operit-sb.dylib）不注入 → 通知拦截/记录、锁屏会话、应用锁、**Siri 集成全失效**
   2. LaunchDaemon 不生效 → daemon 起不来 → 设备自动化（AI 操作手机）全失效
   3. ios-mcp（com.witchan.ios-mcp）不装 → 设备操作无通道
   4. 无完整权限（沙盒内）→ 部分 TCC 公开 API 可用但受容器限制
-- **nonjb 只剩**：AI 聊天 + app 手动打开时 OperitLocalServer（8891）的部分能力（且 app 挂起即断）
-- **验证状态**：仅历史打包过（从未装机功能验证）；**不要对 nonjb 版有任何功能预期**
+- **✅ 2026-08-26 实机验证（0.3.86 nonjb ipa，Sideloadly 自签）**：
+  **AI 聊天可用 + 内置 iSH 终端可用**（kernel=ish + aarch64 Alpine，标准沙盒内跑通，含 JIT；
+  rootfs 自动落容器内 `NSApplicationSupportDirectory`；网络已通——resolv.conf 已固化见 8.9）。
+  交付脚本：`hosts/ios/deb/build_nonjb_ipa.sh`（ad-hoc 签名，Sideloadly 安装时用 Apple ID 重签）。
+- **边界**：除聊天 + iSH 终端外，其它能力（自动化/通知/权限）按上方缺失清单，**不要有功能预期**。
 
 ### 8.9 iSH 终端网络问题 ✅ 已解决（2026-08-26：根因是 resolv.conf 空，非代码 bug）
 - **现象**：iSH 终端可正常打开、shell 交互正常；但 `apk update` / 拉 APKINDEX 报
