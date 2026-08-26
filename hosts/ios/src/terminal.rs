@@ -121,9 +121,12 @@ impl IosTerminalHost {
         Ok(())
     }
 
-    /// Selects the jailbroken system /bin/sh when a privileged PTY is available.
+    /// Primary terminal backend. The embedded iSH Alpine guest is the default
+    /// for manual terminals: the jailbroken system /bin/sh probe succeeds on
+    /// this device but the sandboxed app cannot spawn it, so it must never be
+    /// the auto-selected default (it remains available as an explicit choice).
     fn primaryBackend(&self) -> IosTerminalBackend {
-        IosTerminalBackend::SystemShell
+        IosTerminalBackend::Ish
     }
 
     /// Resolves one manually selected terminal implementation and type to its backend.
@@ -216,14 +219,28 @@ impl IosTerminalHost {
                 )?;
                 requiredString(&response, "sessionId")?
             }
-            IosTerminalBackend::SystemShell => self.systemShell.startPtySession(
-                &sessionName,
-                NATIVE_TERMINAL,
-                SHELL_TERMINAL_TYPE,
-                &workingDir,
-                rows,
-                cols,
-            )?,
+            IosTerminalBackend::SystemShell => {
+                let spawn_result = self.systemShell.startPtySession(
+                    &sessionName,
+                    NATIVE_TERMINAL,
+                    SHELL_TERMINAL_TYPE,
+                    &workingDir,
+                    rows,
+                    cols,
+                );
+                if let Err(ref err) = spawn_result {
+                    // Diagnostic: dump the exact spawn error so SSH can read it.
+                    // The jailbroken system shell (/var/jb/bin/sh) is confirmed
+                    // runnable on device, so a failure here is a real bug worth
+                    // capturing verbatim instead of the generic ENOENT.
+                    let dump = format!(
+                        "--- systemShell spawn error ---\nsession={}\nworkdir={}\nerror={:?}\n--- end ---\n",
+                        sessionName, workingDir, err
+                    );
+                    let _ = std::fs::write("/var/mobile/.operit/ish-session-exit.log", dump);
+                }
+                spawn_result?
+            }
         };
         self.recordSession(&sessionId, backend)?;
         Ok(sessionId)

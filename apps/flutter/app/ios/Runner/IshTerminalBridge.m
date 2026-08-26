@@ -294,6 +294,27 @@ static void operit_ish_exit_hook(struct task *task, int code) {
     [ORTIshStateLock unlock];
   }
   NSLog(@"iSH process exited: pid=%d code=%d", (int)pid, code);
+
+  // Diagnostics: dump the session's screen output + exit code to a fixed file
+  // so it can be inspected over SSH (idevicesyslog needs USB, which is not
+  // always attached). A busybox ash that dies at startup prints its reason to
+  // stderr, which lands in screenOutput before this hook fires.
+  if (session != nil) {
+    @synchronized (session) {
+      NSString *screenText = [[NSString alloc] initWithData:session.screenOutput
+                                                   encoding:NSUTF8StringEncoding];
+      NSString *dump = [NSString stringWithFormat:
+          @"--- iSH session exit ---\npid=%d code=%d closed=%d\noutput:\n%@\n--- end ---\n",
+          (int)pid, (int)code, session.closed ? 1 : 0,
+          screenText ?: @"(non-UTF8)"];
+      NSFileManager *fm = [NSFileManager defaultManager];
+      [fm createDirectoryAtPath:@"/var/mobile/.operit"
+          withIntermediateDirectories:YES attributes:nil error:NULL];
+      [dump writeToFile:@"/var/mobile/.operit/ish-session-exit.log"
+             atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+      NSLog(@"iSH session exit dumped");
+    }
+  }
 }
 
 static void operit_ish_die_handler(const char *msg) {
@@ -441,6 +462,7 @@ static ORTIshTerminalSession *ORTIshStartSession(NSString *sessionName, NSString
 
   err = do_execve("/bin/sh", 2, argv, envp);
   if (err < 0) {
+    NSLog(@"iSH exec /bin/sh FAILED: err=%d (pid=%d)", err, task->pid);
     [ORTIshStateLock lock];
     [ORTIshTtySessions removeObjectForKey:@((uintptr_t)tty)];
     [ORTIshStateLock unlock];
@@ -449,6 +471,7 @@ static ORTIshTerminalSession *ORTIshStartSession(NSString *sessionName, NSString
     *errorOut = [NSString stringWithFormat:@"iSH exec failed: %d", err];
     return nil;
   }
+  NSLog(@"iSH exec /bin/sh OK: pid=%d tty=%d -> task_start", task->pid, tty->num);
 
   task_start(task);
   current = saved_current;
