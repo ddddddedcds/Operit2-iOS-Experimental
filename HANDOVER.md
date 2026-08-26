@@ -411,7 +411,7 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 ### 9.1 环境准备
 ```bash
 # 仓库
-git clone git@github.com:ddddddedcds/Operit2-iOS-Jailbreak-POC.git -b feat/ios-jailbreak-preview4
+git clone git@github.com:ddddddedcds/Operit2-iOS-Experimental.git -b feat/ios-jailbreak-preview4
 # 本机 Theos（编 tweak/CC 模块）已就绪；Xcode + iOS 16 SDK（swiftc typecheck 用）
 # 设备：Dopamine rootless iOS 16.7，SSH mobile@192.168.1.xx <密码，安装时向设备所有者询问>（IP 可能变）
 ```

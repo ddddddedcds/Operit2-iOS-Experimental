@@ -1,4 +1,4 @@
-# Operit2-iOS-Jailbreak-POC
+# Operit2-iOS-Experimental
 
 > **Operit2 越狱 iOS 移植 —— 概念验证（POC）**
 > 探明"越狱 iOS + AI 深度集成"这条路的可行性。
