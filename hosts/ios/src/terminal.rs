@@ -462,6 +462,40 @@ impl TerminalHost for IosTerminalHost {
                 sessions.push(session);
             }
         }
+        // iSH sessions live in the bridge, not the native pty host, so they must
+        // be enumerated explicitly. The Dart terminal picker relies on
+        // listSessions() containing every just-started session; without this a
+        // freshly created iSH session is "not found" and the UI reports
+        // "Terminal session disappeared (shell exited immediately?)" even though
+        // the shell is alive and running (that message is a red herring).
+        let response = callIshTerminal("terminalList", json!({}))?;
+        if let Some(items) = response.get("sessions").and_then(|v| v.as_array()) {
+            for item in items {
+                let sessionId = requiredString(item, "sessionId")?;
+                let sessionName = requiredString(item, "sessionName")?;
+                let workingDir = item
+                    .get("workingDir")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let commandRunning = item
+                    .get("commandRunning")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let entry = TerminalSessionListEntry {
+                    sessionId: sessionId.clone(),
+                    sessionName,
+                    platform: PLATFORM.to_string(),
+                    terminal: ISH_TERMINAL.to_string(),
+                    terminalType: shellTerminalType(&requiredString(item, "terminalType")?)?,
+                    sessionKind: "pty".to_string(),
+                    workingDir,
+                    commandRunning,
+                };
+                self.recordSession(&sessionId, IosTerminalBackend::Ish)?;
+                sessions.push(entry);
+            }
+        }
         Ok(sessions)
     }
 
