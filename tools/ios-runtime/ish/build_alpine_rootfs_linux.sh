@@ -10,15 +10,21 @@ root_archive="$downloads_dir/ish-root-appstore-apk.tar.gz"
 apk_static_dir="$work_dir/apk-static"
 root_dir="$work_dir/root"
 
-root_url="https://github.com/ish-app/roots/releases/download/g00712ff0a54b2839c5aa1a8ed758003ca65357dc/appstore-apk.tar.gz"
-root_sha256="776b16416894e5a8bec220b8d4726c46bb993289e8e48fdac54a519396e40a93"
+# A2: the iSH guest is aarch64, so the rootfs must contain aarch64 Linux
+# userspace binaries. x86/i386 binaries cannot execute under the arm64 guest,
+# so the bridge's do_execve("/bin/sh") would fail with exec format error.
+# We bootstrap from the official Alpine aarch64 minirootfs and layer the
+# interpreter packages on top with apk.static (which runs on the x86_64 Linux
+# build host and installs aarch64 packages via --arch aarch64).
+root_url="https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-minirootfs-3.19.1-aarch64.tar.gz"
+root_sha256="7ef5eef3a5b1d198dfb1610cde1ef5b0755ff5d838fb1e5e1b9f42b59214820f"
 repository_base="https://dl-cdn.alpinelinux.org/alpine/v3.19"
-repository_arch="x86"
+repository_arch="aarch64"
 host_arch="x86_64"
 uv_version="0.12.1"
-uv_archive="uv-i686-unknown-linux-musl.tar.gz"
+uv_archive="uv-aarch64-unknown-linux-musl.tar.gz"
 uv_url="https://github.com/astral-sh/uv/releases/download/$uv_version/$uv_archive"
-uv_sha256="be4d42582284456dae2ff4bf622c4169d1e6b8d1cd0e516658d6ba01f2a57dfa"
+uv_sha256="ce218dad9eb48a39dd86160bec6291fac7275f20a9cabcc4bc10dd2c757208f8"
 pnpm_version="10.12.1"
 pnpm_archive="pnpm-$pnpm_version.tgz"
 pnpm_url="https://registry.npmjs.org/pnpm/-/$pnpm_archive"
@@ -93,7 +99,7 @@ install_apk_static() {
     chmod 755 "$apk_static_dir/sbin/apk.static"
 }
 
-# Installs the i686-musl uv and uvx binaries supported by the iSH CPU runtime.
+# Installs the aarch64-musl uv and uvx binaries for the iSH arm64 guest.
 install_uv() {
     local archive_path="$downloads_dir/$uv_archive"
     local extract_dir="$work_dir/uv"
@@ -151,7 +157,7 @@ EOF
     printf '%s\n' "$repository_base" > "$root_dir/etc/operit-alpine-repository"
 }
 
-# Builds the iSH x86 Alpine rootfs with the Android-equivalent interpreter packages.
+# Builds the iSH aarch64 Alpine rootfs with the interpreter packages.
 build_rootfs() {
     mkdir -p "$downloads_dir" "$work_dir" "$(dirname "$rootfs_path")"
     download_checked "$root_url" "$root_archive" "$root_sha256"
@@ -161,6 +167,8 @@ build_rootfs() {
     tar -xzf "$root_archive" -C "$root_dir"
     write_rootfs_config
 
+    # The minirootfs already carries a populated apk database, so we add the
+    # extra interpreter packages on top (no --initdb, which would wipe the db).
     env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
         "$apk_static_dir/sbin/apk.static" \
         --root "$root_dir" \
@@ -169,7 +177,6 @@ build_rootfs() {
         --repositories-file "$root_dir/etc/apk/repositories" \
         --no-cache \
         --no-scripts \
-        --initdb \
         add "${packages[@]}"
     install_uv
     install_pnpm

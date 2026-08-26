@@ -31,7 +31,7 @@
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
-		3D2A10242D000001003D2A10 /* IshTerminalBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 3D2A10252D000001003D2A10 /* IshTerminalBridge.mm */; };
+		3D2A10242D000001003D2A10 /* IshTerminalBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 3D2A10252D000001003D2A10 /* IshTerminalBridge.m */; };
 		3D2A10222D000001003D2A10 /* ish-root.tar.gz in Resources */ = {isa = PBXBuildFile; fileRef = 3D2A10232D000001003D2A10 /* ish-root.tar.gz */; };
 /* End PBXBuildFile section */
 
@@ -98,7 +98,7 @@
 		A3DBECAFFD01CA94272E1FFA /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		A4C9FE5FA80E7429E0D93DEC /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		E263042404A1AC251036BB08 /* libPods-RunnerTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-RunnerTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
-		3D2A10252D000001003D2A10 /* IshTerminalBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = IshTerminalBridge.mm; sourceTree = "<group>"; };
+		3D2A10252D000001003D2A10 /* IshTerminalBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = IshTerminalBridge.m; sourceTree = "<group>"; };
 		3D2A10232D000001003D2A10 /* ish-root.tar.gz */ = {isa = PBXFileReference; lastKnownFileType = archive.gzip; path = "ish-root.tar.gz"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -203,7 +203,7 @@
 				3D2A10062D000001003D2A10 /* AppleLocalInferenceBridge.mm */,
 				3D2A10022D000001003D2A10 /* OperitFlutterBridge.h */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
-				3D2A10252D000001003D2A10 /* IshTerminalBridge.mm */,
+				3D2A10252D000001003D2A10 /* IshTerminalBridge.m */,
 				3D2A10232D000001003D2A10 /* ish-root.tar.gz */,
 			);
 			path = Runner;
@@ -404,14 +404,9 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
-				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinux.a",
-				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinuxUser.a",
-				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libfakefs.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish.a",
 				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish_emu.a",
-				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libarchive.a",
-				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHFakefs.a",
-				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHFchdir.a",
+				"$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libfakefs.a",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -499,7 +494,7 @@
 				5A7F10072D000001005A7F10 /* OpenURLServer.swift in Sources */,
 				5A7F100B2D000001005A7F10 /* TCCServer.swift in Sources */,
 				5A7F10092D000001005A7F10 /* AppLockUI.swift in Sources */,
-				3D2A10242D000001003D2A10 /* IshTerminalBridge.mm in Sources */,
+				3D2A10242D000001003D2A10 /* IshTerminalBridge.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -568,8 +563,13 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GCC_C_LANGUAGE_STANDARD = gnu99;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"GUEST_ARM64=1",
+					"ISH_INTERNAL=1",
+				);
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
 				GCC_WARN_UNDECLARED_SELECTOR = YES;
@@ -597,7 +597,6 @@
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish",
-					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish/app",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -611,17 +610,15 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-loperit_flutter_bridge",
-					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
-					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinux.a",
-					"-liSHLinuxUser",
-					"-liSHFakefs",
-					"-liSHFchdir",
-					"-lfakefs",
-					"-lish_emu",
-					"-larchive",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish_emu.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libfakefs.a",
+					"-lsqlite3",
+					"-lz",
 					"-lbz2",
 					"-liconv",
 					"-lresolv",
+					"-larchive",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.ai.assistance.operit2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -716,13 +713,15 @@
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GCC_C_LANGUAGE_STANDARD = gnu99;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
 					"$(inherited)",
+					"GUEST_ARM64=1",
+					"ISH_INTERNAL=1",
 				);
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
@@ -773,8 +772,13 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GCC_C_LANGUAGE_STANDARD = gnu99;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"GUEST_ARM64=1",
+					"ISH_INTERNAL=1",
+				);
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
 				GCC_WARN_UNDECLARED_SELECTOR = YES;
@@ -804,7 +808,6 @@
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish",
-					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish/app",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -818,17 +821,15 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-loperit_flutter_bridge",
-					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
-					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinux.a",
-					"-liSHLinuxUser",
-					"-liSHFakefs",
-					"-liSHFchdir",
-					"-lfakefs",
-					"-lish_emu",
-					"-larchive",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish_emu.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libfakefs.a",
+					"-lsqlite3",
+					"-lz",
 					"-lbz2",
 					"-liconv",
 					"-lresolv",
+					"-larchive",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.ai.assistance.operit2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -851,7 +852,6 @@
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish",
-					"$(PROJECT_DIR)/../../../../tools/ios-runtime/ish/sources/ish/app",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -865,17 +865,15 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-loperit_flutter_bridge",
-					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/liblinux.a",
-					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libiSHLinux.a",
-					"-liSHLinuxUser",
-					"-liSHFakefs",
-					"-liSHFchdir",
-					"-lfakefs",
-					"-lish_emu",
-					"-larchive",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libish_emu.a",
+					"-Wl,-force_load,$(PROJECT_DIR)/../apple/ish-build/$(CONFIGURATION)-$(PLATFORM_NAME)/libfakefs.a",
+					"-lsqlite3",
+					"-lz",
 					"-lbz2",
 					"-liconv",
 					"-lresolv",
+					"-larchive",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.ai.assistance.operit2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
