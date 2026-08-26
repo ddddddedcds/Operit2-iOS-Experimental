@@ -273,6 +273,26 @@ static void ORTIshCreateDeviceNodes(void) {
   generic_setattrat(AT_PWD, "/", (struct attr){.type = attr_mode, .mode = 0755}, false);
 }
 
+// Diagnostics: append a line to /var/mobile/.operit/ish-session-exit.log so the
+// whole iSH session lifecycle (start / exec / exit / read-gone) can be read
+// over SSH in one shot. Never overwrites; timestamps each entry.
+static void ORTIshAppendDiag(NSString *body) {
+  NSFileManager *fm = [NSFileManager defaultManager];
+  [fm createDirectoryAtPath:@"/var/mobile/.operit"
+      withIntermediateDirectories:YES attributes:nil error:NULL];
+  NSString *path = @"/var/mobile/.operit/ish-session-exit.log";
+  long long nowMs = (long long)([[NSDate date] timeIntervalSince1970] * 1000);
+  NSString *line = [NSString stringWithFormat:@"[%lld] %@\n", nowMs, body];
+  NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+  if (fh == nil) {
+    [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    return;
+  }
+  [fh seekToEndOfFile];
+  [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+  [fh closeFile];
+}
+
 static void operit_ish_exit_hook(struct task *task, int code) {
   // Only interested in init and direct children of init.
   if (task->parent != NULL && task->parent->parent != NULL)
@@ -295,26 +315,26 @@ static void operit_ish_exit_hook(struct task *task, int code) {
   }
   NSLog(@"iSH process exited: pid=%d code=%d", (int)pid, code);
 
-  // Diagnostics: dump the session's screen output + exit code to a fixed file
-  // so it can be inspected over SSH (idevicesyslog needs USB, which is not
-  // always attached). A busybox ash that dies at startup prints its reason to
-  // stderr, which lands in screenOutput before this hook fires.
+  // Diagnostics: UNCONDITIONAL append. session may be nil if the shell died
+  // before registration (the race fixed by registering the session BEFORE
+  // task_start), so never gate the dump on it — pid+code alone already tells
+  // signal-vs-normal-exit. When the session IS found, screenOutput carries the
+  // busybox ash startup stderr, i.e. the actual reason it died.
+  NSString *screenText = nil;
+  int closedFlag = 0;
   if (session != nil) {
     @synchronized (session) {
-      NSString *screenText = [[NSString alloc] initWithData:session.screenOutput
-                                                   encoding:NSUTF8StringEncoding];
-      NSString *dump = [NSString stringWithFormat:
-          @"--- iSH session exit ---\npid=%d code=%d closed=%d\noutput:\n%@\n--- end ---\n",
-          (int)pid, (int)code, session.closed ? 1 : 0,
-          screenText ?: @"(non-UTF8)"];
-      NSFileManager *fm = [NSFileManager defaultManager];
-      [fm createDirectoryAtPath:@"/var/mobile/.operit"
-          withIntermediateDirectories:YES attributes:nil error:NULL];
-      [dump writeToFile:@"/var/mobile/.operit/ish-session-exit.log"
-             atomically:YES encoding:NSUTF8StringEncoding error:NULL];
-      NSLog(@"iSH session exit dumped");
+      screenText = [[NSString alloc] initWithData:session.screenOutput
+                                         encoding:NSUTF8StringEncoding];
+      closedFlag = session.closed ? 1 : 0;
     }
   }
+  NSString *screen = screenText == nil ? @"(no session)"
+      : (screenText.length > 0 ? screenText : @"(empty)");
+  ORTIshAppendDiag([NSString stringWithFormat:
+      @"[exit] pid=%d code=%d sessionFound=%d closed=%d\n%@",
+      (int)pid, (int)code, session != nil ? 1 : 0, closedFlag, screen]);
+  NSLog(@"iSH session exit dumped (pid=%d code=%d sessionFound=%d)", (int)pid, code, session != nil ? 1 : 0);
 }
 
 static void operit_ish_die_handler(const char *msg) {
@@ -463,6 +483,7 @@ static ORTIshTerminalSession *ORTIshStartSession(NSString *sessionName, NSString
   err = do_execve("/bin/sh", 2, argv, envp);
   if (err < 0) {
     NSLog(@"iSH exec /bin/sh FAILED: err=%d (pid=%d)", err, task->pid);
+    ORTIshAppendDiag([NSString stringWithFormat:@"[exec-fail] err=%d pid=%d", err, task->pid]);
     [ORTIshStateLock lock];
     [ORTIshTtySessions removeObjectForKey:@((uintptr_t)tty)];
     [ORTIshStateLock unlock];
@@ -473,15 +494,21 @@ static ORTIshTerminalSession *ORTIshStartSession(NSString *sessionName, NSString
   }
   NSLog(@"iSH exec /bin/sh OK: pid=%d tty=%d -> task_start", task->pid, tty->num);
 
-  task_start(task);
-  current = saved_current;
-  [ORTIshStartLock unlock];
-
+  // Register the session BEFORE task_start. If the shell exits immediately the
+  // exit hook fires during/right after task_start and MUST be able to find the
+  // session — registering afterwards (the 0.3.84 layout) skipped the diagnostic
+  // dump entirely and left the ash exit reason unknown.
   [ORTIshStateLock lock];
   ORTIshSessions[session.sessionId] = session;
   ORTIshSessionKeys[[NSString stringWithFormat:@"shell\n%@", sessionName]] = session.sessionId;
   ORTIshPidToSession[@(task->pid)] = session;
   [ORTIshStateLock unlock];
+
+  ORTIshAppendDiag([NSString stringWithFormat:@"[start] pid=%d tty=%d exec=OK", task->pid, tty->num]);
+
+  task_start(task);
+  current = saved_current;
+  [ORTIshStartLock unlock];
 
   // Move into the requested working directory.
   if (workingDir.length > 0) {
@@ -637,8 +664,13 @@ static NSDictionary *ORTIshHandleCommand(NSString *command, NSDictionary *reques
     return session == nil ? ORTIshError(error) : ORTIshResult(@{ @"sessionId" : session.sessionId });
   }
   if ([command isEqualToString:@"terminalRead"]) {
-    ORTIshTerminalSession *session = ORTIshSession(ORTIshRequiredString(request, @"sessionId", &error), &error);
-    if (session == nil) return ORTIshError(error);
+    NSString *readSessionId = ORTIshRequiredString(request, @"sessionId", &error);
+    ORTIshTerminalSession *session = ORTIshSession(readSessionId, &error);
+    if (session == nil) {
+      ORTIshAppendDiag([NSString stringWithFormat:
+          @"[read-gone] sessionId=%@ err=%@", readSessionId, error ?: @"(nil)"]);
+      return ORTIshError(error);
+    }
     NSString *output = ORTIshText(ORTIshDrainOutput(session), &error);
     return output == nil ? ORTIshError(error) : ORTIshResult(@{ @"output" : output });
   }
