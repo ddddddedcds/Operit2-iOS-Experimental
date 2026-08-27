@@ -59,6 +59,12 @@
 # 2. Sideloadly / AltStore 用个人 Apple ID 重签安装
 ```
 
+## 想取用某个功能？（上游 / 接手方）
+
+不打包整个越狱版，只想拿走某块功能：见 [HANDOVER.md §15.B](./HANDOVER.md)（通用可回馈清单，全部公开 API，附文件路径）。
+
+通用做法：**拷贝表内文件 → 检查依赖（表内已标注）→ 接入你的服务 → 真机验证**。越狱专属部分（tweak/daemon/私有 API）见 §15.A，仅供越狱环境参考。
+
 **最低系统要求**：
 - **nonjb 版：iOS 16.2+**（Runner MinimumOSVersion，自签安装工具会检查）
 - **越狱版**：需 Dopamine rootless；dpkg 安装不卡版本，实测 iOS 16.7（A14）与 iOS 15.7（A12），但私有 API 按 16.7 开发，低版本功能可能有差异
