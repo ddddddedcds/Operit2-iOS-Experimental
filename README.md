@@ -82,6 +82,7 @@
   - guest 根文件系统：Alpine Linux aarch64（v3.19 minirootfs，[alpinelinux.org](https://alpinelinux.org)，GPL-2.0）
   - guest `/bin/sh`：busybox（静态链接，[busybox.net](https://busybox.net)，**GPL-2.0**）
   - 文件系统层：iSH 的 fakefs（fs/fakefs，含 meta.db + data/ 布局）
+  - 相关参考（未来 iSH 增强方向，非当前依赖）：[emkey1/ish-AOK](https://github.com/emkey1/ish-AOK)（GPLv3）——深度定制 iSH fork，arm64 guest 同源于 OpenMinis/ish-arm64；含 HLE 加速、fakefs APFS Unicode 修复、FUSE、宿主编译 native 程序等增强
 - 免责声明见 deb 包 control（实验性软件，使用风险自负）
 
 ## 部分使用截图
