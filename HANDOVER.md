@@ -106,7 +106,7 @@ files/
 │                                                                                  │
 │  [dsh 运行时]  ← 独立 CLI deb：nodejs + dsh-ios（可选）                       │
 │   ▲ node 22.23.2（V8 W^X 全 JIT）+ dsh 0.1.1-rc.2，Web GUI 127.0.0.1:3080；**独立可跑，不依赖 Operit2**│
-│   ▲ Operit2 经 toolpkg（桥，独立仓库 1.1.1）把 dsh 面板放进侧边栏            │
+│   ▲ Operit2 经 toolpkg（桥，独立仓库 1.1.2）把 dsh 面板放进侧边栏            │
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -163,7 +163,7 @@ files/
 dsh 不是 Operit2 内置功能，而是通过两个独立产物接进来的：
 - **运行时**（nodejs deb + dsh-ios deb，独立仓库 [`dddddedcds/deepseek-harness-ios`](https://github.com/ddddddedcds/deepseek-harness-ios) 的 `ios-port` 分支构建）：交叉编译 Node 22.23.2（iOS arm64，**V8 W^X 全 JIT + small-icu**）+ `@deepseek-ai/dsh` 0.1.1-rc.2 整包 + node-pty 真模块，Web GUI 在 `127.0.0.1:3080`。**可独立使用，不依赖 Operit2**——越狱机装上 deb 就能直接跑 dsh。
   - 设备侧已解决的运行时垫片：`fetch-shim.cjs`（undici 的 wasm llhttp 在 A14 不可用，fetch 走 node:http + 补 User-Agent 头）；`dsh-sandbox-local`/`dsh-subprocess-local` 插件 stub（koffi FFI 无 iOS prebuilt，extends 基类后 dsh web 可启动）；launcher 需 `--predictable --single-threaded`（W^X race）+ wasm 内存上限 + `--require fetch-shim.cjs`。**dsh web 已实测 HTTP 200、LLM 直连正常。**
-- **toolpkg `com.operit.deepseek_harness.ios`**（独立仓库 [`dddddedcds/deepseek-harness-ios-toolpkg`](https://github.com/ddddddedcds/deepseek-harness-ios-toolpkg)，当前 1.1.1）：把 DSH Web UI 接进 Operit2 侧边栏的「连接层/桥」。自己不提供 node/dsh，运行时由上面的 deb 提供；没有这层桥，Operit2 调不到 dsh 后端。
+- **toolpkg `com.operit.deepseek_harness.ios`**（独立仓库 [`dddddedcds/deepseek-harness-ios-toolpkg`](https://github.com/ddddddedcds/deepseek-harness-ios-toolpkg)，当前 1.1.2）：把 DSH Web UI 接进 Operit2 侧边栏的「连接层/桥」。自己不提供 node/dsh，运行时由上面的 deb 提供；没有这层桥，Operit2 调不到 dsh 后端。
 - 关系：`deb（独立运行时）` ← `toolpkg（Operit2 侧桥）` 连 → dsh 后端。
 
 ### 3.6 启动链路（开机 → 可用）
@@ -226,12 +226,12 @@ cd hosts/ios/deb && OPERIT_PACK_SCHEME=rootless APP_SRC="/Users/mac/Downloads/<C
   # 安装：Sideloadly/AltStore 用个人 Apple ID 重签
   ```
 - **dsh 运行时 deb**（独立，构建源在 [`dddddedcds/deepseek-harness-ios`](https://github.com/ddddddedcds/deepseek-harness-ios) `ios-port` 分支）：
-  - 两个 deb：`nodejs_22.23.2-3`（V8 W^X 全 JIT + small-icu）+ `dsh-ios_0.1.1-rc.2-1`（dsh 整包 + node-pty addon + koffi stub + fetch-shim），先装 nodejs 再装 dsh-ios，`dsh-ios` 启动即起 web（:3080）。
-- **dsh toolpkg（桥）**（独立仓库 [`dddddedcds/deepseek-harness-ios-toolpkg`](https://github.com/ddddddedcds/deepseek-harness-ios-toolpkg)，当前 1.1.1）：
+  - 两个 deb：`nodejs_22.23.2-3`（V8 W^X 全 JIT + small-icu）+ `dsh-ios_0.1.1-rc.2-2`（dsh 整包 + node-pty addon + koffi stub + fetch-shim），先装 nodejs 再装 dsh-ios，`dsh-ios` 启动即起 web（:3080）。
+- **dsh toolpkg（桥）**（独立仓库 [`dddddedcds/deepseek-harness-ios-toolpkg`](https://github.com/ddddddedcds/deepseek-harness-ios-toolpkg)，当前 1.1.2）：
   ```bash
   git clone git@github.com:dddddedcds/deepseek-harness-ios-toolpkg.git
   cd deepseek-harness-ios-toolpkg && ./build.sh   # 从 manifest 读版本，产出 <version>.toolpkg
-  # 或直接用已发布的 com.operit.deepseek_harness.ios-1.1.1.toolpkg
+  # 或直接用已发布的 com.operit.deepseek_harness.ios-1.1.2.toolpkg
   ```
 
 ### 5.4 装机（SSH）
@@ -256,7 +256,7 @@ echo '<PASSWORD>' | sudo -S killall -9 SpringBoard   # respring
 - iSH 终端（kernel=ish + aarch64 Alpine 3.19，0.3.86 起可打开、shell 交互正常；网络已解决见 §8.6）
 - **nonjb 最小版**（0.3.86）：AI 聊天 + 内置 iSH 终端，标准沙盒实机验证
 - **dsh 运行时 deb**：独立安装即可跑 dsh（Web :3080），实测可用（LLM 直连正常）
-- **dsh toolpkg 桥**：1.1.1 状态卡版已部署 Operit2（WebView 内嵌因 dsh 桌面 UI 在窄侧栏无响应式适配而降级为状态卡，完整 UI 走浏览器打开 3080）
+- **dsh toolpkg 桥**：1.1.2 状态卡版已部署 Operit2（WebView 内嵌因 dsh 桌面 UI 在窄侧栏无响应式适配而降级为状态卡，完整 UI 走浏览器打开 3080）
 
 ### 🟡 已 push 未端到端验证
 - 权限全家桶（TCCServer + system_io 9 工具 + HealthKit）
@@ -518,6 +518,6 @@ Impeller shader / Metal 缓存 / 网络等待 / daemon 等待 / MCP 插件 / Rus
 - [x] 代码：feat/ios-jailbreak-preview4（当前 0.3.86）
 - [x] 文档：本 HANDOVER.md
 - [x] 两条交付线均 0.3.86 验证：越狱 deb（完整）/ nonjb ipa（聊天+iSH）
-- [x] dsh 集成产物：运行时 deb（nodejs 22.23.2-3 + dsh-ios 0.1.1-rc.2-1，deepseek-harness-ios `ios-port`）+ toolpkg 桥 1.1.1（deepseek-harness-ios-toolpkg，独立仓库，见 §3.5）
+- [x] dsh 集成产物：运行时 deb（nodejs 22.23.2-3 + dsh-ios 0.1.1-rc.2-2，deepseek-harness-ios `ios-port`）+ toolpkg 桥 1.1.2（deepseek-harness-ios-toolpkg，独立仓库，见 §3.5）
 - [ ] 遗留 bug：§8.1（CC 模块）/ §8.5（设置面板）
 - [ ] 可探索：AI 回复通知（BBServer action 回调；AutoResponder 是 iOS 6-9 短信层先例）；软移植减 60s（§14.5）
