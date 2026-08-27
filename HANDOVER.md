@@ -162,16 +162,16 @@ files/
 
 ### 3.5 dsh 集成（可选）—— 运行时 + 桥
 dsh 不是 Operit2 内置功能，而是通过两个独立产物接进来的：
-- **运行时 deb `com.operit.deepseek-harness-runtime`**（已在 `toolpkg-work/` 预构建）：交叉编译 Node 22.23.2（iOS arm64, jitless）+ `@deepseek-ai/dsh` 整包 + node-pty 真模块，落到 `/var/mobile/.operit/runtime/`，Web GUI 在 `127.0.0.1:3080`。**可独立使用，不依赖 Operit2**——越狱机装上 deb 就能直接跑 dsh。
-  - 构建源在独立仓库 `/Users/mac/ios-port`（deepseek-harness `ios-port` 分支），不在本仓库。
-- **toolpkg `com.operit.deepseek_harness.ios`**（已在 `toolpkg-work/` 预构建 `.toolpkg`）：把 DSH Web UI 嵌进 Operit2 侧边栏的「连接层/桥」。自己不提供 node/dsh，运行时由上面的 deb 提供；没有这层桥，Operit2 调不到 dsh 后端。
+- **运行时**（nodejs deb + dsh-ios deb，独立仓库 [`dddddedcds/deepseek-harness-ios`](https://github.com/ddddddedcds/deepseek-harness-ios) 的 `ios-port` 分支构建）：交叉编译 Node 22.23.2（iOS arm64，**V8 W^X 全 JIT + small-icu**）+ `@deepseek-ai/dsh` 0.1.1-rc.2 整包 + node-pty 真模块，Web GUI 在 `127.0.0.1:3080`。**可独立使用，不依赖 Operit2**——越狱机装上 deb 就能直接跑 dsh。
+  - 设备侧已解决的运行时垫片：`fetch-shim.cjs`（undici 的 wasm llhttp 在 A14 不可用，fetch 走 node:http + 补 User-Agent 头）；`dsh-sandbox-local`/`dsh-subprocess-local` 插件 stub（koffi FFI 无 iOS prebuilt，extends 基类后 dsh web 可启动）；launcher 需 `--predictable --single-threaded`（W^X race）+ wasm 内存上限 + `--require fetch-shim.cjs`。**dsh web 已实测 HTTP 200、LLM 直连正常。**
+- **toolpkg `com.operit.deepseek_harness.ios`**（独立仓库 [`dddddedcds/deepseek-harness-ios-toolpkg`](https://github.com/ddddddedcds/deepseek-harness-ios-toolpkg)，当前 1.1.1）：把 DSH Web UI 接进 Operit2 侧边栏的「连接层/桥」。自己不提供 node/dsh，运行时由上面的 deb 提供；没有这层桥，Operit2 调不到 dsh 后端。
 - 关系：`deb（独立运行时）` ← `toolpkg（Operit2 侧桥）` 连 → dsh 后端。
 
 ### 3.6 启动链路（开机 → 可用）
 1. LaunchDaemon 拉起 daemon（8890 监听）
 2. SpringBoard 启动，TweakInject 注入 operit-sb.dylib
 3. 用户打开 Runner.app → AppDelegate 启动 OperitLocalServer（单端口 8891）
-4. （可选）装了 dsh runtime deb 后，`/var/mobile/.operit/runtime/` 的 node 可独立起 dsh(:3080)；装了 toolpkg 则 Operit2 侧边栏出现 dsh UI
+4. （可选）装了 dsh-ios deb（`/var/jb/usr/local/bin/dsh-ios`，独立 CLI）后可直接起 dsh web（127.0.0.1:3080）；装了 toolpkg 则 Operit2 侧边栏出现 dsh UI
 5. 主机侧 MCP 连 ios-mcp（8090）→ AI 可用全部能力
 
 ---
