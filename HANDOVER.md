@@ -55,10 +55,9 @@ operit2-src/                          # ★ 仓库根（注意：不是 operit2-
 │
 ├── core/crates/operit-tools/src/tools/   # Rust 工具注册层（ToolRegistration.rs 等）
 │
-├── toolpkg-work/                     # ★ dsh 集成产物（见 §3.5 / §5.3）
-│   ├── com.operit.deepseek_harness.ios/                #   toolpkg 源码（v1）
-│   ├── com.operit.deepseek_harness.ios-1.0.0.toolpkg   #   ✅ 已构建：Operit2↔dsh 桥
-│   └── com.operit.deepseek-harness-runtime_1.0.0_iphoneos-arm64.deb  # ✅ 已构建：dsh 运行时
+├── toolpkg-work/                     # ★ dsh 集成遗留产物（已迁移独立仓库，见 §3.5）
+│   ├── com.operit.deepseek-harness-runtime_1.0.0_iphoneos-arm64.deb  # 旧 companion 运行时（历史）
+│   └── com.operit.deepseek_harness.ios/                #   toolpkg 源码（v1，历史版本）
 │
 ├── tools/                            #   辅助（含 iSH rootfs 烘焙脚本 tools/ios-runtime/ish/）
 └── HANDOVER.md                       #   本文件
@@ -105,9 +104,9 @@ files/
 │        ├─ open_url/installed_apps → OpenURLServer                                 │
 │        └─ tcc → OpenURLServer 内部直调 TCCServer（权限全家桶）                      │
 │                                                                                  │
-│  [dsh 运行时]  ← deb com.operit.deepseek-harness-runtime（可选）                  │
-│   ▲ node22 + @deepseek-ai/dsh，Web GUI 127.0.0.1:3080；**独立可跑，不依赖 Operit2**│
-│   ▲ Operit2 经 toolpkg（桥）把 dsh Web UI 嵌进侧边栏                               │
+│  [dsh 运行时]  ← 独立 CLI deb：nodejs + dsh-ios（可选）                       │
+│   ▲ node 22.23.2（V8 W^X 全 JIT）+ dsh 0.1.1-rc.2，Web GUI 127.0.0.1:3080；**独立可跑，不依赖 Operit2**│
+│   ▲ Operit2 经 toolpkg（桥，独立仓库 1.1.1）把 dsh 面板放进侧边栏            │
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -226,12 +225,13 @@ cd hosts/ios/deb && OPERIT_PACK_SCHEME=rootless APP_SRC="/Users/mac/Downloads/<C
   # 产出 operit2-ios_<ver>_nonjb_iphoneos-arm64.ipa（ad-hoc，标准沙盒；不含 daemon/tweak/appex）
   # 安装：Sideloadly/AltStore 用个人 Apple ID 重签
   ```
-- **dsh 运行时 deb**（独立，构建源在外部 `/Users/mac/ios-port`）：
-  - 已在 `toolpkg-work/com.operit.deepseek-harness-runtime_1.0.0_iphoneos-arm64.deb` 预构建，直接 `dpkg -i` 即可（或 scp 到设备装）。重新构建见 ios-port 仓库的 `dsh-ios-package.tar.gz` / `dist/install-dsh.sh`。
-- **dsh toolpkg（桥）**（Operit2 侧）：
+- **dsh 运行时 deb**（独立，构建源在 [`dddddedcds/deepseek-harness-ios`](https://github.com/ddddddedcds/deepseek-harness-ios) `ios-port` 分支）：
+  - 两个 deb：`nodejs_22.23.2-3`（V8 W^X 全 JIT + small-icu）+ `dsh-ios_0.1.1-rc.2-1`（dsh 整包 + node-pty addon + koffi stub + fetch-shim），先装 nodejs 再装 dsh-ios，`dsh-ios` 启动即起 web（:3080）。
+- **dsh toolpkg（桥）**（独立仓库 [`dddddedcds/deepseek-harness-ios-toolpkg`](https://github.com/ddddddedcds/deepseek-harness-ios-toolpkg)，当前 1.1.1）：
   ```bash
-  cd toolpkg-work/com.operit.deepseek_harness.ios/v1
-  zip -r ../com.operit.deepseek_harness.ios-1.0.0.toolpkg . -x "src/*" "scripts/*" "README*.md" "tsconfig.json"
+  git clone git@github.com:dddddedcds/deepseek-harness-ios-toolpkg.git
+  cd deepseek-harness-ios-toolpkg && ./build.sh   # 从 manifest 读版本，产出 <version>.toolpkg
+  # 或直接用已发布的 com.operit.deepseek_harness.ios-1.1.1.toolpkg
   ```
 
 ### 5.4 装机（SSH）
@@ -255,14 +255,14 @@ echo '<PASSWORD>' | sudo -S killall -9 SpringBoard   # respring
 - 吃醋巡检（DeviceActivityMonitor）+ 快捷指令接入
 - iSH 终端（kernel=ish + aarch64 Alpine 3.19，0.3.86 起可打开、shell 交互正常；网络已解决见 §8.6）
 - **nonjb 最小版**（0.3.86）：AI 聊天 + 内置 iSH 终端，标准沙盒实机验证
-- **dsh 运行时 deb**：独立安装即可跑 dsh（Web :3080），实测可用
+- **dsh 运行时 deb**：独立安装即可跑 dsh（Web :3080），实测可用（LLM 直连正常）
+- **dsh toolpkg 桥**：1.1.1 状态卡版已部署 Operit2（WebView 内嵌因 dsh 桌面 UI 在窄侧栏无响应式适配而降级为状态卡，完整 UI 走浏览器打开 3080）
 
 ### 🟡 已 push 未端到端验证
 - 权限全家桶（TCCServer + system_io 9 工具 + HealthKit）
 - 设置面板（PreferenceLoader operitPrefs.bundle）——**用户实测未显示**（见 §8.5）
 - 控制中心模块（OperitCC）——**用户实测未显示**（见 §8.1）
 - installed_apps 修复（responds 探测）
-- dsh toolpkg 桥接 UI 在 Operit2 内的实际渲染/交互（deb 后端已验证，桥接层待 Operit2 侧联调）
 
 ### ⏳ POC 暂时无法验证
 - Siri 气泡文本替换（跨进程不刷新）
@@ -518,6 +518,6 @@ Impeller shader / Metal 缓存 / 网络等待 / daemon 等待 / MCP 插件 / Rus
 - [x] 代码：feat/ios-jailbreak-preview4（当前 0.3.86）
 - [x] 文档：本 HANDOVER.md
 - [x] 两条交付线均 0.3.86 验证：越狱 deb（完整）/ nonjb ipa（聊天+iSH）
-- [x] dsh 集成产物已预构建：runtime deb + toolpkg 桥（见 §3.5）
+- [x] dsh 集成产物：运行时 deb（nodejs 22.23.2-3 + dsh-ios 0.1.1-rc.2-1，deepseek-harness-ios `ios-port`）+ toolpkg 桥 1.1.1（deepseek-harness-ios-toolpkg，独立仓库，见 §3.5）
 - [ ] 遗留 bug：§8.1（CC 模块）/ §8.5（设置面板）
 - [ ] 可探索：AI 回复通知（BBServer action 回调；AutoResponder 是 iOS 6-9 短信层先例）；软移植减 60s（§14.5）
