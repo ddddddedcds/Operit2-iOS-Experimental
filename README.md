@@ -3,6 +3,8 @@
 > **Operit2 的 iOS 实验性移植**（非官方分支，改编自 [AAswordman/Operit2](https://github.com/AAswordman/Operit2)）。
 > 两条线：**越狱完整版**（rootless deb）+ **非越狱最小可用版**（AI 聊天 + 内置 iSH 终端）。
 > 实验性软件，不稳定，风险自负。
+>
+> **给上游/接手方**：本 fork 含**可回馈上游的通用功能**（TCC 权限全家桶 / 屏幕时间 / Shortcuts / 通知 / iSH 终端，全部公开 API 不依赖越狱）——改动总览与可吸收清单见 [HANDOVER.md §15](./HANDOVER.md)。
 
 ---
 

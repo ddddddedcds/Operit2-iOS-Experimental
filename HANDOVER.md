@@ -499,6 +499,35 @@ Impeller shader / Metal 缓存 / 网络等待 / daemon 等待 / MCP 插件 / Rus
 
 ---
 
+## 15. 相对上游（AAswordman/Operit2）的改动与可回馈清单
+
+> 给上游/接手方快速定位：**改了哪些、哪些能吸收回上游**。
+
+### A. iOS 越狱专属（不可回馈，仅本 fork 有效）
+| 改动 | 位置 | 依赖 |
+|---|---|---|
+| SpringBoard tweak（Siri 集成 / 通知拦截 / 锁屏会话 / 应用锁 / 剪贴板） | `hosts/ios/tweak/operit-sb.x`（~2100 行） | 私有 API hook（见 §7/§11），仅越狱 |
+| 设备自动化 daemon（VLM 循环 TCP 8890） | `hosts/ios/src/bin/operit_agent_daemon.rs` | root LaunchDaemon + ios-mcp |
+| 控制中心 AI 模块 | `hosts/ios/ccmodule/OperitCC` | CCSupport（闭源） |
+| 越狱打包链（rootless deb / ldid / trustcache） | `hosts/ios/deb/build_deb.sh` | Dopamine/ellekit |
+
+### B. 通用可吸收（公开 API，建议合并回上游）
+| 功能 | 位置 | 说明 |
+|---|---|---|
+| **TCC 权限全家桶** | `apps/flutter/app/ios/Runner/TCCServer.swift` + `plugins/packages/buildin/system_io.ts` | contacts/calendar/reminders/photos/health/location，全走系统公开 API + TCC 授权弹窗；`responds(to:)` 前置防崩（iOS 16 不存在的 key 抛 NSException） |
+| **屏幕使用时间 7 工具** | `apps/flutter/app/ios/Runner/ScreenTimeServer.swift` + `plugins/packages/buildin/screen_time.ts` | DeviceActivity 官方 API，任意 app 可锁（无需 picker） |
+| **快捷指令接入** | `apps/flutter/app/ios/Runner/ShortcutsServer.swift` | shortcuts:// URL scheme 跑任意快捷指令 |
+| **AI 主动通知/灵动岛** | `apps/flutter/app/ios/Runner/NotifyServer.swift` | 本地通知 + 灵动岛 |
+| **深链/已装应用枚举** | `apps/flutter/app/ios/Runner/OpenURLServer.swift` | responds 探测（`schemes` key 在 iOS 16 不存在，裸 KVC 会崩） |
+| **内置 iSH 终端** | `tools/ios-runtime/ish/`（构建）+ `hosts/ios/src/terminal.rs`（桥）+ Flutter 终端 UI | kernel=ish + arm64 Alpine 3.19，可独立成插件/子项目复用 |
+| **设备自动化子代理模式** | `plugins/packages/buildin/device_automation.ts` + ios-mcp | AutoGLM 云端看屏决策 + ios-mcp 执行，非越狱可替换执行端 |
+
+### C. 结构判断（接手方必读）
+- 越狱侧（tweak/daemon/私有 API）与通用侧（TCC/屏幕时间/Shortcuts/通知）**边界清晰**：通用侧全部不依赖越狱，可整体移植。
+- 冷启动 60s 是 Dopamine dyld hook × Flutter 726 库的固有开销（§14），与功能代码无关；软移植减库方向已验证（§14.5）。
+
+---
+
 ## 附录 A：roothide（已停更，历史参考，不再维护）
 > **状态**：roothide 版自 2026-08 起**停止支持、不再维护**，本仓库不再产出 roothide deb，无相关构建脚本。以下内容仅为历史记录，供有 roothide 设备的研究者参考，**不保证可用**。
 
@@ -514,7 +543,7 @@ Impeller shader / Metal 缓存 / 网络等待 / daemon 等待 / MCP 插件 / Rus
 ## 附录 B：交接状态
 - **接续方**：operit2 官方（有意愿、有能力；当前因非越狱版排期忙，越狱版**暂存待取**）。
 - **本 POC 定位**：探明"越狱 iOS + AI 深度集成"可行性 + 交付完整交接手册；不是可产品化代码，是知识+代码封存。
-- **官方可吸收**：功能清单（§6）+ 合规子集（TCCServer 公开 API 部分）+ 方法论（§9.5 / §11）。
+- **官方可吸收**：**§15.B 通用可回馈清单**（TCC 权限全家桶 / 屏幕时间 / Shortcuts / 通知 / iSH 终端，全部公开 API 不依赖越狱）+ 方法论（§9.5 / §11）+ 越狱专属 hook 地图（§7）。
 - [x] 代码：feat/ios-jailbreak-preview4（当前 0.3.86）
 - [x] 文档：本 HANDOVER.md
 - [x] 两条交付线均 0.3.86 验证：越狱 deb（完整）/ nonjb ipa（聊天+iSH）
