@@ -74,13 +74,13 @@
 
 ## 来源与许可
 
-- 改编自 [AAswordman/Operit2](https://github.com/AAswordman/Operit2)（非官方分支）
+- **本仓库许可证：AGPL-3.0**（见根目录 `LICENSE`）——上游 [AAswordman/Operit2](https://github.com/AAswordman/Operit2) 以 AGPL-3.0 发布，本 fork 为派生作品，同样以 AGPL-3.0 公开
 - 设备自动化后端：[witchan/ios-mcp](https://github.com/witchan/ios-mcp)（本 fork 用适配版）
 - **内置 iSH 终端（本 fork 集成，非自研）**：
-  - iSH 用户态 Linux 模拟器（kernel=ish + asbestos JIT）：[ish-app/ish](https://github.com/ish-app/ish)
-  - arm64 guest 支持分支（A2 集成所用源码，pin commit 54ca185b）：[OpenMinis/ish-arm64](https://github.com/OpenMinis/ish-arm64)
-  - guest 根文件系统：Alpine Linux aarch64（v3.19 minirootfs，[alpinelinux.org](https://alpinelinux.org)）
-  - guest `/bin/sh`：busybox（静态链接，[busybox.net](https://busybox.net)）
+  - iSH 用户态 Linux 模拟器（kernel=ish + asbestos JIT）：[ish-app/ish](https://github.com/ish-app/ish)（**GPL-2.0**）
+  - arm64 guest 支持分支（A2 集成所用源码，pin commit 54ca185b）：[OpenMinis/ish-arm64](https://github.com/OpenMinis/ish-arm64)（GPL-2.0 派生）
+  - guest 根文件系统：Alpine Linux aarch64（v3.19 minirootfs，[alpinelinux.org](https://alpinelinux.org)，GPL-2.0）
+  - guest `/bin/sh`：busybox（静态链接，[busybox.net](https://busybox.net)，**GPL-2.0**）
   - 文件系统层：iSH 的 fakefs（fs/fakefs，含 meta.db + data/ 布局）
 - 免责声明见 deb 包 control（实验性软件，使用风险自负）
 
