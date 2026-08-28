@@ -213,6 +213,8 @@ enum _WorkspaceProjectKind {
   python,
   java,
   go,
+  ios,
+  iosTheos,
 }
 
 class _WorkspaceProjectType {
@@ -238,6 +240,8 @@ class _WorkspaceProjectType {
       _WorkspaceProjectKind.python => l10n.workspaceProjectPythonTitle,
       _WorkspaceProjectKind.java => l10n.workspaceProjectJavaTitle,
       _WorkspaceProjectKind.go => l10n.workspaceProjectGoTitle,
+      _WorkspaceProjectKind.ios => l10n.workspaceProjectIosTitle,
+      _WorkspaceProjectKind.iosTheos => l10n.workspaceProjectIosTheosTitle,
     };
   }
 
@@ -254,6 +258,8 @@ class _WorkspaceProjectType {
       _WorkspaceProjectKind.python => l10n.workspaceProjectPythonDescription,
       _WorkspaceProjectKind.java => l10n.workspaceProjectJavaDescription,
       _WorkspaceProjectKind.go => l10n.workspaceProjectGoDescription,
+      _WorkspaceProjectKind.ios => l10n.workspaceProjectIosDescription,
+      _WorkspaceProjectKind.iosTheos => l10n.workspaceProjectIosTheosDescription,
     };
   }
 }
@@ -309,6 +315,16 @@ const List<_WorkspaceProjectType> _workspaceProjectTypes =
         icon: Icons.build,
         kind: _WorkspaceProjectKind.go,
         projectType: 'go',
+      ),
+      _WorkspaceProjectType(
+        icon: Icons.phone_iphone,
+        kind: _WorkspaceProjectKind.ios,
+        projectType: 'ios',
+      ),
+      _WorkspaceProjectType(
+        icon: Icons.extension,
+        kind: _WorkspaceProjectKind.iosTheos,
+        projectType: 'ios_theos',
       ),
     ];
 

@@ -1,0 +1,9 @@
+Package: com.yourname.mytweak
+Name: MyTweak
+Version: 0.0.1
+Architecture: iphoneos-arm
+Description: An example Theos tweak scaffolded by Operit2.
+Maintainer: You <you@example.com>
+Author: You <you@example.com>
+Section: Tweaks
+Depends: mobilesubstrate

@@ -15,6 +15,8 @@ enum ProjectType {
     PYTHON,
     JAVA,
     GO,
+    IOS,
+    IOS_THEOS,
     OFFICE,
     BLANK,
 }
@@ -64,6 +66,8 @@ fn resolveProjectType(projectType: Option<String>) -> Result<ProjectType, String
         "python" => Ok(ProjectType::PYTHON),
         "java" => Ok(ProjectType::JAVA),
         "go" => Ok(ProjectType::GO),
+        "ios" => Ok(ProjectType::IOS),
+        "ios_theos" => Ok(ProjectType::IOS_THEOS),
         "office" => Ok(ProjectType::OFFICE),
         "blank" => Ok(ProjectType::BLANK),
         value => Err(format!("unknown workspace project type: {value}")),
@@ -82,6 +86,8 @@ impl ProjectType {
             ProjectType::PYTHON => Some("python"),
             ProjectType::JAVA => Some("java"),
             ProjectType::GO => Some("go"),
+            ProjectType::IOS => Some("ios"),
+            ProjectType::IOS_THEOS => Some("ios_theos"),
             ProjectType::OFFICE => Some("office"),
             ProjectType::BLANK => None,
         }
@@ -98,6 +104,8 @@ impl ProjectType {
             ProjectType::PYTHON => generatePythonProjectConfig(),
             ProjectType::JAVA => generateJavaProjectConfig(),
             ProjectType::GO => generateGoProjectConfig(),
+            ProjectType::IOS => generateIosProjectConfig(),
+            ProjectType::IOS_THEOS => generateIosTheosProjectConfig(),
             ProjectType::OFFICE => generateOfficeProjectConfig(),
             ProjectType::BLANK => generateBlankProjectConfig(),
         }
@@ -340,6 +348,37 @@ fn generateOfficeProjectConfig() -> Value {
         "server": {"enabled": false, "port": 8080, "autoStart": false},
         "preview": {"type": "terminal", "url": "", "showPreviewButton": false, "previewButtonLabel": ""},
         "commands": [],
+        "export": {"enabled": false}
+    })
+}
+
+#[allow(non_snake_case)]
+fn generateIosProjectConfig() -> Value {
+    json!({
+        "projectType": "ios",
+        "title": "iOS Project",
+        "description": "iOS application project. Edit sources on device; build and sign on macOS with Xcode.",
+        "server": {"enabled": false, "port": 8080, "autoStart": false},
+        "preview": {"type": "terminal", "url": "", "showPreviewButton": false, "previewButtonLabel": ""},
+        "commands": [],
+        "export": {"enabled": false}
+    })
+}
+
+#[allow(non_snake_case)]
+fn generateIosTheosProjectConfig() -> Value {
+    json!({
+        "projectType": "ios_theos",
+        "title": "iOS (Theos) Tweak",
+        "description": "Theos tweak project. Build and install on-device when theos is installed (set THEOS_DEVICE_IP/PORT).",
+        "server": {"enabled": false, "port": 8080, "autoStart": false},
+        "preview": {"type": "terminal", "url": "", "showPreviewButton": false, "previewButtonLabel": ""},
+        "commands": [
+            command("theos_make", "Build (make)", "make"),
+            command("theos_package", "Package (make package)", "make package"),
+            command("theos_package_install", "Build & Install (make package install)", "make package install"),
+            command("theos_clean", "Clean (make clean)", "make clean")
+        ],
         "export": {"enabled": false}
     })
 }
