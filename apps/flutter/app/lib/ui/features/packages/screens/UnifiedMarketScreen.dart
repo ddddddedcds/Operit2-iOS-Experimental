@@ -69,6 +69,7 @@ class _UnifiedMarketScreenState extends State<UnifiedMarketScreen>
   @override
   void initState() {
     super.initState();
+    resolveCurrentAppVersion();
     _tabController = TabController(
       length: MarketHomeTab.values.length,
       initialIndex: _selectedTab.index,
@@ -729,7 +730,29 @@ class _MarketListPaneState extends State<_MarketListPane> {
       _busyEntryIds.add(item.id);
     });
     try {
-      ensureMarketEntryVersionSupported(entry: item);
+      var ignoreVersionCheck = false;
+      final latestVersion = item.latestVersion;
+      final compatibility = (!ignoreVersionCheck && latestVersion != null)
+          ? resolveMarketAppVersionCompatibility(
+              appVersion: currentAppVersion,
+              minAppVersion: latestVersion.minAppVer,
+              maxAppVersion: latestVersion.maxAppVer,
+            )
+          : null;
+      if (compatibility != null) {
+        final proceed = await confirmIgnoreVersionInstall(
+          context,
+          formatVersionRange(
+            latestVersion!.minAppVer,
+            latestVersion!.maxAppVer,
+          ),
+        );
+        if (!proceed || !mounted) return;
+        ignoreVersionCheck = true;
+      }
+      if (!ignoreVersionCheck) {
+        ensureMarketEntryVersionSupported(entry: item);
+      }
       if (item.type == 'skill') {
         await _installSkill(item);
       } else if (item.type == 'mcp') {

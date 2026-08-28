@@ -45,6 +45,7 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
   @override
   void initState() {
     super.initState();
+    resolveCurrentAppVersion();
     _reactions = widget.entry.reactions;
     _loadCommunity();
     _loadCurrentGithubLogin();
@@ -395,7 +396,23 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
 
     setState(() => _installing = true);
     try {
-      ensureMarketEntryVersionSupported(entry: entry);
+      final latestVersion = entry.latestVersion;
+      final compatibility = latestVersion == null
+          ? null
+          : resolveMarketAppVersionCompatibility(
+              appVersion: currentAppVersion,
+              minAppVersion: latestVersion!.minAppVer,
+              maxAppVersion: latestVersion!.maxAppVer,
+            );
+      if (compatibility != null) {
+        final proceed = await confirmIgnoreVersionInstall(
+          context,
+          formatVersionRange(latestVersion!.minAppVer, latestVersion!.maxAppVer),
+        );
+        if (!proceed || !mounted) return;
+      } else {
+        ensureMarketEntryVersionSupported(entry: entry);
+      }
       if (entry.type == 'skill') {
         final repoUrl = entry.source?.url.trim() ?? '';
         if (repoUrl.isEmpty) throw StateError('技能缺少仓库地址');

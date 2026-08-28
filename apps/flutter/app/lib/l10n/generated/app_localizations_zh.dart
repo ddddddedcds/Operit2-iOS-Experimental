@@ -406,6 +406,19 @@ class AppLocalizationsZh extends AppLocalizations {
       '适用于 Python 开发，支持 pip 和 HTTP 服务器';
 
   @override
+  String get workspaceProjectJavaTitle => 'Java 项目';
+
+  @override
+  String get workspaceProjectJavaDescription =>
+      '适用于 Java 开发，支持 Gradle 和 Maven 构建';
+
+  @override
+  String get workspaceProjectGoTitle => 'Go 项目';
+
+  @override
+  String get workspaceProjectGoDescription => '适用于 Go 开发，提供 go mod 和 build 命令';
+
+  @override
   String get workspaceProjectIosTitle => 'iOS 项目';
 
   @override
@@ -418,19 +431,6 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String get workspaceProjectIosTheosDescription =>
       'Theos 插件项目。设备上装好 theos 后可本机构建并安装。';
-
-  @override
-  String get workspaceProjectJavaTitle => 'Java 项目';
-
-  @override
-  String get workspaceProjectJavaDescription =>
-      '适用于 Java 开发，支持 Gradle 和 Maven 构建';
-
-  @override
-  String get workspaceProjectGoTitle => 'Go 项目';
-
-  @override
-  String get workspaceProjectGoDescription => '适用于 Go 开发，提供 go mod 和 build 命令';
 
   @override
   String get version => '版本';
