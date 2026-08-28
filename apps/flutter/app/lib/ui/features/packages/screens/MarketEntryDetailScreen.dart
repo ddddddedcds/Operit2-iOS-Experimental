@@ -353,11 +353,11 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
     // For script/package with artifact, let the user confirm the version carried by this entry.
     if ((entry.type == 'script' || entry.type == 'package') &&
         entry.artifact != null) {
-      final version = await showArtifactVersionListDialog(
+      final selection = await showArtifactVersionListDialog(
         context,
         entry: entry,
       );
-      if (version == null || !mounted) return;
+      if (selection == null || !mounted) return;
       setState(() => _installing = true);
       try {
         // operit2 is a fork; the upstream market's min/maxSupportedAppVersion

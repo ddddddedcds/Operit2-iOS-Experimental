@@ -760,20 +760,34 @@ fn resolve_market_install_version<'a>(
     entry: &'a MarketEntrySummary,
     version_id: Option<&str>,
 ) -> Result<&'a MarketEntryVersion, String> {
-    match version_id.map(str::trim).filter(|value| !value.is_empty()) {
+    // Some client builds append a "force" (or "latest") sentinel as a positional
+    // argument when no explicit version is selected. Treat those sentinels, plus any
+    // empty value, as a request for the newest available version so the install does
+    // not fail with an opaque "no version metadata" error.
+    let normalized = version_id.map(str::trim).filter(|value| !value.is_empty());
+    let requested = match normalized {
+        Some(value)
+            if value.eq_ignore_ascii_case("force") || value.eq_ignore_ascii_case("latest") =>
+        {
+            None
+        }
+        Some(value) => Some(value),
+        None => None,
+    };
+    match requested {
         Some(requested_version_id) => entry
             .versions
             .iter()
             .find(|version| version.id == requested_version_id)
             .ok_or_else(|| {
                 format!(
-                    "market entry has no version metadata for requested version: {requested_version_id}"
+                    "该市场资源没有版本标识为 {requested_version_id} 的版本元数据，请选择其它可用版本。"
                 )
             }),
         None => entry
             .latest_version
             .as_ref()
-            .ok_or_else(|| "market entry has no latest version metadata".to_string()),
+            .ok_or_else(|| "该市场资源没有可用的版本元数据，无法继续安装。".to_string()),
     }
 }
 
