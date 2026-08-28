@@ -1335,6 +1335,15 @@ impl JsExecutionHost for AIToolHandler {
                 .collect(),
         };
         let mut handler = self.clone();
+        // JavaScript `Tools.*` calls originate from a script that is already running inside an
+        // approved tool execution: the package owning the script was authorized before it ever
+        // started. `AsyncToolExecutionScope` is thread-local while script callbacks run on the
+        // JS worker thread, so that inherited authorization is lost across the thread boundary.
+        // Re-entering the scope here puts nested tool calls back on the approved stack, which
+        // lets the access preflight return immediately instead of blocking on an interactive
+        // approval round-trip that can never complete while the script itself is still running
+        // (that wait is what cost a full 60s before the tool finally executed).
+        let _nestedExecutionScope = AsyncToolExecutionScope::enter();
         let result = handler.executeTool(tool);
         let data = match result.result {
             ToolResultData::BinaryResultData(data) => JsToolCallResultData::Binary(data.value),

@@ -11,16 +11,37 @@ import 'CoreProxy.dart';
 class MethodChannelCoreProxy extends CoreProxy {
   const MethodChannelCoreProxy({
     MethodChannel channel = const MethodChannel('operit/runtime'),
+    this.callTimeout = _defaultCallTimeout,
   }) : _channel = channel;
+
+  /// Keeps unary core calls from parking on a loading indicator forever.
+  ///
+  /// The default is deliberately generous so legitimate long operations
+  /// (asset downloads, package installation) still complete. It only catches
+  /// genuine hangs, where the native side never answers and the caller's
+  /// Future would otherwise never settle.
+  static const Duration _defaultCallTimeout = Duration(seconds: 120);
 
   final MethodChannel _channel;
 
+  /// Maximum time one unary core call may stay pending before it fails.
+  final Duration callTimeout;
+
   @override
   Future<Object?> call(CoreCallRequest request) async {
-    final responseBytes = await _channel.invokeMethod<Uint8List>(
-      'call',
-      encodeNativeCoreCallRequest(request),
-    );
+    final responseBytes = await _channel
+        .invokeMethod<Uint8List>(
+          'call',
+          encodeNativeCoreCallRequest(request),
+        )
+        .timeout(
+          callTimeout,
+          onTimeout: () => throw CoreLinkError(
+            code: 'TIMEOUT',
+            message:
+                'runtime bridge did not answer within ${callTimeout.inSeconds}s',
+          ),
+        );
     if (responseBytes == null) {
       throw const CoreLinkError(
         code: 'EMPTY_RESPONSE',
