@@ -1140,7 +1140,17 @@ impl AIToolHandler {
             ],
         );
         self.notifyToolCallRequested(&tool);
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.stage.notify_requested",
+            &[("tool", tool.name.clone())],
+        );
         let interception = self.checkToolInterception(&tool);
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.stage.interception",
+            &[("tool", tool.name.clone())],
+        );
         if let AIToolHookDecision::Block(_) = interception {
             let result = Self::toolInterceptionResult(&tool, interception);
             self.notifyToolExecutionResult(&tool, &result);
@@ -1148,6 +1158,11 @@ impl AIToolHandler {
             return result;
         }
         self.getToolExecutorOrActivate(&tool.name);
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.stage.activate",
+            &[("tool", tool.name.clone())],
+        );
         let Some(mut executor) = ({
             self.inner
                 .lock()
@@ -1171,7 +1186,17 @@ impl AIToolHandler {
             return notFoundResult;
         };
 
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.stage.executor_removed",
+            &[("tool", tool.name.clone())],
+        );
         let validationResult = executor.validateParameters(&tool);
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.stage.validated",
+            &[("tool", tool.name.clone())],
+        );
         if !validationResult.valid {
             let validationError = validationResult.errorMessage;
             let validationFailedResult = ToolResult {
@@ -1195,7 +1220,18 @@ impl AIToolHandler {
             return validationFailedResult;
         }
 
-        if let Err(accessDeniedResult) = self.executeAccessPreflight(&tool, executor.as_ref()) {
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.stage.preflight_enter",
+            &[("tool", tool.name.clone())],
+        );
+        let preflight = self.executeAccessPreflight(&tool, executor.as_ref());
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.stage.preflight_done",
+            &[("tool", tool.name.clone())],
+        );
+        if let Err(accessDeniedResult) = preflight {
             self.notifyToolExecutionResult(&tool, &accessDeniedResult);
             self.notifyToolExecutionFinished(&tool);
             self.inner
