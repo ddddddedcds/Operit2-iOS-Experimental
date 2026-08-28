@@ -18,8 +18,8 @@ import UIKit
 import UserNotifications
 
 /// 灵动岛实时活动的内容模型（主 app 与 LiveActivityWidget 扩展各编译一份相同定义）。
-/// ActivityAttributes 协议仅 iOS 16.1+，故整体守卫。
-@available(iOS 16.1, *)
+/// ActivityAttributes / ActivityKit 实时活动 API 实际需 iOS 16.2+（request(attributes:content:pushType:) / ActivityContent / update），故整体守卫 16.2。
+@available(iOS 16.2, *)
 struct OperitLiveActivityAttributes: ActivityAttributes {
   public struct ContentState: Codable, Hashable {
     var title: String
@@ -31,8 +31,7 @@ struct OperitLiveActivityAttributes: ActivityAttributes {
 final class NotifyServer: NSObject {
   static let shared = NotifyServer()
 
-  @available(iOS 16.1, *)
-  private var liveActivity: Activity<OperitLiveActivityAttributes>?
+  private var liveActivity: Any?
 
   /// 由 OperitLocalServer（单端口 8891）按首 token（notify/live_*/notif_*/usage_report）路由至此。
   func dispatch(_ line: String, conn: NWConnection) {
@@ -46,22 +45,22 @@ final class NotifyServer: NSObject {
       case "notify":
         self.notify(args: rest, conn: conn)
       case "live_start":
-        if #available(iOS 16.1, *) {
+        if #available(iOS 16.2, *) {
           self.liveStart(args: rest, conn: conn)
         } else {
-          self.reply(conn: conn, text: "ERR|live activities require iOS 16.1+")
+          self.reply(conn: conn, text: "ERR|live activities require iOS 16.2+")
         }
       case "live_update":
-        if #available(iOS 16.1, *) {
+        if #available(iOS 16.2, *) {
           self.liveUpdate(args: rest, conn: conn)
         } else {
-          self.reply(conn: conn, text: "ERR|live activities require iOS 16.1+")
+          self.reply(conn: conn, text: "ERR|live activities require iOS 16.2+")
         }
       case "live_end":
-        if #available(iOS 16.1, *) {
+        if #available(iOS 16.2, *) {
           self.liveEnd(conn: conn)
         } else {
-          self.reply(conn: conn, text: "ERR|live activities require iOS 16.1+")
+          self.reply(conn: conn, text: "ERR|live activities require iOS 16.2+")
         }
       case "notif_list":
         self.notifList(args: rest, conn: conn)
@@ -126,7 +125,7 @@ final class NotifyServer: NSObject {
   }
 
   /// live_start <标题>|<内容>
-  @available(iOS 16.1, *)
+  @available(iOS 16.2, *)
   private func liveStart(args: String, conn: NWConnection) {
     guard ActivityAuthorizationInfo().areActivitiesEnabled else {
       reply(conn: conn, text: "ERR|live activities not enabled")
@@ -152,9 +151,9 @@ final class NotifyServer: NSObject {
   }
 
   /// live_update <标题>|<内容>
-  @available(iOS 16.1, *)
+  @available(iOS 16.2, *)
   private func liveUpdate(args: String, conn: NWConnection) {
-    guard let liveActivity else {
+    guard let liveActivity = liveActivity as? Activity<OperitLiveActivityAttributes> else {
       reply(conn: conn, text: "ERR|no active live activity")
       return
     }
@@ -169,9 +168,9 @@ final class NotifyServer: NSObject {
     }
   }
 
-  @available(iOS 16.1, *)
+  @available(iOS 16.2, *)
   private func liveEnd(conn: NWConnection) {
-    guard let liveActivity else {
+    guard let liveActivity = liveActivity as? Activity<OperitLiveActivityAttributes> else {
       reply(conn: conn, text: "OK|no active live activity")
       return
     }
