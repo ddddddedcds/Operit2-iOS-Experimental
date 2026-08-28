@@ -406,6 +406,20 @@ class AppLocalizationsZh extends AppLocalizations {
       '适用于 Python 开发，支持 pip 和 HTTP 服务器';
 
   @override
+  String get workspaceProjectIosTitle => 'iOS 项目';
+
+  @override
+  String get workspaceProjectIosDescription =>
+      'iOS 应用项目。在设备上编辑源码，在 macOS 用 Xcode 构建与签名。';
+
+  @override
+  String get workspaceProjectIosTheosTitle => 'iOS（Theos）插件';
+
+  @override
+  String get workspaceProjectIosTheosDescription =>
+      'Theos 插件项目。设备上装好 theos 后可本机构建并安装。';
+
+  @override
   String get workspaceProjectJavaTitle => 'Java 项目';
 
   @override

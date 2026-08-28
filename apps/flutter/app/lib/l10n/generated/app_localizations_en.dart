@@ -418,6 +418,20 @@ class AppLocalizationsEn extends AppLocalizations {
       'For Python development with pip and an HTTP server';
 
   @override
+  String get workspaceProjectIosTitle => 'iOS project';
+
+  @override
+  String get workspaceProjectIosDescription =>
+      'iOS app project. Edit sources on device; build and sign on macOS with Xcode.';
+
+  @override
+  String get workspaceProjectIosTheosTitle => 'iOS (Theos) tweak';
+
+  @override
+  String get workspaceProjectIosTheosDescription =>
+      'Theos tweak project. Build and install on-device when theos is installed.';
+
+  @override
   String get workspaceProjectJavaTitle => 'Java project';
 
   @override
