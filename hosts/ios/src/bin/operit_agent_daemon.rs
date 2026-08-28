@@ -4,14 +4,15 @@
 // 1:1 复用其控制协议（agent.sock / config.plist / screen.png / agent.log），
 // 调用 hosts/ios 的 run_device_agent_loop（#98a）跑"截图→autoglm→do()/finish()→设备动作"循环。
 //
-// 关键：循环跑在本进程（LaunchDaemon，mobile 用户，RunAtLoad+KeepAlive），
-// 不依赖 Operit.app 前台 Task，规避 iOS 退后台挂起（P0 死结）。
+// 关键：循环跑在本进程（LaunchDaemon，mobile 用户，RunAtLoad；KeepAlive 已移除，
+// 避免 daemon 被 AMFI -9 后在设备上形成重启循环），不依赖 Operit.app 前台 Task，
+// 规避 iOS 退后台挂起（P0 死结）。
 #![cfg(target_os = "ios")]
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream, IpAddr, Ipv4Addr, SocketAddr};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
@@ -509,7 +510,7 @@ fn workflow_scheduler_loop() {
     });
 }
 
-fn handle_client(mut stream: TcpStream) {
+fn handle_client(mut stream: UnixStream) {
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -533,13 +534,14 @@ fn handle_client(mut stream: TcpStream) {
     let _ = stream.write_all(resp.as_bytes());
 }
 
-const AGENT_PORT: u16 = 8890;
+const AGENT_SOCK_NAME: &str = "agent.sock";
 
 fn main() {
     let _ = fs::create_dir_all(operit_ios_env::data_root().join("logs"));
+    let sock_path = operit_ios_env::data_root().join(AGENT_SOCK_NAME);
     log_line(&format!(
-        "operit-agent daemon v{} 启动, tcp=127.0.0.1:{}",
-        DAEMON_VERSION, AGENT_PORT
+        "operit-agent daemon v{} 启动, unix://{}",
+        DAEMON_VERSION, sock_path.display()
     ));
     // Daemon-side workflow scheduler (survives app termination). Honours the
     // iOS Settings toggle "后台调度" (PreferenceLoader → defaults key
@@ -558,23 +560,31 @@ fn main() {
     }
 }
 
-/// Bind the agent control socket over loopback TCP (127.0.0.1:8890).
+/// Bind the agent control socket as a Unix domain socket under the daemon's
+/// data root (`agent.sock`). A Unix socket is used instead of loopback TCP so
+/// the control plane is NOT reachable by every local process: the socket file
+/// is created 0600 mobile:mobile, and sandboxed apps cannot path-traverse into
+/// /var/mobile/.operit to open it. Only the (no-sandbox) Operit app and this
+/// daemon — both running as mobile — can connect.
 ///
-/// Bind the agent control socket on 127.0.0.1:AGENT_PORT.
-///
-/// IMPORTANT: we bind directly and do NOT pre-probe with `TcpStream::connect`.
-/// If another instance already holds the port we get EADDRINUSE and exit 0,
-/// which (with KeepAlive SuccessfulExit=false) stops launchd from respawning
-/// us, so no crash loop. Loopback TCP lets the app and the daemon share one
-/// control channel.
-fn bind_agent_sock() -> TcpListener {
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), AGENT_PORT);
-    match TcpListener::bind(addr) {
-        Ok(l) => l,
-        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            log_line("agent 端口已被其他实例占用，本实例退出复用");
-            std::process::exit(0);
+/// A stale socket file from a previous crash (no listener attached) would make
+/// bind() fail, so we unlink it first. If binding still fails we exit 1 (with
+/// KeepAlive removed from the plist, launchd will NOT respawn us in a loop).
+fn bind_agent_sock() -> UnixListener {
+    use std::os::unix::fs::PermissionsExt;
+    let path = operit_ios_env::data_root().join(AGENT_SOCK_NAME);
+    let _ = fs::create_dir_all(operit_ios_env::data_root());
+    // Drop a leftover socket from a prior run; ignore "not found".
+    let _ = fs::remove_file(&path);
+    match UnixListener::bind(&path) {
+        Ok(l) => {
+            // Restrict to the mobile user only.
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            l
         }
-        Err(e) => panic!("agent 端口绑定失败: addr={:?} err={}", addr, e),
+        Err(e) => {
+            log_line(&format!("agent 控制 socket 绑定失败: {:?} err={}", path, e));
+            std::process::exit(1);
+        }
     }
 }

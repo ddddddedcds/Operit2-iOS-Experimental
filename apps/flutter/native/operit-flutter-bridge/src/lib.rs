@@ -613,7 +613,7 @@ mod AndroidJni;
 ///   rootless and non-jb, where the App and daemon resolve `data_root()` to the
 ///   SAME physical directory, so the daemon can simply read the plist back via
 ///   `load_config`.
-/// * **Path 2 — TCP push** (`push_config_over_tcp`, 127.0.0.1:8890): a reliable
+/// * **Path 2 — Unix socket push** (`push_config_to_daemon`, `data_root()/agent.sock`): a reliable
 ///   cross-process fallback used under every scheme; it complements the file
 ///   path (which already works on rootless, where App and daemon share the same
 ///   `data_root()` physical dir). The daemon stores the pushed credentials in
@@ -668,16 +668,17 @@ pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
     // Push credentials to the daemon over loopback TCP as well. Under rootless the
     // app and daemon resolve data_root() to DIFFERENT physical dirs (per-process
     // /var remap), so the config.plist file written just above is invisible to
-    // the daemon; the only cross-view channel is loopback TCP 127.0.0.1:8890.
+    // the daemon; the only cross-view channel is the Unix socket
+    // `data_root()/agent.sock`.
     // Best-effort: if the daemon isn't up yet (e.g. launchd hasn't started it,
     // or this is a fresh install) the connect silently fails and we return —
     // the daemon will later fall back to reading this plist file, which works on
     // rootless / non-jb where the two processes share the same data_root().
-    push_config_over_tcp(&api_key, &provider, &base_url, &model);
+    push_config_to_daemon(&api_key, &provider, &base_url, &model);
 }
 
-/// Pushes LLM credentials to the on-device agent daemon over loopback TCP
-/// (127.0.0.1:8890) using the daemon's `config` control command.
+/// Pushes LLM credentials to the on-device agent daemon over a Unix domain
+/// socket (`data_root()/agent.sock`) using the daemon's `config` control command.
 ///
 /// Wire format: a single line
 /// `config <apiKey>|<apiProvider>|<apiBaseUrl>|<apiModel>\n`.
@@ -686,15 +687,19 @@ pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
 /// on-disk plist.
 ///
 /// Best-effort and fire-and-forget: any failure (daemon not listening yet, a
-/// non-jb build where the file path is sufficient, or a transient network
-/// error) is silently ignored. `#[cfg(target_os = "ios")]` — only compiled into
-/// the iOS app binary.
+/// non-jb build where the file path is sufficient, or a transient error) is
+/// silently ignored. `#[cfg(target_os = "ios")]` — only compiled into the iOS
+/// app binary.
 #[cfg(target_os = "ios")]
-fn push_config_over_tcp(api_key: &str, provider: &str, base_url: &str, model: &str) {
+fn push_config_to_daemon(api_key: &str, provider: &str, base_url: &str, model: &str) {
     use std::io::{Read, Write};
-    use std::net::{TcpStream, SocketAddr, IpAddr, Ipv4Addr};
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8890);
-    let mut stream = match TcpStream::connect(addr) {
+    use std::os::unix::net::UnixStream;
+    // Connect to the daemon's Unix control socket (data_root()/agent.sock).
+    // Replaces the old 127.0.0.1:8890 loopback TCP, which ANY local process
+    // could open. The socket is 0600 mobile:mobile; only the (no-sandbox)
+    // Operit app and the daemon — both running as mobile — can reach it.
+    let path = operit_ios_env::data_root().join("agent.sock");
+    let mut stream = match UnixStream::connect(&path) {
         Ok(s) => s,
         Err(_) => return,
     };

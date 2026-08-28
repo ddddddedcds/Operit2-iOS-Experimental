@@ -19,8 +19,9 @@
 //!    Operit2 still works if only the old SpringBoard tweak is loaded. The only
 //!    code that touches this socket is [`IosDeviceAutomationHost::send_cmd`].
 //!
-//! **IMPORTANT — this is a DIFFERENT channel from the `127.0.0.1:8890` agent
-//! control TCP.** The 8890 socket is the daemon control plane used to (a) push
+//! **IMPORTANT — this is a DIFFERENT channel from the agent daemon control
+//! socket (`data_root()/agent.sock`, a Unix domain socket).** That socket is the
+//! daemon control plane used to (a) push
 //! LLM credentials from the App to the agent daemon
 //! (`operit_flutter_bridge::push_config_over_tcp` → `operit_agent_daemon`'s
 //! `config` command) and (b) send agent run commands (`start`/`stop`/`goal`/

@@ -1,0 +1,37 @@
+#!/bin/sh
+# Pre-removal script for ai.operit (rootless). Runs as root BEFORE dpkg removes
+# the package files. Best-effort: never fail the uninstall. Goal: tear down the
+# agent daemon and remove every shipped file so a broken install can't leave a
+# reboot-looping daemon or stale binaries behind.
+set -u
+JB=/var/jb
+DATA_DIR="/var/mobile/.operit"
+PLIST="${JB}/Library/LaunchDaemons/ai.operit.agent.plist"
+
+echo "== Operit2 iOS prerm (rootless) =="
+
+# 1) Stop the daemon so launchd doesn't try to respawn it mid-removal.
+if [ -f "$PLIST" ]; then
+  launchctl unload "$PLIST" 2>/dev/null || \
+    launchctl bootout system "$PLIST" 2>/dev/null || true
+fi
+pkill -9 operit_agent_daemon 2>/dev/null || true
+
+# 2) Remove shipped files (best-effort). We do NOT delete $DATA_DIR (user data:
+#    logs, config, workflows, agent.sock) — only the binaries/plist/app we
+#    installed.
+rm -f "${JB}/usr/bin/operit_agent_daemon" 2>/dev/null || true
+rm -f "$PLIST" 2>/dev/null || true
+rm -f "${JB}/usr/share/operit/operit.entitlements" 2>/dev/null || true
+rm -f "${DATA_DIR}/agent.sock" 2>/dev/null || true
+rm -rf "${JB}/Library/MobileSubstrate/DynamicLibraries/operit-sb.dylib" 2>/dev/null || true
+rm -rf "${JB}/Library/MobileSubstrate/DynamicLibraries/operit-sb.plist" 2>/dev/null || true
+rm -rf "${JB}/Library/MobileSubstrate/DynamicLibraries/operit-app.dylib" 2>/dev/null || true
+rm -rf "${JB}/Library/MobileSubstrate/DynamicLibraries/operit-app.plist" 2>/dev/null || true
+rm -rf "${JB}/Applications/Runner.app" 2>/dev/null || true
+
+# 3) Best-effort uicache so SpringBoard drops the icon immediately.
+command -v uicache >/dev/null 2>&1 && uicache 2>/dev/null || true
+
+echo "== Operit2 iOS prerm done =="
+exit 0

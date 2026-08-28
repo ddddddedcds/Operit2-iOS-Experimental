@@ -139,9 +139,11 @@ def compute_installed_size_kb():
 
 
 def make_control_tar():
-    # Rootless-only: ship NO maintainer scripts — its dpkg/AMFI layout lacks
-    # /bin/sh and accepts ad-hoc signatures, so a script is both unrunnable and
-    # unnecessary. Use plain `sudo dpkg -i` / Sileo.
+    # Rootless: SHIP the maintainer scripts too. An earlier version omitted them
+    # (claiming dpkg had no /bin/sh), but Sileo/DPKG on a jailbroken device DO run
+    # postinst — and WITHOUT it the agent daemon is never ldid-re-signed or
+    # trustcache-registered, so AMFI SIGKILLs it at exec and (with KeepAlive) the
+    # device reboot-loops. postinst/prerm are mandatory, not optional.
     items = []
     ctrl = open(os.path.join(DEBIAN, "control"), "rb").read()
     kb = compute_installed_size_kb()
@@ -149,6 +151,15 @@ def make_control_tar():
     body = b"\n".join(lines).rstrip() + b"\n"
     ctrl = body + ("Installed-Size: %d\n" % kb).encode()
     items.append(("control", ctrl, 0o644))
+    # Maintainer scripts: postinst (re-sign + trustcache + load daemon) and
+    # prerm (clean up on remove/upgrade so a broken install can't leave a
+    # reboot-looping daemon behind). Both are best-effort and must exit 0.
+    for name, mode in (("postinst", 0o755), ("prerm", 0o755)):
+        p = os.path.join(DEBIAN, name)
+        if os.path.exists(p):
+            items.append((name, open(p, "rb").read(), mode))
+        else:
+            print("WARN: %s missing in DEBIAN/ — not shipped" % name)
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
         with tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tar:

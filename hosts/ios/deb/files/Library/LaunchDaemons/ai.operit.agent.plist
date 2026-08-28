@@ -12,10 +12,14 @@
     </array>
     <key>RunAtLoad</key>
     <true/>
-	<key>KeepAlive</key>
-	<true/>
+	<!-- KeepAlive REMOVED (was <true/>). If the daemon is SIGKILLed by AMFI at
+	     exec (e.g. its cdhash was never registered in the trustcache), launchd
+	     would respawn it every ThrottleInterval seconds, wedging the device in a
+	     reboot loop. Without KeepAlive the daemon runs once at load and stays
+	     stopped if it dies — no loop. The daemon IS trustcache-registered by
+	     postinst, so a healthy install won't die in the first place. -->
 	<key>ThrottleInterval</key>
-	<integer>5</integer>
+	<integer>30</integer>
     <key>UserName</key>
     <string>mobile</string>
     <key>WorkingDirectory</key>

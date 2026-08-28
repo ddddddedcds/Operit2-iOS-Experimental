@@ -6,11 +6,13 @@ BASE="$(cd "$(dirname "$0")" && pwd)"
 # Rootless-only (this fork no longer ships a roothide build).
 ENTITLEMENTS="$BASE/Runner.entitlements"
 # Standalone LaunchDaemon agent daemon (restored 0.3.65): launched by launchd as
-# the automation host on 127.0.0.1:8890 (TCP, so any user can bind it — the plist
-# runs it as mobile). Gives lock-screen / background automation the foreground app
-# can't (iOS suspends backgrounded apps). On-device postinst re-signs the daemon
-# with ldid and registers its cdhash in the jailbreak trustcache via
-# `jbctl trustcache add`, so AMFI does not SIGKILL it at exec (ExitCode 9).
+# the automation host over a Unix domain socket (data_root()/agent.sock, 0600
+# mobile:mobile — NOT loopback TCP, so arbitrary local processes can't command it).
+# Gives lock-screen / background automation the foreground app can't (iOS suspends
+# backgrounded apps). On-device postinst re-signs the daemon with ldid and registers
+# its cdhash in the jailbreak trustcache via `jbctl trustcache add`, so AMFI does
+# not SIGKILL it at exec (ExitCode 9) — that + removing KeepAlive is what stops the
+# old reboot loop.
 
 # Single source of truth for the package version = the `Version:` field in
 # DEBIAN/control. packdeb.py reads the SAME field, so bumping control bumps the
@@ -90,7 +92,7 @@ if [ -d "$APP_SRC" ]; then
   # com.apple.security.iokit-user-client-class (AGXDeviceUserClient /
   # IOSurfaceRootUserClient) -> the kernel System Policy denies Metal/IOSurface
   # at launch and Flutter's Impeller engine aborts (SIGABRT). app-sandbox=false
-  # lets the app reach the daemon control channel (loopback TCP 127.0.0.1:8890) and its own caches.
+  # lets the app reach the daemon control channel (Unix socket data_root()/agent.sock) and its own caches.
   echo "   ad-hoc signing app (macOS codesign) with entitlements ..."
   codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$FILES/Applications/Runner.app" 2>&1 | tail -3
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then
@@ -151,6 +153,38 @@ if [ -d "$APP_SRC" ]; then
     echo "   WARN: OperitShieldConfig.appex not built at $SHIELD_SRC; skipping shield config extension"
   fi
   echo "   app staged: $(du -sh "$FILES/Applications/Runner.app" | cut -f1)"
+  # --- distinct bundle id for the JAILBREAK build (.jb) ---
+  # The non-jailbroken IPA ships the SAME Flutter app (bundle id
+  # com.ai.assistance.operit). Installing both on one device = duplicate bundle
+  # id = iOS refuses/replaces the icon (the on-device "duplicate-app" conflict).
+  # Suffix the jailbreak app + embedded extensions with ".jb" so the two builds
+  # never collide. Keep the shared app group (group.com.ai.assistance.operit) so
+  # ScreenTime extensions still share data with the app. Must run BEFORE the
+  # deep re-sign below (changing CFBundleIdentifier invalidates the existing seal).
+  APP_PLIST="$FILES/Applications/Runner.app/Info.plist"
+  PB="/usr/libexec/PlistBuddy"
+  if [ -f "$APP_PLIST" ] && [ -x "$PB" ]; then
+    for p in "$APP_PLIST" \
+             "$FILES/Applications/Runner.app/PlugIns"/*/*.appex/Info.plist; do
+      [ -f "$p" ] || continue
+      _id=$("$PB" -c "Print :CFBundleIdentifier" "$p" 2>/dev/null || true)
+      if [ -n "$_id" ] && [ "${_id%.jb}" = "$_id" ]; then
+        "$PB" -c "Set :CFBundleIdentifier ${_id}.jb" "$p" 2>/dev/null || true
+        echo "   bundle id -> ${_id}.jb"
+      fi
+    done
+    # Re-sign the whole bundle deep (ad-hoc) so the new bundle ids are sealed.
+    echo "   re-signing app (deep, ad-hoc) with .jb entitlements ..."
+    codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" \
+      "$FILES/Applications/Runner.app" 2>&1 | tail -3
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+      echo "FATAL: re-sign of .jb app FAILED"
+      exit 1
+    fi
+  else
+    echo "   WARN: PlistBuddy missing or app plist not found; skipping .jb bundle id"
+  fi
+
   # --- produce IPA (app already ad-hoc signed above with $ENTITLEMENTS) ---
   IPA_NAME="operit2-ios_${VERSION}_iphoneos-arm64.ipa"
   IPA_OUT="$BASE/$IPA_NAME"

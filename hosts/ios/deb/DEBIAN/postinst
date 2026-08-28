@@ -61,28 +61,51 @@ if [ -f "$DAEMON_BIN" ]; then
   # no-sandbox and the daemon then fails sandbox/jbroot file-access. ldid
   # occasionally dies with 137 (SIGKILL itself) -> retry a few times.
   if [ -n "$LDID_BIN" ] && [ -f "$DAEMON_ENTFILE" ]; then
+    _daemon_signed=0
     for i in 1 2 3; do
       echo "$(date) ldid -S daemon attempt $i (using $LDID_BIN)" >> "$PINST_LOG" 2>&1
       if $LDID_BIN -S"$DAEMON_ENTFILE" "$DAEMON_BIN" >> "$PINST_LOG" 2>&1; then
         echo "$(date) daemon signed OK on attempt $i" >> "$PINST_LOG" 2>&1
+        _daemon_signed=1
         break
       else
         echo "$(date) ldid attempt $i FAILED (rc=$?), retrying" >> "$PINST_LOG" 2>&1
         sleep 1
       fi
     done
-    # Dump entitlements actually applied (evidence for debugging -9).
-    echo "$(date) daemon entitlements after sign:" >> "$PINST_LOG" 2>&1
-    $LDID_BIN -e "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
+    if [ "$_daemon_signed" = 1 ]; then
+      # Dump entitlements actually applied (evidence for debugging -9).
+      echo "$(date) daemon entitlements after sign:" >> "$PINST_LOG" 2>&1
+      $LDID_BIN -e "$DAEMON_BIN" >> "$PINST_LOG" 2>&1 || true
+    else
+      echo "$(date) daemon re-sign FAILED after 3 attempts" >> "$PINST_LOG" 2>&1
+      echo "   ⚠️ WARNING: daemon re-sign FAILED — daemon may SIGKILL (-9) at launch"
+    fi
   else
     echo "$(date) WARN: ldid/entitlements missing; daemon will likely SIGKILL (-9)" >> "$PINST_LOG" 2>&1
+    echo "   ⚠️ WARNING: ldid/entitlements MISSING — daemon not re-signed; will likely SIGKILL (-9)"
   fi
-  # 信任链说明：Dopamine rootless 下 daemon 的信任由 Dopamine 的 launchdhook
-  # 在 deb 安装时收集；ldid 重签后需 trustcache add 新 cdhash（见上面 app 段）。
-  # 原代码尝试 `jbctl trustcache add <文件路径>` —— 但 Dopamine 的 jbctl
-  # trustcache add 接收的是 40 位 cdhash 而非路径（实测 "passed cdhash has
-  # wrong length"），该调用从未真正注册过。此处保留 ldid 重签（必须），
-  # trustcache 注册交给 app 段的统一逻辑。
+  # Register the daemon's cdhash in the jailbreak trustcache so AMFI does NOT
+  # SIGKILL (-9) it at exec. This is the step that was missing when packdeb.py
+  # omitted postinst from the .deb: the daemon was never trusted -> -9 -> (with
+  # KeepAlive) the device reboot-loop. trustcache add takes the 40-hex cdhash
+  # (not a path), which is why this uses `ldid -h` to extract it first.
+  JBCTL="$(command -v jbctl 2>/dev/null || true)"
+  [ -z "$JBCTL" ] && [ -x /basebin/jbctl ] && JBCTL=/basebin/jbctl
+  if [ -n "$JBCTL" ] && [ -n "$LDID_BIN" ] && [ -f "$DAEMON_BIN" ]; then
+    _cd=$($LDID_BIN -h "$DAEMON_BIN" 2>/dev/null | grep -m1 '^CDHash' | awk '{print $2}')
+    if [ -n "$_cd" ]; then
+      if $JBCTL trustcache add "$_cd" >> "$PINST_LOG" 2>&1; then
+        echo "   daemon cdhash registered in trustcache (AMFI will trust it)"
+      else
+        echo "   ⚠️ WARNING: jbctl trustcache add FAILED for daemon (rc=$?) — daemon may SIGKILL (-9)"
+      fi
+    else
+      echo "   ⚠️ WARNING: could not extract daemon cdhash (ldid -h)"
+    fi
+  else
+    echo "   ⚠️ WARNING: jbctl/ldid missing — daemon NOT in trustcache; may SIGKILL (-9) -> reboot loop"
+  fi
 else
   echo "   (no daemon binary at $DAEMON_BIN; agent daemon not included)"
 fi
@@ -118,16 +141,26 @@ if [ -d "$APP" ]; then
   # denied at launch. If ldid or the entitlements file is missing, skip and let
   # AppSync Unified (already installed) sign the app instead.
   if [ -n "$LDID_BIN" ] && [ -f "$APP_ENTFILE" ]; then
-    echo "   signing app executables with entitlements (best-effort) ..."
+    echo "   signing app executables with entitlements ..."
+    _app_sign_fail=0
     for bin in "$APP/Runner" \
                "$APP/Frameworks/Flutter.framework/Flutter" \
                "$APP/Frameworks/App.framework/App" \
                "$APP/Frameworks/objective_c.framework/objective_c"; do
-      [ -f "$bin" ] && $LDID_BIN -S"$APP_ENTFILE" "$bin" 2>/dev/null || true
+      if [ -f "$bin" ]; then
+        if ! $LDID_BIN -S"$APP_ENTFILE" "$bin" >> "$PINST_LOG" 2>&1; then
+          echo "   ⚠️ WARNING: ldid FAILED on $bin (app may SIGKILL at launch)"; _app_sign_fail=1
+        fi
+      fi
     done
-    find "$APP/Frameworks" -maxdepth 1 -name "*.dylib" -type f -exec $LDID_BIN -S"$APP_ENTFILE" {} \; 2>/dev/null || true
+    for _dyl in $(find "$APP/Frameworks" -maxdepth 1 -name "*.dylib" -type f 2>/dev/null); do
+      if ! $LDID_BIN -S"$APP_ENTFILE" "$_dyl" >> "$PINST_LOG" 2>&1; then
+        echo "   ⚠️ WARNING: ldid FAILED on $_dyl"; _app_sign_fail=1
+      fi
+    done
+    [ "$_app_sign_fail" = 1 ] && echo "   ⚠️ APP SIGNING HAD FAILURES — see $PINST_LOG; app may white-screen until re-signed."
   else
-    echo "   (ldid or entitlements missing; relying on AppSync Unified to sign app)"
+    echo "   ⚠️ WARNING: ldid or entitlements MISSING — app NOT re-signed; relying on AppSync Unified (risky)."
   fi
   chown -R root:wheel "$APP" 2>/dev/null || true
   find "$APP" -type d -exec chmod 0755 {} \; 2>/dev/null || true
