@@ -3,8 +3,58 @@
 import '../../../../core/link/CoreLinkProtocol.dart';
 import '../../../../core/proxy/generated/CoreProxyClients.g.dart';
 import '../../../../core/proxy/generated/CoreProxyModels.g.dart';
+import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
-const String currentAppVersion = '2.0.0+5';
+/// Resolved at runtime from the installed package so marketplace compatibility
+/// checks track the real client version. Falls back to a hardcoded value when the
+/// platform API is unavailable (e.g. some embedded web runtimes).
+String currentAppVersion = '2.0.0+5';
+
+/// Refreshes [currentAppVersion] from the platform package info. Safe to call
+/// from a screen's initState; failures keep the hardcoded fallback.
+Future<void> resolveCurrentAppVersion() async {
+  try {
+    final info = await PackageInfo.fromPlatform();
+    currentAppVersion = info.version;
+  } catch (_) {
+    // Keep the fallback constant.
+  }
+}
+
+/// Formats a marketplace version requirement for user-facing messages.
+String formatVersionRange(String min, String? max) {
+  final minStr = min.trim();
+  final maxStr = (max ?? '').trim();
+  if (minStr.isNotEmpty && maxStr.isNotEmpty) return '$minStr - $maxStr';
+  if (maxStr.isNotEmpty) return '≤ $maxStr';
+  return '$minStr+';
+}
+
+/// Asks the user to confirm installing a plugin whose client-version requirement
+/// is not met by the current build. Returns true when the user chooses to proceed.
+Future<bool> confirmIgnoreVersionInstall(BuildContext context, String range) {
+  return showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('仍然安装此插件？'),
+      content: Text(
+        '该插件要求客户端版本 $range，但当前客户端为 $currentAppVersion，'
+        '可能无法正常工作。确定仍要安装吗？',
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('仍然安装'),
+        ),
+      ],
+    ),
+  ).then((value) => value == true);
+}
 final Uri coreMarketAuthCompletionRedirectUri = Uri.parse(
   'https://api.operit.app/oauth/github/complete',
 );

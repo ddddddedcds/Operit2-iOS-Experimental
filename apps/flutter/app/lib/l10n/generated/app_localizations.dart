@@ -866,6 +866,30 @@ abstract class AppLocalizations {
   /// **'For Go development with go mod and build commands'**
   String get workspaceProjectGoDescription;
 
+  /// No description provided for @workspaceProjectIosTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'iOS project'**
+  String get workspaceProjectIosTitle;
+
+  /// No description provided for @workspaceProjectIosDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'iOS app project. Edit sources on device; build and sign on macOS with Xcode.'**
+  String get workspaceProjectIosDescription;
+
+  /// No description provided for @workspaceProjectIosTheosTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'iOS (Theos) tweak'**
+  String get workspaceProjectIosTheosTitle;
+
+  /// No description provided for @workspaceProjectIosTheosDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Theos tweak project. Build and install on-device when theos is installed.'**
+  String get workspaceProjectIosTheosDescription;
+
   /// No description provided for @version.
   ///
   /// In en, this message translates to:
