@@ -353,22 +353,24 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
     // For script/package with artifact, let the user confirm the version carried by this entry.
     if ((entry.type == 'script' || entry.type == 'package') &&
         entry.artifact != null) {
-      final version = await showArtifactVersionListDialog(
+      final selection = await showArtifactVersionListDialog(
         context,
         entry: entry,
       );
-      if (version == null || !mounted) return;
+      if (selection == null || !mounted) return;
       setState(() => _installing = true);
       try {
-        ensureMarketAppVersionSupported(
-          minAppVersion: version.minAppVer,
-          maxAppVersion: version.maxAppVer,
-        );
+        if (!selection.ignoreVersionCheck) {
+          ensureMarketAppVersionSupported(
+            minAppVersion: selection.detail.minAppVer,
+            maxAppVersion: selection.detail.maxAppVer,
+          );
+        }
         final result = await runCoreMarketInstall(
           clients: widget.clients,
           type: entry.type,
           entryId: entry.id,
-          versionId: version.versionId,
+          versionId: selection.detail.versionId,
         );
         if (mounted) {
           ScaffoldMessenger.of(
