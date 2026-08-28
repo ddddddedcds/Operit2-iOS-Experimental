@@ -368,7 +368,7 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
           clients: widget.clients,
           type: entry.type,
           entryId: entry.id,
-          versionId: version.versionId,
+          versionId: selection.versionId,
           forceVersion: true,
         );
         await _showInstallReport(result);
