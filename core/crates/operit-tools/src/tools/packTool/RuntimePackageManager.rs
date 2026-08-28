@@ -2665,6 +2665,67 @@ impl RuntimePackageManager {
         hits
     }
 
+    /// Analyzes a ToolPkg for iOS conversion requirements without installing it.
+    /// Returns a JSON report string for the Dart "conversion analysis" UI:
+    /// `androidApiTokens` (Android framework API hits), `pathLiteralCount`
+    /// (hardcoded `/sdcard/` and `/storage/emulated/0/` literals), `needsPathRewrite`,
+    /// `hasFrameworkApis`, and a `verdict` of `direct` | `path_rewrite` | `android_framework`.
+    pub fn analyzeToolPkgConversion(&self, toolpkgPath: &str) -> String {
+        let android_api_tokens = self.scanAndroidApiDependencies(toolpkgPath);
+        let path_literal_count = self.count_android_path_literals(toolpkgPath);
+        let needs_path_rewrite = path_literal_count > 0;
+        let has_framework_apis = !android_api_tokens.is_empty();
+        let verdict = if has_framework_apis {
+            "android_framework"
+        } else if needs_path_rewrite {
+            "path_rewrite"
+        } else {
+            "direct"
+        };
+        serde_json::to_string(&serde_json::json!({
+            "androidApiTokens": android_api_tokens,
+            "pathLiteralCount": path_literal_count,
+            "needsPathRewrite": needs_path_rewrite,
+            "hasFrameworkApis": has_framework_apis,
+            "verdict": verdict,
+        }))
+        .unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Counts hardcoded Android external-storage path literals (`/sdcard/` and
+    /// `/storage/emulated/0/`) inside `.js`/`.ts` entries of a ToolPkg. These are the
+    /// literals rewritten by `AndroidToolPkgPathRewriter` on iOS hosts.
+    fn count_android_path_literals(&self, toolpkgPath: &str) -> u32 {
+        let Ok(bytes) = self.fileSystemHost.readFileBytes(toolpkgPath) else {
+            return 0;
+        };
+        let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+            return 0;
+        };
+        let mut count: u32 = 0;
+        for index in 0..archive.len() {
+            let Ok(mut entry) = archive.by_index(index) else {
+                continue;
+            };
+            let entry_name = entry.name().to_string();
+            if !entry_name.ends_with(".js") && !entry_name.ends_with(".ts") {
+                continue;
+            }
+            let mut content = String::new();
+            if std::io::Read::read_to_string(&mut entry, &mut content).is_err() {
+                continue;
+            }
+            for token in ["/sdcard/", "/storage/emulated/0/"] {
+                let mut from = 0;
+                while let Some(pos) = content[from..].find(token) {
+                    count += 1;
+                    from += pos + token.len();
+                }
+            }
+        }
+        count
+    }
+
     #[allow(non_snake_case)]
     /// Imports a package file from external storage into package storage.
     pub fn addPackageFileFromExternalStorage(&mut self, filePath: &str) -> String {

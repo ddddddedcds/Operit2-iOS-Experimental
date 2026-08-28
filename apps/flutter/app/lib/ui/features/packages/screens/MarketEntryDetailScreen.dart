@@ -8,6 +8,7 @@ import '../market/UnifiedMarketDetailScreen.dart';
 import '../market/ArtifactMarketSupport.dart';
 import 'ArtifactProjectNodeTreeDialog.dart';
 import 'ArtifactPublishScreen.dart';
+import 'conversion_analysis_sheet.dart';
 import 'RepoMarketPublishScreen.dart';
 
 class MarketEntryDetailScreen extends StatefulWidget {
@@ -346,6 +347,14 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
     );
   }
 
+  Future<void> _openConversionAnalysis() async {
+    await showConversionAnalysis(
+      context,
+      clients: widget.clients,
+      entry: widget.entry,
+    );
+  }
+
   Future<void> _install() async {
     if (_installing) return;
     final entry = widget.entry;
@@ -358,6 +367,34 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
         entry: entry,
       );
       if (selection == null || !mounted) return;
+      final preCheck = await fetchConversionReport(
+        clients: widget.clients,
+        entry: entry,
+        versionId: selection.detail.versionId,
+      );
+      if (preCheck != null && preCheck.hasFrameworkApis && mounted) {
+        final proceed = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('依赖安卓框架'),
+            content: Text(
+              '检测到 ${preCheck.androidApiTokens.length} 处安卓专属 API，'
+              'iOS 上对应功能可能不可用。仍要安装？',
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('仍要安装'),
+              ),
+            ],
+          ),
+        );
+        if (proceed != true) return;
+      }
       setState(() => _installing = true);
       try {
         // operit2 is a fork; the upstream market's min/maxSupportedAppVersion
@@ -368,7 +405,7 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
           clients: widget.clients,
           type: entry.type,
           entryId: entry.id,
-          versionId: selection.versionId,
+          versionId: selection.detail.versionId,
           forceVersion: true,
         );
         await _showInstallReport(result);
@@ -810,6 +847,11 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
         enabled: !_installing,
         isLoading: _installing,
         icon: Icons.download_outlined,
+      ),
+      tertiaryAction: UnifiedMarketDetailAction(
+        label: '转换分析',
+        onPressed: _openConversionAnalysis,
+        icon: Icons.rule_folder_outlined,
       ),
       secondaryAction: _canPublishVersion(entry)
           ? UnifiedMarketDetailAction(

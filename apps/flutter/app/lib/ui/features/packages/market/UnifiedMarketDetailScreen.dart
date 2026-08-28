@@ -109,6 +109,7 @@ class UnifiedMarketDetailScreen extends StatefulWidget {
     required this.comments,
     required this.primaryAction,
     this.secondaryAction,
+    this.tertiaryAction,
   });
 
   final String title;
@@ -117,6 +118,7 @@ class UnifiedMarketDetailScreen extends StatefulWidget {
   final UnifiedMarketDetailCommentsState comments;
   final UnifiedMarketDetailAction primaryAction;
   final UnifiedMarketDetailAction? secondaryAction;
+  final UnifiedMarketDetailAction? tertiaryAction;
 
   @override
   State<UnifiedMarketDetailScreen> createState() =>
@@ -183,6 +185,7 @@ class _UnifiedMarketDetailScreenState extends State<UnifiedMarketDetailScreen> {
                   child: UnifiedMarketDetailActionRow(
                     primaryAction: widget.primaryAction,
                     secondaryAction: widget.secondaryAction,
+                    tertiaryAction: widget.tertiaryAction,
                   ),
                 ),
               ),
@@ -730,20 +733,27 @@ class UnifiedMarketDetailActionRow extends StatelessWidget {
     super.key,
     required this.primaryAction,
     this.secondaryAction,
+    this.tertiaryAction,
   });
 
   final UnifiedMarketDetailAction primaryAction;
   final UnifiedMarketDetailAction? secondaryAction;
+  final UnifiedMarketDetailAction? tertiaryAction;
 
   @override
   Widget build(BuildContext context) {
     final secondary = secondaryAction;
+    final tertiary = tertiaryAction;
     return Row(
       children: <Widget>[
         Expanded(child: _UnifiedMarketDetailPrimaryButton(primaryAction)),
         if (secondary != null) ...<Widget>[
           const SizedBox(width: 10),
           Expanded(child: _UnifiedMarketDetailSecondaryButton(secondary)),
+        ],
+        if (tertiary != null) ...<Widget>[
+          const SizedBox(width: 10),
+          Expanded(child: _UnifiedMarketDetailSecondaryButton(tertiary)),
         ],
       ],
     );
