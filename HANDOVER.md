@@ -1,8 +1,14 @@
 # Operit2 越狱 iOS 移植 —— 交接手册（HANDOVER）
 
-> **项目定位**：**POC（概念验证）**——验证"越狱 iOS + AI 深度集成"这条路是否可行。结论：**可行，但 Operit2 的 Flutter+Rust 架构硬移植进越狱 iOS 不划算（bug 链式暴露 + 冷启动 60s），接手前应先评估架构重做**。本手册记录全部架构、运行原理、坑与遗留问题，供 operit 官方 / 越狱社区开发者接手。
+> **项目状态**：**活跃开发中（2026-08-28 恢复）**。实验性分支，bug 链式暴露，风险自负。
 >
-> **仓库**：`github.com/ddddddedcds/Operit2-iOS-Experimental`（原 `Operit2-iOS-Jailbreak-POC`，2026-08-26 改名）。分支 **`feat/ios-jailbreak-preview4`**。当前版本 **0.3.86**。
+> **历史定位（已过期，保留说明）**：本分支最初是 **POC（概念验证）**，用于验证"越狱 iOS + AI 深度集成"这条路是否可行——结论**可行**。2026-08-26 曾一度决定长期停开发、只作知识封存；**该决定已于 2026-08-28 推翻**，项目恢复 active 开发，新功能（含热更新 / 实时补丁）不再以"停开发"为阻塞。
+>
+> **仍在的架构局限**（客观事实，与是否活跃开发无关）：Operit2 的 Flutter+Rust 架构硬移植进越狱 iOS 代价高——**bug 链式暴露 + 冷启动 60s**（§14）。架构重做（软移植减库，§14.5）仍是长期选项，但**不是当前阻塞项**。
+>
+> **本手册的作用**：记录全部架构、运行原理、坑与遗留问题，既供维护者续做，也供 operit 官方 / 越狱社区开发者接手。
+>
+> **仓库**：`github.com/ddddddedcds/Operit2-iOS-Experimental`（原 `Operit2-iOS-Jailbreak-POC`，2026-08-26 改名）。分支 **`feat/ios-jailbreak-preview4`**。当前版本 **0.3.87**。
 > **目标平台**：Dopamine rootless（iOS 16.7，主测试机 iPhone13,4（A14））。**roothide 已停止支持、不再维护**（见附录 A，仅作历史参考）。
 >
 > **两条交付线**：
@@ -34,7 +40,7 @@ operit2-src/                          # ★ 仓库根（注意：不是 operit2-
 │   │   ├── build_deb.sh              #   ★ 一键打包 rootless deb（staging+签名+ar）
 │   │   ├── build_nonjb_ipa.sh        #   ★ 非越狱 ipa 打包（Runner-nonjb.entitlements）
 │   │   ├── package_0.3.37.sh         #   历史脚本，已废弃
-│   │   ├── DEBIAN/control            #   版本/依赖（当前 Version 0.3.86）
+│   │   ├── DEBIAN/control            #   版本/依赖（当前 Version 0.3.87，build_deb.sh 从此处取版本号生成文件名）
 │   │   ├── DEBIAN/postinst           #   装机：ldid 重签 daemon + 启动 LaunchDaemon
 │   │   ├── Runner.entitlements       #   rootless 签名（app-sandbox=false + iokit-user-client-class）
 │   │   ├── Runner-nonjb.entitlements #   非越狱 IPA 用（标准沙盒，无 no-sandbox）
@@ -264,7 +270,7 @@ echo '<PASSWORD>' | sudo -S killall -9 SpringBoard   # respring
 - 控制中心模块（OperitCC）——**用户实测未显示**（见 §8.1）
 - installed_apps 修复（responds 探测）
 
-### ⏳ POC 暂时无法验证
+### ⏳ 暂未验证（待端到端补齐）
 - Siri 气泡文本替换（跨进程不刷新）
 - Siri TTS 朗读（iOS 16.7 不存在）
 - 手动 method_setImplementation + 延迟原调（野指针崩 SpringBoard）——**禁止**
@@ -318,6 +324,34 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 - 修复：`echo "nameserver 223.5.5.5" > /etc/resolv.conf` 即通（`apk update` 拉到 22906 个包）。已在烘焙脚本 `tools/ios-runtime/ish/build_alpine_rootfs_linux.sh` 的 `write_rootfs_config()` 固化（223.5.5.5 / 119.29.29.29 / 8.8.8.8）+ 清华镜像源。
 - 排查顺序（别重蹈）：先 `cat /etc/resolv.conf` / guest 内 `getaddrinfo`，再谈内核传输层。
 - 相关修复：`8d15d09a`（桥注册前置 + 无条件 exit dump）、`5d02ccad`（Rust listSessions 补列 iSH 会话）。
+
+### 8.7 插件 UI 卡死 60 秒（compose_dsl 渲染 / 点击）🔴 未解决
+- **现象**：市场插件（实测 `com.operit.qingpei_moments` 朋友圈）打开后卡住不渲染，最终弹 `COMMAND_ERROR: Script execution timed out after 60000 milliseconds`；即使渲染出来，点按钮也无响应。**所有 compose_dsl 插件通病，非单个插件问题。**
+- **实测时序（设备 operit.log，多次复现一致）**：
+
+  | 时间 | 事件 |
+  |---|---|
+  | `05:42:20.084` | `compose-render-start`（Dart） |
+  | `05:42:20.124` | `tool.execute.request tool=get_system_setting`（0.04s，**立刻**） |
+  | — | **59.99 秒空白** |
+  | `05:43:55.361` | `compose-render-finish elapsedMs=60016 success=false`（Dart 60s 看门狗关通道） |
+  | `05:43:55.393` | `tool.execute.start`（看门狗触发后 32ms 才排到） |
+  | `05:43:55.402` | `tool.execute.error` **工具本身仅 15ms** |
+  | `05:43:55.415` | `compose-request-finish success=true` + `worker-send-error: sending on a closed channel` |
+
+- **关键判读**：`tool.execute.request` 与 `tool.execute.start` **同在 `AIToolHandler::executeTool` 内**（`AIToolHandler.rs:1136` / `:1212`），所以 60s 是**函数内部耗时，不是"排队等执行器"**。工具本身 15ms，卡的是中间那 60 秒。JS 最终渲染成功（`success=true`）但回传通道已被关 → UI 永远出不来。
+- **影响范围（已验证渲染与点击同源）**：两条路径最终汇合到同一个 `AIToolHandler::execute_tool_call`——
+  - 渲染：`Tools.System.getSetting` / `Tools.Files.read` → `runtime_bindings.rs:125` → `execute_tool_call`
+  - 点击：`ctx.callTool` → `ToolPkgComposeDslBridge.rs:607` → `toolCall()` → `JsExecutionRuntimeBridge.script.js:156` `callNative('callToolAsync')` → `JsLibraries.rs:249` `__operitNativeCallTool` → `JsEngine.rs:2367` `nativeCallToolStrings` → `JsNativeInterfaceDelegates.rs:417` `execute_tool_call`
+- **已尝试的修复（commit `e59750f4`，上机验证【失败】）**：在 `execute_tool_call` 的 `executeTool` 之前加 `AsyncToolExecutionScope::enter()`，意图让嵌套工具调用回到"已授权栈"、`executeAccessPreflight`（`:765`）短路、跳过 `:735 getAiPermissionMode()`。**装了新包实测 60s 卡死一点没变**（修复前后均为 59.99s）。该改动语义本身合理，暂留作防御，但**别指望它治病**。
+- **已排除（两个走过弯路的错误方向，别重蹈）**：
+  1. ❌ "`getAiPermissionMode()` → `dataStore.data()` 等锁 60s"——`e59750f4` 专治此点，实测无效。
+  2. ❌ "权限审批拦截"——`asyncPermissionRequiredResult`（`:895`）报的 `Interactive tool permission requires asynchronous tool execution.` 是**通知类工具**（`send_notification`）的报错；朋友圈的 `get_system_setting` 报的是 `Namespace must be one of: system, secure, global`，说明**它的权限检查是通过的**，没卡在权限。
+  3. 已排除的快速项：`notifyToolCallRequested`（`:1142`）只跑钩子、日志 `hookCount=0`；`getToolExecutorOrActivate`（`:1150`）对内置无 `:` 工具是短路径。
+- **当前嫌疑（未证实）**：`:1143 checkToolInterception` ~ `:1212` 之间，最像 **`self.inner` 互斥锁或执行槽被外层渲染占着**——渲染等工具、工具等渲染让出槽位，互等到 60s 被砍（形态上接近 §14 那种"等待型"开销，但机制不同）。
+- **已埋的插桩（未上机，待接手验证）**：`executeTool` 内已插入 7 条 `ChainLogger::info(TOOL_CHAIN, "tool.stage.*")`——`notify_requested` / `interception` / `activate` / `executor_removed` / `validated` / `preflight_enter` / `preflight_done`。**装上去点一次朋友圈，看哪两个 stage 之间隔了 60 秒即可锁死卡点**，不必再猜。
+- **排查顺序（别重蹈）**：先看设备日志 `tool.execute.request` → `tool.execute.start` 的时间差定位"是不是卡在 executeTool 内部" → 再读 `tool.stage.*` 定位具体步 → 最后才动代码。**静态排除法在这个问题上已经错过两次，优先信插桩。**
+- **关联影响**：这 60 秒期间，走同一条链路的 gRPC 调用（包管理列表、转换分析）会一并被拖住转圈（`MethodChannelCoreProxy` 无超时，会一直 loading）。已加 120s 超时兜底（见 §16.4），但那是"报错可重试"不是"修好"。
 
 ---
 
@@ -528,6 +562,68 @@ Impeller shader / Metal 缓存 / 网络等待 / daemon 等待 / MCP 插件 / Rus
 
 ---
 
+## 16. Android 插件兼容层专题（接手者必读）
+
+> 目标：说清"兼容层 / 转换器 / 转换分析"三者是什么关系，以及**为什么大量市场插件在 iOS 上装得上却跑不动**。
+
+### 16.1 常见误解：兼容层和转换器是两套机制？
+**不是。它们是同一个函数在两个时机各跑一次。**
+
+| 名称 | 位置 | 做什么 | 时机 |
+|---|---|---|---|
+| **兼容层（运行时）** | `core/crates/operit-util/src/AndroidPathRewriter.rs` | `rewrite_android_paths()`：`/sdcard`、`/storage/emulated/0` → `/mnt/android/sdcard`；`rewrite_vfs_mount_paths()`：shell 命令里的挂载路径 → 物理路径 | JS 加载时在内存改写 + shell 执行前映射 |
+| **转换器（安装期）** | `core/crates/operit-tools/src/tools/packTool/AndroidToolPkgPathRewriter.rs` | 把 ZIP 内每个 `.js` 条目取出、调用**同一个** `rewrite_android_paths()`、写回封存 | 安装时一次性改磁盘上的包 |
+
+`AndroidToolPkgPathRewriter.rs:15` 直接 `use operit_util::AndroidPathRewriter::rewrite_android_paths;` —— **唯一实现只有一份**，转换器只是个"遍历 ZIP 条目"的壳。
+
+### 16.2 为什么要查两次（各有盲区，不是冗余）
+- **安装期覆盖不到**：**加密条目直接跳过**（源码注释明写"运行时 JsEngine 兜底"），这类只能靠运行时层。
+- **运行时覆盖不到**：它改的是内存副本、不动磁盘上的包；且 **shell 命令不走 VFS**（`Tools.System.shell("find /sdcard/...")` 直接碰真实文件系统），必须靠 `rewrite_vfs_mount_paths` 单独映射到物理路径。
+- 物理落点：`<runtimeRoot>/android-compat/sdcard/...`，iOS 上即 `/var/mobile/.operit/runtime/android-compat/...`。
+- 接线共 4 处：市场安装 `addMarketToolPkgFileFromExternalStorage`、本地导入 `importToolPkgFromFile`、运行时 JS 加载 `JsEngine.rs:2728`、shell 执行 `hosts/ios/src/terminal.rs:295`。
+
+### 16.3 ⚠️ 兼容层只治路径，治不了 API 调用
+**这是"装得上却跑不动"的根因。** 路径重写做的是字符串替换，对下面的**安卓专属 API** 完全无能为力——插件装的时候路径改得再对，一调用就崩。
+
+**A. `core/crates/operit-js-bridge/src/javascript/AndroidUtils.script.js`（5 类 / 26 方法）**
+> 文件头明写：`This library requires Shizuku service to be running with proper permissions`，底层全是 shell 命令。
+
+| 类 | 方法 | 底层命令 |
+|---|---|---|
+| `Android`（入口） | `packageManager` / `systemManager` / `deviceController`（属性）、`createContentProvider(uri)` | — |
+| `PackageManager` | `install` `uninstall` `getInfo` `getList` `clearData` `isInstalled` | `pm` |
+| `ContentProvider` | `uri`（属性）`setUri` `query` `insert` `update` `delete` | `content` |
+| `SystemManager` | `getProperty` `setProperty` `getAllProperties` | `getprop` / `setprop` |
+| | `getSetting` `setSetting` `listSettings` | `settings get/put/list` |
+| | `getScreenInfo` | `wm size; wm density` |
+| `DeviceController` | `systemManager`（属性）`takeScreenshot` `recordScreen` | `screencap` / `screenrecord` |
+| | `setWiFi` `setBluetooth` | `svc wifi` / `svc bluetooth` |
+| | `lock` `unlock` | `input keyevent 26/82` |
+| | `setBrightness` `setVolume` `reboot` | `settings put` / `media volume` / `reboot` |
+
+类型定义 `plugins/types/android.d.ts`（301 行）与上述 5 个类**一一对应**。这些命令 **`pm` / `getprop` / `settings` / `screencap` / `svc` / `input` / `reboot` 在 iOS 上根本不存在**。
+
+**B. `core/crates/operit-js-bridge/src/javascript/OkHttp3.script.js`**
+- `OkHttp.newClient()` / `OkHttp.newBuilder()`、`OkHttpClientBuilder`、`OkHttpClient`（Java 库，iOS 无对应）。
+
+**C. 调用机制**
+- `Java.` / `Java.android`（Java 桥）、`adb `（adb 命令）。
+
+### 16.4 转换分析面板（只读检测器，不是转换器）
+- 后端：`RuntimePackageManager::analyzeToolPkgConversion(toolpkgPath)`（JSON：`androidApiTokens` / `pathLiteralCount` / `needsPathRewrite` / `hasFrameworkApis` / `verdict[direct|path_rewrite|android_framework]`），靠 `operit-core-proxy` build.rs 自动 codegen 出 Dart（**无需手改 schema**）。
+- 前端：`apps/flutter/app/lib/ui/features/packages/dialogs/conversion_analysis_sheet.dart`（Dart 文件名为 lower_case_with_underscores），`MarketEntryDetailScreen` 加「转换分析」按钮 + 安装前拦截（有框架依赖时弹确认框）。
+- **它的价值恰恰是兼容层做不到的事**：区分"改完路径就能跑"和"依赖安卓 API、改了路径照样崩"。兼容层只会闷头改路径，改完插件该崩还是崩，它自己分不出来。
+- **附件兜底**：`MethodChannelCoreProxy.call()` 已加 `.timeout(callTimeout)`（默认 **120s**，故意宽松以免误伤下载/安装/AI 流式等合法长操作）。作用是把"底层不回包 → UI 无限转圈"变成 `CoreLinkError(code:'TIMEOUT')` 可报错重试——**是体验兜底，不是修好**。
+
+### 16.5 已知问题（检测精度）
+- `scanAndroidApiDependencies`（`RuntimePackageManager.rs:2621`）用 **14 个硬编码 token** 做子串匹配：
+  `Java.android` `Java.` `OkHttpClient` `OkHttp.` `RequestBuilder` `SystemManager` `DeviceController` `ContentProvider` `PackageManager` `ClipboardManager` `ClipData` `Shizuku` `Android.` `adb `
+- **其中 `ClipboardManager` / `ClipData` / `Shizuku` 是"幽灵 token"**：全代码库搜索**零实现**（只存在于这张 token 表里）。它们是启发式检测词，会**误报**（注释里写一句"用了剪贴板"也会被判成依赖安卓）。
+- 该清理建议已提出，**用户明确决定保留**（2026-08-29），后续非用户要求不要动。
+- 其他精度限制：只扫 `.js` / `.ts` 条目；非 JS 字面量靠运行时 JsEngine 兜底；子串匹配无法区分"字符串常量"与"真实调用"。
+
+---
+
 ## 附录 A：roothide（已停更，历史参考，不再维护）
 > **状态**：roothide 版自 2026-08 起**停止支持、不再维护**，本仓库不再产出 roothide deb，无相关构建脚本。以下内容仅为历史记录，供有 roothide 设备的研究者参考，**不保证可用**。
 
@@ -540,13 +636,23 @@ Impeller shader / Metal 缓存 / 网络等待 / daemon 等待 / MCP 插件 / Rus
 
 ---
 
-## 附录 B：交接状态
-- **接续方**：operit2 官方（有意愿、有能力；当前因非越狱版排期忙，越狱版**暂存待取**）。
-- **本 POC 定位**：探明"越狱 iOS + AI 深度集成"可行性 + 交付完整交接手册；不是可产品化代码，是知识+代码封存。
+## 附录 B：项目状态与交接
+
+- **当前状态**：**活跃开发中**（2026-08-28 恢复，详见文首「项目状态」）。维护者为本 fork 所有者；本手册同时供 operit 官方 / 越狱社区开发者接手参考。
+- **决策沿革**（避免误读旧文档，重要）：
+  - 2026-08-26：曾决定**长期停开发**、定位 POC、只作知识封存。
+  - 2026-08-28：**推翻上述决定**，恢复 active 开发；新功能（含热更新 / 实时补丁）不再以"停开发"为阻塞。
+  - ⚠️ 因此本手册中任何残留的「POC / 封存 / 停开发 / 暂存待取」措辞均属**过期表述**，**以本节为准**。
 - **官方可吸收**：**§15.B 通用可回馈清单**（TCC 权限全家桶 / 屏幕时间 / Shortcuts / 通知 / iSH 终端，全部公开 API 不依赖越狱）+ 方法论（§9.5 / §11）+ 越狱专属 hook 地图（§7）。
-- [x] 代码：feat/ios-jailbreak-preview4（当前 0.3.86）
+- **2026-08-29 收尾状态（重要，接手请先看）**：
+  - ✅ 已完成并推送：插件 UI 卡死 60s 的**取证与归因链条**（§8.7）、安卓兼容层架构梳理（§16）、`MethodChannelCoreProxy` 120s 超时兜底。
+  - 🔴 **未完成**：插件 UI 卡死 60s **仍未修好**（§8.7）。已尝试 `e59750f4` 上机验证失败，真卡点未定位。
+  - 🟡 **已埋未验**：`executeTool` 内 7 条 `tool.stage.*` 插桩已写好（`cargo check` 0 error），**尚未上机**。接手续做时优先跑这一步——装包点一次朋友圈，读 `tool.stage.*` 时间差即可锁死卡点，别再走静态推测。
+  - 打包/装机流程见 §5.2 / §5.4；**注意**：`Runner.app` 是预编译产物，源码改动必须等 CI 重新出包才生效，验包可用"grep 新增文案"的方式确认（§9.3 有记）。
+  - 工作区遗留（**未提交，勿误 add**）：`apps/flutter/app/pubspec.lock`（analyze 时顺带升了 intl / matcher）、`hosts/ios/deb/files/usr/share/operit/operit.entitlements`（打包脚本改的 bundle id）。
+- [x] 代码：feat/ios-jailbreak-preview4（当前 **0.3.87**；`executeTool` 插桩在工作区未提交）
 - [x] 文档：本 HANDOVER.md
-- [x] 两条交付线均 0.3.86 验证：越狱 deb（完整）/ nonjb ipa（聊天+iSH）
+- [x] 两条交付线：越狱 deb（完整）/ nonjb ipa（聊天+iSH）—— **0.3.86 已验证**；**0.3.87 已打包，插件 UI 卡死问题上机验证失败**（§8.7），其余功能待回归。
 - [x] dsh 集成产物：运行时 deb（nodejs 22.23.2-3 + dsh-ios 0.1.1-rc.2-2，deepseek-harness-ios `ios-port`）+ toolpkg 桥 1.1.2（deepseek-harness-ios-toolpkg，独立仓库，见 §3.5）
 - [ ] 遗留 bug：§8.1（CC 模块）/ §8.5（设置面板）
 - [ ] 可探索：AI 回复通知（BBServer action 回调；AutoResponder 是 iOS 6-9 短信层先例）；软移植减 60s（§14.5）
