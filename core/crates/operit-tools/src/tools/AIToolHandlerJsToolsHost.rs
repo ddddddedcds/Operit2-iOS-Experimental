@@ -268,7 +268,7 @@ fn invoke_terminal_streaming(
     };
     let mut host = host.clone();
     Box::pin(async move {
-        host.notifyToolCallRequested(&tool);
+        host.notifyToolCallRequested(&tool, 0);
         let interception = host.checkToolInterception(&tool);
         if let operit_tools::tools::AIToolHook::AIToolHookDecision::Block(_) = interception {
             let result = AIToolHandler::toolInterceptionResult(&tool, interception);

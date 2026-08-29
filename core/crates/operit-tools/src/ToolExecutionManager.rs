@@ -309,7 +309,7 @@ impl ToolExecutionManager {
                 continue;
             }
 
-            toolHandler.notifyToolCallRequested(&invocation.tool);
+            toolHandler.notifyToolCallRequested(&invocation.tool, 0);
             let interception = toolHandler.checkToolInterception(&invocation.tool);
             if let operit_tools::tools::AIToolHook::AIToolHookDecision::Block(_) = interception {
                 let blockedResult = AIToolHandler::toolInterceptionResult(

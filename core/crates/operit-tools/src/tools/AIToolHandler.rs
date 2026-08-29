@@ -36,6 +36,12 @@ use crate::runtime_support::{ToolRuntimeDependencies, ToolRuntimeSupport};
 
 const PACKAGE_PROXY_TOOL_NAME: &str = "package_proxy";
 
+/// Monotonic id for each `executeTool` invocation, used to correlate the
+/// synchronous tool-execution stages in device logs. The chain runs inline on
+/// the single WASM worker thread, so timing gaps between stages localize the
+/// 60s block.
+static TOOL_EXEC_INV: AtomicUsize = AtomicUsize::new(0);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolRegistrationVisibility {
     PUBLIC,
@@ -315,8 +321,41 @@ impl AIToolHandler {
 
     /// Notifies hooks that a tool call has been requested.
     #[allow(non_snake_case)]
-    pub fn notifyToolCallRequested(&self, tool: &AITool) {
-        self.notifyHooks(|hook| hook.onToolCallRequested(tool));
+    pub fn notifyToolCallRequested(&self, tool: &AITool, inv: usize) {
+        let hooks = self
+            .inner
+            .lock()
+            .expect("AIToolHandler mutex poisoned")
+            .hooks
+            .clone();
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.notify.enter",
+            &[
+                ("inv", inv.to_string()),
+                ("hookCount", hooks.len().to_string()),
+            ],
+        );
+        for (idx, hook) in hooks.iter().enumerate() {
+            ChainLogger::info(
+                TOOL_CHAIN,
+                "tool.notify.hook",
+                &[
+                    ("inv", inv.to_string()),
+                    ("idx", idx.to_string()),
+                    ("hookCount", hooks.len().to_string()),
+                ],
+            );
+            hook.onToolCallRequested(tool);
+        }
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.notify.exit",
+            &[
+                ("inv", inv.to_string()),
+                ("hookCount", hooks.len().to_string()),
+            ],
+        );
     }
 
     /// Returns the first hook decision for a tool call before execution begins.
@@ -1131,19 +1170,31 @@ impl AIToolHandler {
     /// Resolves and executes a tool request through the registered tool chain.
     #[allow(non_snake_case)]
     pub fn executeTool(&mut self, tool: AITool) -> ToolResult {
+        let inv = TOOL_EXEC_INV.fetch_add(1, Ordering::SeqCst) + 1;
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.exec.enter",
+            &[("inv", inv.to_string()), ("tool", tool.name.clone())],
+        );
         ChainLogger::info(
             TOOL_CHAIN,
             "tool.execute.request",
             &[
+                ("inv", inv.to_string()),
                 ("tool", tool.name.clone()),
                 ("parameterCount", tool.parameters.len().to_string()),
             ],
         );
-        self.notifyToolCallRequested(&tool);
+        self.notifyToolCallRequested(&tool, inv);
         ChainLogger::info(
             TOOL_CHAIN,
             "tool.stage.notify_requested",
-            &[("tool", tool.name.clone())],
+            &[("inv", inv.to_string()), ("tool", tool.name.clone())],
+        );
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.stage.Z2_pre_intercept",
+            &[("inv", inv.to_string()), ("tool", tool.name.clone())],
         );
         let interception = self.checkToolInterception(&tool);
         ChainLogger::info(
@@ -1220,16 +1271,17 @@ impl AIToolHandler {
             return validationFailedResult;
         }
 
+        ChainLogger::info(TOOL_CHAIN, "tool.stage.Z3_pre_preflight", &[("inv", inv.to_string()), ("tool", tool.name.clone())]);
         ChainLogger::info(
             TOOL_CHAIN,
             "tool.stage.preflight_enter",
-            &[("tool", tool.name.clone())],
+            &[("inv", inv.to_string()), ("tool", tool.name.clone())],
         );
         let preflight = self.executeAccessPreflight(&tool, executor.as_ref());
         ChainLogger::info(
             TOOL_CHAIN,
             "tool.stage.preflight_done",
-            &[("tool", tool.name.clone())],
+            &[("inv", inv.to_string()), ("tool", tool.name.clone())],
         );
         if let Err(accessDeniedResult) = preflight {
             self.notifyToolExecutionResult(&tool, &accessDeniedResult);
@@ -1246,7 +1298,7 @@ impl AIToolHandler {
         ChainLogger::info(
             TOOL_CHAIN,
             "tool.execute.start",
-            &[("tool", tool.name.clone())],
+            &[("inv", inv.to_string()), ("tool", tool.name.clone())],
         );
         let _inheritedExecutionScope = self
             .hasNestedExecutionAuthorization()
@@ -1355,6 +1407,12 @@ impl AIToolHandlerState {
 impl JsExecutionHost for AIToolHandler {
     /// Executes an SDK JavaScript tool request through the registered Operit tool chain.
     fn execute_tool_call(&self, request: JsToolCallRequest) -> JsToolCallResult {
+        let tool_name = request.qualified_tool_name();
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.ffi.enter",
+            &[("tool", tool_name.clone())],
+        );
         let tool = AITool {
             name: request.qualified_tool_name(),
             parameters: request
@@ -1397,6 +1455,14 @@ impl JsExecutionHost for AIToolHandler {
                     .expect("ToolResultData JSON conversion must succeed"),
             ),
         };
+        ChainLogger::info(
+            TOOL_CHAIN,
+            "tool.ffi.exit",
+            &[
+                ("tool", tool_name.clone()),
+                ("success", result.success.to_string()),
+            ],
+        );
         JsToolCallResult {
             success: result.success,
             data,

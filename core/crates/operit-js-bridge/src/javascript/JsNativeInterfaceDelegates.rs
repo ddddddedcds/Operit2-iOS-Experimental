@@ -410,11 +410,24 @@ pub fn callToolSync(
         return buildToolErrorJson("Tool name cannot be empty");
     }
 
+    operit_util::ChainLogger::info(
+        operit_util::ChainLogger::TOOL_CHAIN,
+        "tool.callsync.enter",
+        &[("tool", toolName.to_string())],
+    );
     let parsed = match parseToolCall(toolType, toolName, paramsJson) {
         Ok(value) => value,
         Err(error) => return buildToolErrorJson(&error),
     };
     let result = toolRuntime.execute_tool_call(parsed);
+    operit_util::ChainLogger::info(
+        operit_util::ChainLogger::TOOL_CHAIN,
+        "tool.callsync.exit",
+        &[
+            ("tool", toolName.to_string()),
+            ("success", result.success.to_string()),
+        ],
+    );
     serializeToolExecutionResult(&result)
 }
 

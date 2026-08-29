@@ -364,6 +364,14 @@ impl JsEngine {
         textResources: Option<Arc<ToolPkgTextResources>>,
         useComposeDslTextResources: bool,
     ) -> JsExecutionResult<Option<String>> {
+        operit_util::ChainLogger::info(
+            operit_util::ChainLogger::TOOL_CHAIN,
+            "tool.worker.dispatch",
+            &[
+                ("fn", functionName.to_string()),
+                ("timeoutSec", timeoutSec.to_string()),
+            ],
+        );
         #[cfg(target_arch = "wasm32")]
         {
             return self.worker.execute_script_function(
@@ -585,16 +593,27 @@ impl JsEngine {
         envOverrides: &BTreeMap<String, String>,
         textResources: Arc<ToolPkgTextResources>,
     ) -> JsExecutionResult<Option<String>> {
+        operit_util::ChainLogger::info(
+            operit_util::ChainLogger::TOOL_CHAIN,
+            "tool.render.enter",
+            &[],
+        );
         let rewritten = rewrite_toolpkg_script_paths(script);
         let script: &str = rewritten.as_deref().unwrap_or(script);
-        self.executeComposeDslFunction(
+        let r = self.executeComposeDslFunction(
             &buildComposeDslRuntimeWrappedScript(script),
             "__operit_render_compose_dsl",
             runtimeOptions,
             envOverrides,
             None,
             Some(textResources),
-        )
+        );
+        operit_util::ChainLogger::info(
+            operit_util::ChainLogger::TOOL_CHAIN,
+            "tool.render.exit",
+            &[("ok", r.is_ok().to_string())],
+        );
+        r
     }
 
     #[allow(non_snake_case)]
@@ -2364,17 +2383,28 @@ mod JsEngineTests;
 mod PluginConfigTests;
 
 #[allow(non_snake_case)]
-fn nativeCallToolStrings(toolType: String, toolName: String, paramsJson: String) -> String {
-    match currentExecutionHost() {
-        Ok(host) => JsNativeInterfaceDelegates::callToolSync(
-            host.as_ref(),
-            &toolType,
-            &toolName,
-            &paramsJson,
-        ),
-        Err(error) => serde_json::json!({"success": false, "message": error}).to_string(),
+    fn nativeCallToolStrings(toolType: String, toolName: String, paramsJson: String) -> String {
+        operit_util::ChainLogger::info(
+            operit_util::ChainLogger::TOOL_CHAIN,
+            "tool.native.enter",
+            &[("tool", toolName.clone())],
+        );
+        let r = match currentExecutionHost() {
+            Ok(host) => JsNativeInterfaceDelegates::callToolSync(
+                host.as_ref(),
+                &toolType,
+                &toolName,
+                &paramsJson,
+            ),
+            Err(error) => serde_json::json!({"success": false, "message": error}).to_string(),
+        };
+        operit_util::ChainLogger::info(
+            operit_util::ChainLogger::TOOL_CHAIN,
+            "tool.native.exit",
+            &[("tool", toolName.clone())],
+        );
+        r
     }
-}
 
 #[allow(non_snake_case)]
 fn nativeSendIntermediateResultString(callId: String, result: String) {
