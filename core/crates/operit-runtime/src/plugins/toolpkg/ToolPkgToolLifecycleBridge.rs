@@ -55,11 +55,8 @@ impl AIToolHook for ToolLifecycleBridge {
     }
 
     fn onToolCallRequested(&self, tool: &AITool) {
-        deliver(
-            &self.runtime,
-            "tool_call_requested",
-            build_base_payload(tool),
-        );
+        let payload = build_base_payload(tool);
+        deliver_async(self.runtime.clone(), "tool_call_requested", payload);
     }
 
     fn onToolCallIntercept(&self, tool: &AITool) -> AIToolHookDecision {
@@ -125,12 +122,12 @@ impl AIToolHook for ToolLifecycleBridge {
         payload["reason"] = reason
             .map(|value| Value::String(value.to_string()))
             .unwrap_or(Value::Null);
-        deliver(&self.runtime, "tool_permission_checked", payload);
+        deliver_async(self.runtime.clone(), "tool_permission_checked", payload);
     }
 
     fn onToolExecutionStarted(&self, tool: &AITool) {
-        deliver(
-            &self.runtime,
+        deliver_async(
+            self.runtime.clone(),
             "tool_execution_started",
             build_base_payload(tool),
         );
@@ -147,19 +144,19 @@ impl AIToolHook for ToolLifecycleBridge {
         payload["resultText"] = Value::String(result.result.toString());
         payload["resultJson"] =
             serde_json::from_str::<Value>(&result.result.toJson()).unwrap_or(Value::Null);
-        deliver(&self.runtime, "tool_execution_result", payload);
+        deliver_async(self.runtime.clone(), "tool_execution_result", payload);
     }
 
     fn onToolExecutionError(&self, tool: &AITool, message: &str) {
         let mut payload = build_base_payload(tool);
         payload["success"] = Value::Bool(false);
         payload["errorMessage"] = Value::String(message.to_string());
-        deliver(&self.runtime, "tool_execution_error", payload);
+        deliver_async(self.runtime.clone(), "tool_execution_error", payload);
     }
 
     fn onToolExecutionFinished(&self, tool: &AITool) {
-        deliver(
-            &self.runtime,
+        deliver_async(
+            self.runtime.clone(),
             "tool_execution_finished",
             build_base_payload(tool),
         );
@@ -242,6 +239,35 @@ fn deliver(runtime: &ToolPkgBridgeRuntime, eventName: &str, eventPayload: Value)
                     ("error", error),
                 ],
             ),
+        }
+    }
+}
+
+/// Fire-and-forget variant of `deliver`.
+///
+/// Tool lifecycle notifications are pure events whose results are never
+/// consumed by the caller, yet the synchronous `deliver` used to block the
+/// WASM worker thread for up to 60s: it re-enters `getOrCreatePackageManager`'s
+/// non-reentrant Mutex while that same lock was already held elsewhere on the
+/// worker thread (e.g. during a compose_dsl render that triggered a tool call),
+/// deadlocking until the 60s script watchdog killed the render. Dispatching
+/// the delivery to the host task scheduler lets `executeTool` return
+/// immediately instead of self-deadlocking. When no scheduler is available we
+/// fall back to the old synchronous behaviour.
+#[allow(non_snake_case)]
+fn deliver_async(runtime: ToolPkgBridgeRuntime, eventName: &str, eventPayload: Value) {
+    match runtime.host_manager().hostRuntimeTaskSchedulerHost.as_ref() {
+        Some(scheduler) => {
+            let event = eventName.to_string();
+            let _ = scheduler.scheduleHostRuntimeTask(
+                "toolpkg.tool_lifecycle",
+                Box::new(move || {
+                    deliver(&runtime, &event, eventPayload);
+                }),
+            );
+        }
+        None => {
+            deliver(&runtime, eventName, eventPayload);
         }
     }
 }
