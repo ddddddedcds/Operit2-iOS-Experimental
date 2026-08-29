@@ -67,11 +67,12 @@ Future<ToolPkgConversionReport?> fetchConversionReport({
       File('${tempDir.path}/operit_cvt_${entry.id}_${vid ?? 'latest'}.tmp');
   try {
     final resp = await http
-        .get(Uri.parse(target.url), headers: {'User-Agent': 'Mozilla/5.0'});
+        .get(Uri.parse(target.url), headers: {'User-Agent': 'Mozilla/5.0'})
+        .timeout(const Duration(seconds: 30));
     if (resp.statusCode != 200) return null;
     await file.writeAsBytes(resp.bodyBytes);
     final jsonStr =
-        await clients.application.packageManager().analyzeToolPkgConversion(toolpkgPath: file.path);
+        await clients.application.packageManager().analyzeToolPkgConversion(toolpkgPath: file.path).timeout(const Duration(seconds: 60));
     final decoded = jsonDecode(jsonStr) as Map<String, Object?>;
     return ToolPkgConversionReport.fromJson(decoded);
   } catch (_) {

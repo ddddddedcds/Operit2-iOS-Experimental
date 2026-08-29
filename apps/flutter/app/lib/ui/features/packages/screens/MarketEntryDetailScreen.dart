@@ -395,7 +395,7 @@ class _MarketEntryDetailScreenState extends State<MarketEntryDetailScreen> {
         );
         if (proceed != true) return;
       }
-      setState(() => _installing = true);
+      if (mounted) setState(() => _installing = true);
       try {
         // operit2 is a fork; the upstream market's min/maxSupportedAppVersion
         // range does not apply. Install unconditionally with forceVersion=true so
