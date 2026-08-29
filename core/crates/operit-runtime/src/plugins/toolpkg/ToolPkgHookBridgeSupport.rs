@@ -39,11 +39,12 @@ impl ToolPkgBridgeRuntime {
     /// (interception) should use this so a contended lock can never stall tool
     /// execution.
     pub fn try_package_manager(&self) -> Option<RuntimePackageManager> {
-        self.tool_handler
-            .getOrCreatePackageManager()
-            .try_lock()
-            .ok()
-            .map(|guard| guard.clone())
+        match self.tool_handler.getOrCreatePackageManager().try_lock() {
+            Ok(guard) => Some(guard.clone()),
+            // Contention already logged (pm.contention) by TracedMutex::try_lock;
+            // returning None keeps tool execution non-blocking (no 60s freeze).
+            Err(_) => None,
+        }
     }
 
     /// Returns this runtime's tool handler.

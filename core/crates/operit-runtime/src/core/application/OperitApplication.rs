@@ -41,6 +41,7 @@ use operit_tools::runtime_support::ToolRuntimeDependencies;
 use operit_tools::tools::mcp_runtime::plugins::MCPStarter::MCPStarter;
 use operit_tools::tools::mcp_runtime::MCPRepository::MCPRepository;
 use operit_tools::tools::packTool::RuntimePackageManager::RuntimePackageManager;
+use operit_tools::tools::packTool::TracedMutex;
 use operit_tools::tools::skill_runtime::SkillRepository::SkillRepository;
 use operit_tools::tools::AIToolHandler::AIToolHandler;
 use operit_util::RuntimeStoreRoot::{setDefaultRuntimeStoreRootConfig, RuntimeStoreRootConfig};
@@ -399,7 +400,7 @@ impl OperitApplication {
 
     /// Returns the shared package manager owned by the initialized tool handler.
     #[allow(non_snake_case)]
-    pub fn packageManager(&self) -> Arc<Mutex<RuntimePackageManager>> {
+    pub fn packageManager(&self) -> Arc<TracedMutex<RuntimePackageManager>> {
         self.toolHandler.getOrCreatePackageManager()
     }
 

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::tools::packTool::TracedMutex;
+
 use operit_plugin_sdk::execution_result::decode_js_execution_result_value;
 pub use operit_plugin_sdk::javascript::{
     JsExecutionEngine, JsExecutionProvider, JsPackageExecutor, JsPackageRuntime,
@@ -42,14 +44,14 @@ async function(params) {
 /// Adapts the Operit package manager to the SDK JavaScript package contract.
 #[derive(Clone)]
 pub struct PackageManagerJsRuntime {
-    package_manager: Arc<std::sync::Mutex<RuntimePackageManager>>,
+    package_manager: Arc<TracedMutex<RuntimePackageManager>>,
     tool_handler: AIToolHandler,
 }
 
 impl PackageManagerJsRuntime {
     /// Creates an SDK package runtime backed by the shared package manager.
     pub fn new(
-        package_manager: Arc<std::sync::Mutex<RuntimePackageManager>>,
+        package_manager: Arc<TracedMutex<RuntimePackageManager>>,
         tool_handler: AIToolHandler,
     ) -> Self {
         Self {

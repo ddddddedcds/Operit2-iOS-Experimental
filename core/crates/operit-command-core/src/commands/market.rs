@@ -16,6 +16,7 @@ use operit_runtime::data::preferences::GitHubAuthPreferences::GitHubAuthPreferen
 use operit_tools::tools::mcp_runtime::MCPLocalServer::MCPLocalServer;
 use operit_tools::tools::mcp_runtime::MCPRepository::MCPRepository;
 use operit_tools::tools::packTool::RuntimePackageManager::RuntimePackageManager;
+use operit_tools::tools::packTool::TracedMutex;
 use operit_tools::tools::skill_runtime::SkillRepository::SkillRepository;
 use operit_tools::tools::AIToolHandler::AIToolHandler;
 use sha2::{Digest, Sha256};
@@ -84,7 +85,7 @@ impl MarketCommand {
 }
 
 struct PackageManagerCommand {
-    manager: Arc<Mutex<RuntimePackageManager>>,
+    manager: Arc<TracedMutex<RuntimePackageManager>>,
 }
 
 impl PackageManagerCommand {
