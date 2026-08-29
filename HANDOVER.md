@@ -325,7 +325,7 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
 - 排查顺序（别重蹈）：先 `cat /etc/resolv.conf` / guest 内 `getaddrinfo`，再谈内核传输层。
 - 相关修复：`8d15d09a`（桥注册前置 + 无条件 exit dump）、`5d02ccad`（Rust listSessions 补列 iSH 会话）。
 
-### 8.7 插件 UI 卡死 60 秒（compose_dsl 渲染 / 点击）🔴 未解决
+### 8.7 插件 UI 卡死 60 秒（compose_dsl 渲染 / 点击）🟡 部分缓解（60s 渲染已消失，朋友圈逻辑仍断裂）
 - **现象**：市场插件（实测 `com.operit.qingpei_moments` 朋友圈）打开后卡住不渲染，最终弹 `COMMAND_ERROR: Script execution timed out after 60000 milliseconds`；即使渲染出来，点按钮也无响应。**所有 compose_dsl 插件通病，非单个插件问题。**
 - **实测时序（设备 operit.log，多次复现一致）**：
 
@@ -348,10 +348,18 @@ Siri 视图宿主   → AFUISiriViewController（viewDidAppear 存实例 → add
   1. ❌ "`getAiPermissionMode()` → `dataStore.data()` 等锁 60s"——`e59750f4` 专治此点，实测无效。
   2. ❌ "权限审批拦截"——`asyncPermissionRequiredResult`（`:895`）报的 `Interactive tool permission requires asynchronous tool execution.` 是**通知类工具**（`send_notification`）的报错；朋友圈的 `get_system_setting` 报的是 `Namespace must be one of: system, secure, global`，说明**它的权限检查是通过的**，没卡在权限。
   3. 已排除的快速项：`notifyToolCallRequested`（`:1142`）只跑钩子、日志 `hookCount=0`；`getToolExecutorOrActivate`（`:1150`）对内置无 `:` 工具是短路径。
-- **当前嫌疑（未证实）**：`:1143 checkToolInterception` ~ `:1212` 之间，最像 **`self.inner` 互斥锁或执行槽被外层渲染占着**——渲染等工具、工具等渲染让出槽位，互等到 60s 被砍（形态上接近 §14 那种"等待型"开销，但机制不同）。
-- **已埋的插桩（未上机，待接手验证）**：`executeTool` 内已插入 7 条 `ChainLogger::info(TOOL_CHAIN, "tool.stage.*")`——`notify_requested` / `interception` / `activate` / `executor_removed` / `validated` / `preflight_enter` / `preflight_done`。**装上去点一次朋友圈，看哪两个 stage 之间隔了 60 秒即可锁死卡点**，不必再猜。
+- **原 60s 真凶（已证实并缓解，2026-08-29）**：插桩上机后确认不是"静态猜的 inner 互斥锁等待"，而是 **PM 锁争用 / 重入**导致渲染与工具互等。`bd09d094` 把工具生命周期通知/拦截改非阻塞 `try_lock` 后，mini5 实测 `compose-render-finish elapsedMs=52` —— **60s 渲染卡死消失**。⚠️ 治标：持锁真凶（frb 生成桥 / Dart 侧持锁点）未根治，换触发路径仍可能复现。
+- **插桩已上机验证（2026-08-29，`157a4eb2`+`6221dabe`）**：7 条 `tool.stage.*` + 逐 hook 时间戳 + inv 贯通已推送并在 mini5 跑过，正是它一次钉死 60s 卡点（PM 锁争用）。**验证通过后应单独 commit 移除，避免日志噪音。**
 - **排查顺序（别重蹈）**：先看设备日志 `tool.execute.request` → `tool.execute.start` 的时间差定位"是不是卡在 executeTool 内部" → 再读 `tool.stage.*` 定位具体步 → 最后才动代码。**静态排除法在这个问题上已经错过两次，优先信插桩。**
 - **关联影响**：这 60 秒期间，走同一条链路的 gRPC 调用（包管理列表、转换分析）会一并被拖住转圈（`MethodChannelCoreProxy` 无超时，会一直 loading）。已加 120s 超时兜底（见 §16.4），但那是"报错可重试"不是"修好"。
+- **2026-08-29 更正与补充（接手必读，覆盖上面的过时判断）**：
+  - **朋友圈仍打不开 ≠ 60s 渲染问题**，真因两条（设备日志 + 源码核对 `hosts/apple/src/tools/system/mod.rs:160-167`，非猜）：
+    1. **iOS `getSystemSetting` 是写死 stub**：把 `namespace`/`setting` 直接 `let _=` 丢弃，永远 `Err("iOS system settings are not readable by this host")`。因此 **`17d7ab08`（放开 iOS getSetting namespace 硬校验）是错误归因、无效修复**——iOS 上无论 namespace 是什么都取不到 setting。朋友圈 `loadConfig` 调 `getSetting(moments_data,...)` 永远 error，Android sdcard fallback 在 iOS 也不存在（android-compat 为空）→ 朋友圈拿不到 config。
+    2. **`moments_tools:refresh_ui` JS 端死锁**：render 52ms 成功后该工具入栈 `tool.exec.enter inv=4` → `notify_requested` → `Z2_pre_intercept` → `intercept.skip`（PM 锁 busy，正常）→ 之后**无 `tool.execute.start`/exit**，JS 函数永远不返回。第三次触发虽跑到 `activate`/`validated`/`preflight_enter`/`preflight_done`/`execute.start`，但**仍无 `tool.ffi.exit`**，20s+ 后 `host interaction timed out`、runtime 重启。挂点在 JS 内部 await/调用（环境曾报缺 `setTimeout` 全局，QuickJS worker 运行环境不完整），**非 PM 锁**。
+  - **同类 bug 已修（不同根因，别混淆）**：
+    - `47c2579f`：包工具经同步闭包调同步 `executeTool` → 同步 preflight 拒含 `:` 包工具（`Interactive tool permission requires asynchronous tool execution.`）。新增 `executeToolViaPackageProxy` 进嵌套授权作用域让 preflight `:804` 短路放行；task_done_notifier 等包内工具已可在 AI 聊天执行。
+    - `84bb2e31`（Dart UI）：① `MarketEntryDetailScreen._install` 的 `setState` 加 `mounted` 守卫，修"点安装崩溃"（setState on unmounted → Null check 崩溃）；② `conversion_analysis_sheet.fetchConversionReport` 给 `http.get` 加 30s、FFI `analyzeToolPkgConversion` 加 60s timeout，修"转化分析无限转圈"。
+  - **接手待办**：① 朋友圈真上 iOS——让插件 `loadConfig` 改读 `ToolPkg.getConfigDir()/moments_config.json`（SDK 已有此 API）或在 iOS host 实现真 KV 存盘（风险大，推荐前者）；② `refresh_ui` 死锁打 JS 探针钉死具体 await；③ 清理 `157a4eb2`/`6221dabe` 插桩（单独 commit）；④ com.clean.tv 等插件资源路径残缺（webview 404，设备日志 `File or directory does not exist: .../runtime/cache/toolpkg/com.clean.tv-5f860614`），属插件发布侧资源清单问题，非本端可改。
 
 ---
 
@@ -647,12 +655,12 @@ Impeller shader / Metal 缓存 / 网络等待 / daemon 等待 / MCP 插件 / Rus
   - ⚠️ 因此本手册中任何残留的「POC / 封存 / 停开发 / 暂存待取」措辞均属**过期表述**，**以本节为准**。
 - **官方可吸收**：**§15.B 通用可回馈清单**（TCC 权限全家桶 / 屏幕时间 / Shortcuts / 通知 / iSH 终端，全部公开 API 不依赖越狱）+ 方法论（§9.5 / §11）+ 越狱专属 hook 地图（§7）。
 - **2026-08-29 收尾状态（重要，接手请先看）**：
-  - ✅ 已完成并推送：插件 UI 卡死 60s 的**取证与归因链条**（§8.7）、安卓兼容层架构梳理（§16）、`MethodChannelCoreProxy` 120s 超时兜底。
-  - 🔴 **未完成**：插件 UI 卡死 60s **仍未修好**（§8.7）。已尝试 `e59750f4` 上机验证失败，真卡点未定位。
-  - 🟡 **已埋未验**：`executeTool` 内 7 条 `tool.stage.*` 插桩已写好（`cargo check` 0 error），**尚未上机**。接手续做时优先跑这一步——装包点一次朋友圈，读 `tool.stage.*` 时间差即可锁死卡点，别再走静态推测。
+  - ✅ 已完成并推送：插件 60s 渲染卡死**已缓解**（§8.7，`bd09d094` try_lock + `157a4eb2`/`6221dabe` 插桩，mini5 上机实测 render 52ms）；`47c2579f`（包工具异步权限）、`84bb2e31`（Dart 安装崩溃 + 转化卡死）均已推送；安卓兼容层架构梳理（§16）、`MethodChannelCoreProxy` 120s 超时兜底。
+  - 🟡 **朋友圈仍打不开（不同根因）**：iOS `getSystemSetting` 是写死 stub（`hosts/apple/src/tools/system/mod.rs:160-167`）→ `17d7ab08`（放宽 namespace 校验）是**错误归因、无效修复**；另 `moments_tools:refresh_ui` JS 端死锁（§8.7）。两条均待接手处理，非 60s 渲染问题。
+  - 🟡 **插桩已上机、待清理**：`157a4eb2`/`6221dabe` 的 `tool.stage.*` 全链路插桩已推送并在 mini5 跑过，验证通过后应单独 commit 移除，避免日志噪音。
   - 打包/装机流程见 §5.2 / §5.4；**注意**：`Runner.app` 是预编译产物，源码改动必须等 CI 重新出包才生效，验包可用"grep 新增文案"的方式确认（§9.3 有记）。
   - 工作区遗留（**未提交，勿误 add**）：`apps/flutter/app/pubspec.lock`（analyze 时顺带升了 intl / matcher）、`hosts/ios/deb/files/usr/share/operit/operit.entitlements`（打包脚本改的 bundle id）。
-- [x] 代码：feat/ios-jailbreak-preview4（当前 **0.3.87**；`executeTool` 插桩在工作区未提交）
+- [x] 代码：feat/ios-jailbreak-preview4（当前 **0.3.87**；`157a4eb2`/`6221dabe` 插桩已推送，待验证后清理）
 - [x] 文档：本 HANDOVER.md
 - [x] 两条交付线：越狱 deb（完整）/ nonjb ipa（聊天+iSH）—— **0.3.86 已验证**；**0.3.87 已打包，插件 UI 卡死问题上机验证失败**（§8.7），其余功能待回归。
 - [x] dsh 集成产物：运行时 deb（nodejs 22.23.2-3 + dsh-ios 0.1.1-rc.2-2，deepseek-harness-ios `ios-port`）+ toolpkg 桥 1.1.2（deepseek-harness-ios-toolpkg，独立仓库，见 §3.5）

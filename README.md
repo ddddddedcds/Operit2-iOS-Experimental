@@ -57,8 +57,9 @@
 **核心限制**：兼容层只治**路径**，治不了 **API 调用**。安卓专属 API（`AndroidUtils` 5 类 26 方法、`OkHttp`、Java 桥、`adb`）依赖 `pm` / `getprop` / `settings` / `screencap` / `svc` / `input` / `reboot` 等命令，这些在 iOS 上不存在——路径改得再对，一调用就崩。
 
 **已知问题**：
-- 🔴 **插件 UI 卡死 60 秒**（compose_dsl 渲染 / 点击）：所有 compose_dsl 插件通病，表现为打开卡住后弹 `Script execution timed out after 60000 milliseconds`，或渲染出来后点击无响应。**尚未修好**（已尝试一次修复并上机验证失败，真卡点待插桩定位）。完整取证见 [HANDOVER.md §8.7](./HANDOVER.md)。
-- 这 60 秒期间，包管理列表、转换分析等走同一链路的调用会一并被拖住转圈。已加 120s 超时兜底（转成"报错可重试"），**不是修好**。
+- 🟡 **插件 60s 渲染卡死（compose_dsl）已缓解**：早期所有 compose_dsl 插件打开卡 60s 弹 `Script execution timed out after 60000 milliseconds`。`bd09d094`（非阻塞 try_lock）+ `157a4eb2`/`6221dabe`（插桩）已推送，mini5 上机实测 `compose-render-finish elapsedMs=52` —— **60s 渲染卡死消失**。但这是治标（PM 锁真凶未根治，换触发路径仍可能复现）。完整取证见 [HANDOVER.md §8.7](./HANDOVER.md)。
+- 🔴 **朋友圈仍打不开（不同根因）**：iOS `getSystemSetting` 是写死 stub（`hosts/apple/src/tools/system/mod.rs:160-167`），`17d7ab08` 放宽 namespace 校验是**错误归因、无效修复**；另 `moments_tools:refresh_ui` JS 端死锁。两条均待修，非 60s 渲染问题。
+- 包管理列表、转换分析等走同一链路的调用曾一并被拖住转圈；现已加 `MethodChannelCoreProxy` 120s + Dart 侧 30s/60s timeout 兜底（转成"报错可重试"），**不是根本性修好**。
 - 检测用的 14 个 token 里有 3 个（`ClipboardManager` / `ClipData` / `Shizuku`）在代码库中**零实现**，属启发式误报来源；经评估决定保留，不做清理。
 
 完整清单（26 个方法的逐个对照、两类重写的调用链、分析器字段说明）见 [HANDOVER.md §16](./HANDOVER.md)。
