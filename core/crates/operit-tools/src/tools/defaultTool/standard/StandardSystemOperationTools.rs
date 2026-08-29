@@ -511,7 +511,14 @@ fn optionalParameterValue(tool: &AITool, name: &str) -> Option<String> {
 
 #[allow(non_snake_case)]
 fn isValidNamespace(namespace: &str) -> bool {
-    matches!(namespace, "system" | "secure" | "global")
+    // Cross-platform SDK contract: any non-empty namespace is a valid private
+    // config domain. `system`/`secure`/`global` are reserved words with special
+    // semantics on some platforms, but plugins may use arbitrary custom namespaces
+    // (e.g. "moments_plugin") as their own config scope. The hard allow-list below
+    // previously rejected every non-reserved namespace on iOS, breaking all plugins
+    // that relied on the documented "namespace = arbitrary string" behaviour
+    // (朋友圈 loadConfig 第一步即失败 → 数据空白 / UI 错乱).
+    !namespace.is_empty()
 }
 
 #[allow(non_snake_case)]
