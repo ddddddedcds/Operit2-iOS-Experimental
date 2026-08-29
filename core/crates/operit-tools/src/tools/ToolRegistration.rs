@@ -1014,7 +1014,7 @@ fn registerPublicTools(handler: &mut AIToolHandler, context: &HostManager) {
                     parameters: resolvedInvocation.forwardedParameters,
                 };
                 let mut clonedHandler = proxyHandler.clone();
-                let proxiedResult = clonedHandler.executeTool(proxiedTool);
+                let proxiedResult = clonedHandler.executeToolViaPackageProxy(proxiedTool);
                 ToolResult {
                     toolName: proxiedResult.toolName,
                     success: proxiedResult.success,
@@ -1544,7 +1544,7 @@ fn registerInternalTools(handler: &mut AIToolHandler, context: &HostManager) {
                     parameters: resolvedInvocation.forwardedParameters,
                 };
                 let mut clonedHandler = packageProxyHandler.clone();
-                let proxiedResult = clonedHandler.executeTool(proxiedTool);
+                let proxiedResult = clonedHandler.executeToolViaPackageProxy(proxiedTool);
                 ToolResult {
                     toolName: proxiedResult.toolName,
                     success: proxiedResult.success,

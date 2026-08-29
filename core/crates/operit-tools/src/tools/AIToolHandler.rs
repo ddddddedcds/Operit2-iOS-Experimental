@@ -1167,6 +1167,20 @@ impl AIToolHandler {
         Some(collected)
     }
 
+    /// Executes a tool on behalf of an already-authorized package proxy invocation.
+    ///
+    /// Enters a nested execution scope before dispatching so the synchronous access
+    /// preflight short-circuits and permits package-namespaced tools (e.g. `pkg:tool`)
+    /// instead of denying them with
+    /// "Interactive tool permission requires asynchronous tool execution."
+    /// Tools reached through `package_proxy` are already gated by the role-card
+    /// tool-access check, so re-running the async approval flow is unnecessary. This
+    /// mirrors how compose_dsl plugin tools are already permitted via the same scope.
+    pub fn executeToolViaPackageProxy(&mut self, tool: AITool) -> ToolResult {
+        let _scope = AsyncToolExecutionScope::enter();
+        self.executeTool(tool)
+    }
+
     /// Resolves and executes a tool request through the registered tool chain.
     #[allow(non_snake_case)]
     pub fn executeTool(&mut self, tool: AITool) -> ToolResult {
