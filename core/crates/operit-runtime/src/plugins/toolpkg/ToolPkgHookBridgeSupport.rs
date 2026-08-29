@@ -27,6 +27,25 @@ impl ToolPkgBridgeRuntime {
             .clone()
     }
 
+    /// Non-blocking variant of [`package_manager`].
+    ///
+    /// Returns `None` instead of blocking when the package-manager mutex is
+    /// currently held by another thread. The blocking `package_manager` used to
+    /// freeze the WASM worker thread for up to 60s whenever a compose_dsl
+    /// render triggered a tool call while that mutex was contended: tool
+    /// lifecycle notifications/interception ran inline on the same worker thread
+    /// and waited on a lock owned elsewhere. Callers that only deliver
+    /// best-effort events (notifications) or can safely fall back to `Allow`
+    /// (interception) should use this so a contended lock can never stall tool
+    /// execution.
+    pub fn try_package_manager(&self) -> Option<RuntimePackageManager> {
+        self.tool_handler
+            .getOrCreatePackageManager()
+            .try_lock()
+            .ok()
+            .map(|guard| guard.clone())
+    }
+
     /// Returns this runtime's tool handler.
     pub fn tool_handler(&self) -> AIToolHandler {
         self.tool_handler.clone()

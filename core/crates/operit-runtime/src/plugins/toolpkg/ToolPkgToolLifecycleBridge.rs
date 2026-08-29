@@ -61,7 +61,20 @@ impl AIToolHook for ToolLifecycleBridge {
 
     fn onToolCallIntercept(&self, tool: &AITool) -> AIToolHookDecision {
         let payload = build_base_payload(tool);
-        let manager = self.runtime.package_manager();
+        let manager = match self.runtime.try_package_manager() {
+            Some(manager) => manager,
+            None => {
+                ChainLogger::warn(
+                    PLUGIN_CHAIN,
+                    "plugin.toolpkg.tool_lifecycle.intercept.skip",
+                    &[
+                        ("tool", tool.name.clone()),
+                        ("reason", "package manager lock busy".to_string()),
+                    ],
+                );
+                return AIToolHookDecision::Allow;
+            }
+        };
         let hooks = TOOL_LIFECYCLE_HOOKS
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()
@@ -195,7 +208,20 @@ fn deliver(runtime: &ToolPkgBridgeRuntime, eventName: &str, eventPayload: Value)
             ("hookCount", snapshot.len().to_string()),
         ],
     );
-    let manager = runtime.package_manager();
+    let manager = match runtime.try_package_manager() {
+        Some(manager) => manager,
+        None => {
+            ChainLogger::warn(
+                PLUGIN_CHAIN,
+                "plugin.toolpkg.tool_lifecycle.skip",
+                &[
+                    ("event", eventName.to_string()),
+                    ("reason", "package manager lock busy".to_string()),
+                ],
+            );
+            return;
+        }
+    };
     for hook in snapshot {
         ChainLogger::info(
             PLUGIN_CHAIN,
