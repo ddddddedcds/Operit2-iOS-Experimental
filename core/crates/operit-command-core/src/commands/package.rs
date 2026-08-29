@@ -2,7 +2,6 @@ use crate::commands::tool;
 use crate::output::CoreCommandOutput;
 use operit_runtime::core::application::OperitApplication::OperitApplication;
 use operit_tools::tools::packTool::RuntimePackageManager::BundledExternalPackageCandidate;
-use operit_tools::tools::packTool::TracedMutex;
 use operit_tools::tools::AIToolHandler::AIToolHandler;
 
 pub fn run_package_command(
@@ -239,7 +238,7 @@ fn set_package_enabled(
 fn package_manager(
     tool_handler: &AIToolHandler,
 ) -> std::sync::Arc<
-    TracedMutex<operit_tools::tools::packTool::RuntimePackageManager::RuntimePackageManager>,
+    std::sync::Mutex<operit_tools::tools::packTool::RuntimePackageManager::RuntimePackageManager>,
 > {
     tool_handler.getOrCreatePackageManager()
 }

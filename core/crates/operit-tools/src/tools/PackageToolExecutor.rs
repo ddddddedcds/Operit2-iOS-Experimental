@@ -1,10 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use operit_plugin_sdk::javascript::{JsPackageToolCallRequest, JsPackageToolCallResult};
 use operit_plugin_sdk::package::ToolPackage;
 
 use crate::tools::packTool::RuntimePackageManager::RuntimePackageManager;
-use crate::tools::packTool::TracedMutex;
 use crate::tools::AIToolHandler::AIToolHandler;
 use crate::tools::ToolJsRuntime::{JsPackageExecutor, PackageManagerJsRuntime};
 use crate::tools::ToolResultDataClasses::stringResultData;
@@ -25,7 +24,7 @@ impl PackageToolExecutor {
     /// Creates an executor bound to one package and the shared package runtime.
     pub fn new(
         toolPackage: ToolPackage,
-        packageManager: Arc<TracedMutex<RuntimePackageManager>>,
+        packageManager: Arc<Mutex<RuntimePackageManager>>,
         toolHandler: AIToolHandler,
     ) -> Self {
         let executionHandler = toolHandler.withIsolatedNestedExecutionAuthorization();

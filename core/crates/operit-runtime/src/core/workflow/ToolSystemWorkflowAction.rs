@@ -6,7 +6,7 @@
 //! manager, so workflow execution does not need to lock the whole
 //! `OperitApplication` while tools run.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use operit_model::Workflow::Workflow;
 use operit_tools::ToolExecutionManager::{
@@ -14,19 +14,18 @@ use operit_tools::ToolExecutionManager::{
 };
 use operit_tools::tools::AIToolHandler::AIToolHandler;
 use operit_tools::tools::packTool::RuntimePackageManager::RuntimePackageManager;
-use operit_tools::tools::packTool::TracedMutex;
 
 use super::WorkflowExecutor::WorkflowAction;
 
 /// Executes workflow ExecuteNodes through the chat tool pipeline.
 pub struct ToolSystemWorkflowAction {
     tool_handler: AIToolHandler,
-    package_manager: Arc<TracedMutex<RuntimePackageManager>>,
+    package_manager: Arc<Mutex<RuntimePackageManager>>,
 }
 
 impl ToolSystemWorkflowAction {
     /// Creates an action from the runtime tool handler and its package manager.
-    pub fn new(tool_handler: AIToolHandler, package_manager: Arc<TracedMutex<RuntimePackageManager>>) -> Self {
+    pub fn new(tool_handler: AIToolHandler, package_manager: Arc<Mutex<RuntimePackageManager>>) -> Self {
         Self {
             tool_handler,
             package_manager,

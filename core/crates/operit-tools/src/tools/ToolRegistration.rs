@@ -38,7 +38,6 @@ use operit_tools::tools::defaultTool::ToolGetter::ToolGetter;
 use operit_tools::tools::mcp::MCPManager::MCPManager;
 use operit_tools::tools::mcp::MCPToolExecutor::MCPToolExecutor;
 use operit_tools::tools::packTool::RuntimePackageManager::RuntimePackageManager;
-use operit_tools::tools::packTool::TracedMutex;
 use operit_tools::tools::AIToolHandler::{
     AIToolHandler, FnToolExecutor, ToolRegistrationVisibility,
 };
@@ -2091,7 +2090,7 @@ fn requiredParameterValue(tool: &AITool, name: &str) -> String {
 #[allow(non_snake_case)]
 fn registerPackageTools(
     handler: &AIToolHandler,
-    packageManager: Arc<TracedMutex<RuntimePackageManager>>,
+    packageManager: Arc<Mutex<RuntimePackageManager>>,
     toolPackage: ToolPackage,
 ) {
     let isMcpPackage = toolPackage.category == "MCP"

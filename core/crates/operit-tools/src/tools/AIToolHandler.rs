@@ -3,8 +3,6 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::tools::packTool::TracedMutex;
-
 use operit_host_api::HostEnvironmentDescriptor;
 use operit_host_api::HostManager::HostManager;
 use operit_plugin_sdk::javascript::{
@@ -65,7 +63,7 @@ pub struct AIToolHandlerState {
     runtimeDependencies: ToolRuntimeDependencies,
     hooks: Vec<Arc<dyn AIToolHook>>,
     toolPermissionSystem: ToolPermissionSystem,
-    packageManager: Option<Arc<TracedMutex<RuntimePackageManager>>>,
+    packageManager: Option<Arc<Mutex<RuntimePackageManager>>>,
 }
 
 thread_local! {
@@ -474,14 +472,14 @@ impl AIToolHandler {
 
     /// Returns the shared package manager, creating it with this handler context.
     #[allow(non_snake_case)]
-    pub fn getOrCreatePackageManager(&self) -> Arc<TracedMutex<RuntimePackageManager>> {
+    pub fn getOrCreatePackageManager(&self) -> Arc<Mutex<RuntimePackageManager>> {
         {
             let guard = self.inner.lock().expect("AIToolHandler mutex poisoned");
             if let Some(packageManager) = &guard.packageManager {
                 return packageManager.clone();
             }
         }
-        let packageManager = Arc::new(TracedMutex::new(RuntimePackageManager::new(
+        let packageManager = Arc::new(Mutex::new(RuntimePackageManager::new(
             RuntimeStorePaths::default(),
             self.clone(),
         )));
@@ -721,7 +719,7 @@ impl AIToolHandler {
     #[allow(non_snake_case)]
     fn registerPackageTools(
         &mut self,
-        packageManager: Arc<TracedMutex<RuntimePackageManager>>,
+        packageManager: Arc<Mutex<RuntimePackageManager>>,
         toolPackage: ToolPackage,
     ) {
         let isMcpPackage = toolPackage.category == "MCP"
