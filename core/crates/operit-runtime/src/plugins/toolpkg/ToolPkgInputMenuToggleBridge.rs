@@ -138,10 +138,11 @@ impl ToolPkgInputMenuToggleBridge {
         InputMenuTogglePluginRegistry::register(Arc::new(BridgePlugin {
             runtime: runtime.clone(),
         }));
-        let manager = runtime.package_manager();
-        manager.addToolPkgRuntimeChangeListener(Arc::new(|activeContainers| {
-            ToolPkgInputMenuToggleBridge::syncToolPkgRegistrations(activeContainers);
-        }));
+        if let Some(manager) = runtime.package_manager() {
+            manager.addToolPkgRuntimeChangeListener(Arc::new(|activeContainers| {
+                ToolPkgInputMenuToggleBridge::syncToolPkgRegistrations(activeContainers);
+            }));
+        }
     }
 
     #[allow(non_snake_case)]
@@ -451,8 +452,8 @@ fn loadSpecs(
         .expect("toolpkg input menu hook mutex poisoned")
         .clone();
     let mut resolved = Vec::new();
-    let manager = runtime.package_manager();
-    for hook in registeredHooks {
+    if let Some(manager) = runtime.package_manager() {
+        for hook in registeredHooks {
         let result = manager.runToolPkgMainHook(
             &hook.containerPackageName,
             &hook.functionName,
@@ -489,6 +490,7 @@ fn loadSpecs(
             &hook.pluginId,
             hook.functionSource.as_deref(),
         ));
+    }
     }
     resolved
 }
@@ -590,8 +592,8 @@ fn runInputMenuToggleHook(
     spec: &InputMenuSpec,
     params: &InputMenuToggleHookParams,
 ) {
-    let manager = runtime.package_manager();
-    if let Err(error) = manager.runToolPkgMainHook(
+    if let Some(manager) = runtime.package_manager() {
+        if let Err(error) = manager.runToolPkgMainHook(
         &spec.containerPackageName,
         &spec.functionName,
         TOOLPKG_EVENT_INPUT_MENU_TOGGLE,
@@ -615,6 +617,7 @@ fn runInputMenuToggleHook(
                 spec.containerPackageName, spec.pluginId, error
             ),
         );
+    }
     }
 }
 

@@ -22,13 +22,14 @@ pub struct ToolPkgAppLifecycleHookBridge;
 impl ToolPkgAppLifecycleHookBridge {
     /// Registers app lifecycle hooks for one application runtime.
     pub fn register(runtime: ToolPkgBridgeRuntime) {
-        let manager = runtime.package_manager();
-        manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(move |activeContainers| {
-            ToolPkgAppLifecycleHookBridge::syncAndReplayToolPkgRegistrations(
-                &runtime,
-                activeContainers,
-            );
-        }));
+        if let Some(manager) = runtime.package_manager() {
+            manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(move |activeContainers| {
+                ToolPkgAppLifecycleHookBridge::syncAndReplayToolPkgRegistrations(
+                    &runtime,
+                    activeContainers,
+                );
+            }));
+        }
     }
 
     /// Synchronizes app lifecycle hooks and replays application events to newly added hooks.
@@ -157,7 +158,6 @@ fn runAppLifecycleHook(
     eventName: &str,
     eventPayload: Value,
 ) {
-    let manager = runtime.package_manager();
     ChainLogger::info(
         PLUGIN_CHAIN,
         "plugin.toolpkg.app_lifecycle.run.start",
@@ -168,7 +168,8 @@ fn runAppLifecycleHook(
             ("function", hook.functionName.clone()),
         ],
     );
-    match manager.runToolPkgMainHook(
+    if let Some(manager) = runtime.package_manager() {
+        match manager.runToolPkgMainHook(
         &hook.containerPackageName,
         &hook.functionName,
         eventName,
@@ -200,6 +201,7 @@ fn runAppLifecycleHook(
                 ("error", error),
             ],
         ),
+    }
     }
 }
 

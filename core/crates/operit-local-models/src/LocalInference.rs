@@ -10,6 +10,18 @@ pub enum LocalInferenceError {
     RequestFailed(String),
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): local → foreign
+// `operit_util::OperitError` via the orphan rule.
+impl From<LocalInferenceError> for operit_util::OperitError {
+    fn from(value: LocalInferenceError) -> operit_util::OperitError {
+        match value {
+            LocalInferenceError::ModelNotLoaded(m) | LocalInferenceError::RequestFailed(m) => {
+                operit_util::OperitError::Message(m)
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct LocalModelSelection {

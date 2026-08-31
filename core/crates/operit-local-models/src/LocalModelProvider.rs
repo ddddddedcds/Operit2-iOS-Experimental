@@ -52,6 +52,34 @@ pub enum LocalModelProviderError {
     Storage(String),
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): local → foreign
+// `operit_util::OperitError` via the orphan rule.
+impl From<LocalModelProviderError> for operit_util::OperitError {
+    fn from(value: LocalModelProviderError) -> operit_util::OperitError {
+        match value {
+            LocalModelProviderError::Registry(m)
+            | LocalModelProviderError::EngineExecutableMissing(m)
+            | LocalModelProviderError::RuntimeFileMissing(m)
+            | LocalModelProviderError::UnsupportedDriver(m)
+            | LocalModelProviderError::Process(m)
+            | LocalModelProviderError::InvalidOutput(m)
+            | LocalModelProviderError::InvalidRequest(m)
+            | LocalModelProviderError::Storage(m) => operit_util::OperitError::Message(m),
+            LocalModelProviderError::ModelNotInstalled(m, _)
+            | LocalModelProviderError::DriverMissing(m, _)
+            | LocalModelProviderError::EngineRequirementMissing(m, _) => {
+                operit_util::OperitError::Message(m)
+            }
+            LocalModelProviderError::EngineNotInstalled(m, _, _) => {
+                operit_util::OperitError::Message(m)
+            }
+            LocalModelProviderError::ModelKindMismatch { expected, actual } => {
+                operit_util::OperitError::Message(format!("expected {expected}, got {actual}"))
+            }
+        }
+    }
+}
+
 impl From<LocalModelProviderError> for LocalInferenceError {
     /// Converts a provider error into the public inference error contract.
     fn from(value: LocalModelProviderError) -> Self {

@@ -20,10 +20,11 @@ impl ToolPkgXmlRenderBridge {
     /// Registers XML render hooks for one application runtime.
     pub fn register(runtime: ToolPkgBridgeRuntime) {
         XML_RENDER_RUNTIME.get_or_init(|| runtime.clone());
-        let manager = runtime.package_manager();
-        manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
-            ToolPkgXmlRenderBridge::syncToolPkgRegistrations(activeContainers);
-        }));
+        if let Some(manager) = runtime.package_manager() {
+            manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
+                ToolPkgXmlRenderBridge::syncToolPkgRegistrations(activeContainers);
+            }));
+        }
     }
 
     /// Synchronizes active XML render hook registrations from enabled ToolPkg containers.
@@ -84,8 +85,8 @@ fn renderXml(runtime: &ToolPkgBridgeRuntime, tagName: String, xmlContent: String
     if hooks.is_empty() {
         return Value::Null;
     }
-    let manager = runtime.package_manager();
-    for hook in hooks {
+    if let Some(manager) = runtime.package_manager() {
+        for hook in hooks {
         ChainLogger::info(
             PLUGIN_CHAIN,
             "plugin.toolpkg.xml_render.run.start",
@@ -141,6 +142,7 @@ fn renderXml(runtime: &ToolPkgBridgeRuntime, tagName: String, xmlContent: String
             ],
         );
         return rendered;
+    }
     }
     Value::Null
 }

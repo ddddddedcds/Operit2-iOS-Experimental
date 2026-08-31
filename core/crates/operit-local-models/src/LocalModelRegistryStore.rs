@@ -23,6 +23,20 @@ pub enum LocalModelRegistryStoreError {
     InvalidStoragePath(String),
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): local → foreign
+// `operit_util::OperitError` via the orphan rule.
+impl From<LocalModelRegistryStoreError> for operit_util::OperitError {
+    fn from(value: LocalModelRegistryStoreError) -> operit_util::OperitError {
+        match value {
+            LocalModelRegistryStoreError::Storage(m)
+            | LocalModelRegistryStoreError::Json(m)
+            | LocalModelRegistryStoreError::InvalidStoragePath(m) => {
+                operit_util::OperitError::Message(m)
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct LocalModelRegistryStore {
     path: String,

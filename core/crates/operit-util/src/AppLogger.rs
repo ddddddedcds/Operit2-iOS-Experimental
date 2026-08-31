@@ -1,5 +1,8 @@
 use std::backtrace::Backtrace;
 use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use chrono::{DateTime, Local, Utc};
@@ -20,6 +23,26 @@ pub const ERROR: i32 = 6;
 pub const ASSERT: i32 = 7;
 
 const TOOLPKG_LOG_TAG: &str = "ToolPkg";
+
+/// Bound in-memory log entries to avoid unbounded memory growth on long
+/// sessions: once exceeded, the oldest entries are dropped (ring buffer).
+const MAX_LOG_ENTRIES: usize = 1000;
+
+/// Minimum priority that `write_entry` actually records. Lower-priority entries
+/// are dropped, so `is_loggable` finally takes effect instead of always
+/// returning `true`. Defaults to `VERBOSE` (log everything); raise it to throttle
+/// verbose noise on device.
+static MIN_LOG_LEVEL: AtomicI32 = AtomicI32::new(VERBOSE);
+
+/// Sets the minimum log priority that is recorded.
+pub fn set_min_log_level(level: i32) {
+    MIN_LOG_LEVEL.store(level, Ordering::Relaxed);
+}
+
+/// Returns the minimum log priority that is recorded.
+pub fn min_log_level() -> i32 {
+    MIN_LOG_LEVEL.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// One in-memory and file-backed application log entry.
@@ -61,6 +84,47 @@ fn install_host_log_sink_once() {
     HOST_LOG_SINK_INIT.call_once(|| {
         operit_host_api::setHostLogSink(std::sync::Arc::new(|tag, message| {
             AppLogger::e(tag, message);
+        }));
+        // Make sure crashes are observable before any core dispatch runs.
+        install_panic_hook();
+    });
+}
+
+/// Dedicated log-file path for the panic hook (and the ANR watchdog). Stored
+/// separately from the AppLogger STATE mutex so a panic or deadlock that
+/// poisons STATE can still be written.
+pub(crate) static PANIC_LOG_PATH: OnceLock<String> = OnceLock::new();
+
+/// Installs a process-wide panic hook that records every Rust panic into the
+/// bound log file (best-effort) and stderr, so crashes are no longer invisible
+/// on device. The hook never locks the AppLogger STATE mutex, so it remains
+/// safe even when the panic originated inside AppLogger itself.
+pub fn install_panic_hook() {
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            default_hook(info);
+            let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Box<dyn Any>".to_string()
+            };
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "<unknown location>".to_string());
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            let report = format!("PANIC at {location}: {payload}\n{backtrace}\n");
+            if let Some(path) = PANIC_LOG_PATH.get() {
+                let _ = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| f.write_all(report.as_bytes()));
+            }
         }));
     });
 }
@@ -105,6 +169,10 @@ impl AppLogger {
     ) -> Result<(), String> {
         ensure_log_file(&file_system_host, &log_file)?;
         ensure_log_file(&file_system_host, &package_log_file)?;
+        // Record the runtime log path in a dedicated global so the panic hook
+        // can append to it without touching the STATE mutex (which may be
+        // poisoned during a panic).
+        let _ = PANIC_LOG_PATH.set(log_file.clone());
         let mut guard = state().lock().expect("AppLogger mutex poisoned");
         guard.file_system_host = Some(file_system_host);
         guard.log_file = Some(log_file);
@@ -229,7 +297,17 @@ impl AppLogger {
         msg: &str,
         tr: &(dyn std::error::Error),
     ) -> i32 {
-        write_entry(priority, tag, msg, Some(error_chain(tr)));
+        let mut throwable = error_chain(tr);
+        // Errors are exactly where a stack trace matters most. The previous
+        // implementation only chained `.source()` messages and never captured
+        // the call stack (see `get_stack_trace_string`, which was dead code).
+        if priority >= ERROR {
+            let _ = std::fmt::write(
+                &mut throwable,
+                format_args!("\n{}", std::backtrace::Backtrace::force_capture()),
+            );
+        }
+        write_entry(priority, tag, msg, Some(throwable));
         0
     }
 
@@ -239,12 +317,15 @@ impl AppLogger {
     }
 
     /// Returns whether a tag and priority should be logged.
-    pub fn is_loggable(_tag: &str, _level: i32) -> bool {
-        true
+    pub fn is_loggable(_tag: &str, level: i32) -> bool {
+        level >= MIN_LOG_LEVEL.load(Ordering::Relaxed)
     }
 }
 
 fn write_entry(priority: i32, tag: &str, msg: &str, throwable: Option<String>) {
+    if priority < MIN_LOG_LEVEL.load(Ordering::Relaxed) {
+        return;
+    }
     let timestamp_ms = operit_host_api::TimeUtils::currentTimeMillisU128();
     let entry = LogEntry {
         priority,
@@ -257,6 +338,10 @@ fn write_entry(priority: i32, tag: &str, msg: &str, throwable: Option<String>) {
     let (enable_file_logging, enable_console_logging, file_system_host, log_file, package_log_file) = {
         let mut guard = state().lock().expect("AppLogger mutex poisoned");
         guard.entries.push(entry.clone());
+        if guard.entries.len() > MAX_LOG_ENTRIES {
+            let overflow = guard.entries.len() - MAX_LOG_ENTRIES;
+            guard.entries.drain(0..overflow);
+        }
         (
             guard.enable_file_logging,
             guard.enable_console_logging,

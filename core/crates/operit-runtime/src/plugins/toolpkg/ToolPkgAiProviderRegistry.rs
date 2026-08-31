@@ -10,10 +10,11 @@ pub struct ToolPkgAiProviderRegistry;
 impl ToolPkgAiProviderRegistry {
     /// Registers package runtime updates for one application runtime.
     pub fn register(runtime: ToolPkgBridgeRuntime) {
-        let manager = runtime.package_manager();
-        manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
-            ToolPkgAiProviderRegistry::syncToolPkgRegistrations(activeContainers);
-        }));
+        if let Some(manager) = runtime.package_manager() {
+            manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
+                ToolPkgAiProviderRegistry::syncToolPkgRegistrations(activeContainers);
+            }));
+        }
     }
 
     /// Returns a registered ToolPkg AI provider by identifier.

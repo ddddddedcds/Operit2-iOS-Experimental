@@ -40,7 +40,7 @@ impl ManagedRuntimeProcess for IosManagedRuntimeProcess {
             .stdin
             .lock()
             .map_err(|_| HostError::new("stdin mutex poisoned"))?;
-        writeManagedRuntimeLine(&mut stdin, line)
+        writeManagedRuntimeLine(&mut *stdin, line)
     }
 
     /// Writes multiple protocol lines to the managed runtime stdin.
@@ -49,7 +49,7 @@ impl ManagedRuntimeProcess for IosManagedRuntimeProcess {
             .stdin
             .lock()
             .map_err(|_| HostError::new("stdin mutex poisoned"))?;
-        writeManagedRuntimeLines(&mut stdin, lines)
+        writeManagedRuntimeLines(&mut *stdin, lines)
     }
 
     /// Reads one protocol line from the managed runtime stdout queue.
@@ -71,14 +71,7 @@ impl ManagedRuntimeProcess for IosManagedRuntimeProcess {
             .stderrLines
             .lock()
             .map_err(|_| HostError::new("stderr mutex poisoned"))?;
-        let mut output = String::new();
-        while let Some(line) = lines.pop_front() {
-            output.push_str(&line);
-            if !line.ends_with('\n') {
-                output.push('\n');
-            }
-        }
-        Ok(output)
+        Ok(joinManagedRuntimeStderrLines(&mut lines))
     }
 
     /// Returns whether the managed runtime process is still alive.
@@ -233,8 +226,12 @@ fn iosRuntimeWorkspaceDir() -> String {
 }
 
 /// Writes one newline-terminated managed runtime frame.
+///
+/// Generic over `Write` so the framing can be unit-tested without spawning a
+/// child process. This is a protocol boundary worth testing: a malformed frame
+/// (missing or doubled newline) hangs the MCP runtime rather than erroring.
 #[allow(non_snake_case)]
-fn writeManagedRuntimeLine(stdin: &mut ChildStdin, line: &str) -> HostResult<()> {
+fn writeManagedRuntimeLine(stdin: &mut impl Write, line: &str) -> HostResult<()> {
     let lineBytes = line.as_bytes();
     match lineBytes.len() >= MANAGED_RUNTIME_SINGLE_FRAME_MIN_BYTES {
         true => writeManagedRuntimeLargeLine(stdin, lineBytes),
@@ -244,7 +241,7 @@ fn writeManagedRuntimeLine(stdin: &mut ChildStdin, line: &str) -> HostResult<()>
 
 /// Writes a small managed runtime line without per-message heap allocation.
 #[allow(non_snake_case)]
-fn writeManagedRuntimeSmallLine(stdin: &mut ChildStdin, lineBytes: &[u8]) -> HostResult<()> {
+fn writeManagedRuntimeSmallLine(stdin: &mut impl Write, lineBytes: &[u8]) -> HostResult<()> {
     stdin.write_all(lineBytes)?;
     stdin.write_all(b"\n")?;
     stdin.flush()?;
@@ -253,7 +250,7 @@ fn writeManagedRuntimeSmallLine(stdin: &mut ChildStdin, lineBytes: &[u8]) -> Hos
 
 /// Writes a large managed runtime line as one contiguous pipe frame.
 #[allow(non_snake_case)]
-fn writeManagedRuntimeLargeLine(stdin: &mut ChildStdin, lineBytes: &[u8]) -> HostResult<()> {
+fn writeManagedRuntimeLargeLine(stdin: &mut impl Write, lineBytes: &[u8]) -> HostResult<()> {
     let mut frame = Vec::with_capacity(lineBytes.len() + 1);
     frame.extend_from_slice(lineBytes);
     frame.push(b'\n');
@@ -264,7 +261,7 @@ fn writeManagedRuntimeLargeLine(stdin: &mut ChildStdin, lineBytes: &[u8]) -> Hos
 
 /// Writes many managed runtime lines through one contiguous pipe frame.
 #[allow(non_snake_case)]
-fn writeManagedRuntimeLines(stdin: &mut ChildStdin, lines: &[String]) -> HostResult<()> {
+fn writeManagedRuntimeLines(stdin: &mut impl Write, lines: &[String]) -> HostResult<()> {
     let frameBytes = lines.iter().map(|line| line.len() + 1).sum();
     let mut frame = Vec::with_capacity(frameBytes);
     for line in lines {
@@ -274,4 +271,60 @@ fn writeManagedRuntimeLines(stdin: &mut ChildStdin, lines: &[String]) -> HostRes
     stdin.write_all(&frame)?;
     stdin.flush()?;
     Ok(())
+}
+
+/// Joins buffered stderr lines, ensuring every line is newline-terminated.
+fn joinManagedRuntimeStderrLines(lines: &mut VecDeque<String>) -> String {
+    let mut output = String::new();
+    while let Some(line) = lines.pop_front() {
+        output.push_str(&line);
+        if !line.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+    output
+}
+
+#[cfg(test)]
+mod managed_runtime_tests {
+    use super::{
+        joinManagedRuntimeStderrLines, writeManagedRuntimeLine, writeManagedRuntimeLines,
+        MANAGED_RUNTIME_SINGLE_FRAME_MIN_BYTES,
+    };
+    use std::collections::VecDeque;
+
+    #[test]
+    fn small_line_is_written_with_exactly_one_trailing_newline() {
+        let mut sink = Vec::new();
+        writeManagedRuntimeLine(&mut sink, r#"{"jsonrpc":"2.0"}"#).unwrap();
+        assert_eq!(String::from_utf8(sink).unwrap(), "{\"jsonrpc\":\"2.0\"}\n");
+    }
+
+    #[test]
+    fn large_line_stays_one_contiguous_frame_with_one_newline() {
+        // Past the threshold the writer buffers into a single frame; it must
+        // still emit exactly one trailing newline or the peer blocks forever.
+        let payload = "x".repeat(MANAGED_RUNTIME_SINGLE_FRAME_MIN_BYTES + 10);
+        let mut sink = Vec::new();
+        writeManagedRuntimeLine(&mut sink, &payload).unwrap();
+        let written = String::from_utf8(sink).unwrap();
+        assert_eq!(written, format!("{payload}\n"));
+        assert_eq!(written.matches('\n').count(), 1);
+    }
+
+    #[test]
+    fn write_lines_joins_with_newlines_and_keeps_order() {
+        let lines = vec!["first".to_string(), "second".to_string(), String::new()];
+        let mut sink = Vec::new();
+        writeManagedRuntimeLines(&mut sink, &lines).unwrap();
+        assert_eq!(String::from_utf8(sink).unwrap(), "first\nsecond\n\n");
+    }
+
+    #[test]
+    fn stderr_join_terminates_lines_and_drains_queue() {
+        let mut lines: VecDeque<String> =
+            VecDeque::from(vec!["boom".to_string(), "already\n".to_string()]);
+        assert_eq!(joinManagedRuntimeStderrLines(&mut lines), "boom\nalready\n");
+        assert!(lines.is_empty());
+    }
 }

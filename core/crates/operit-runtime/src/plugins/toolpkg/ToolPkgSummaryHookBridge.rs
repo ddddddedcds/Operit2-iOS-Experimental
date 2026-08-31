@@ -75,9 +75,9 @@ impl SummaryGenerateHook for SummaryGenerateBridge {
         );
         let mut mutation = SummaryHookMutation::default();
         let mut changed = false;
-        let manager = self.runtime.package_manager();
         let budget = ToolPkgPreHookTimeout::fromPreferences();
-        for hook in snapshot {
+        if let Some(manager) = self.runtime.package_manager() {
+            for hook in snapshot {
             let Some(timeoutMillis) = budget.remainingTimeoutMillis() else {
                 ChainLogger::error(
                     PLUGIN_CHAIN,
@@ -171,6 +171,7 @@ impl SummaryGenerateHook for SummaryGenerateBridge {
                     ],
                 );
             }
+        }
         }
         if changed {
             Some(mutation)

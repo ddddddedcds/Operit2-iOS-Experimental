@@ -57,11 +57,12 @@ impl OperitPlugin for ToolPkgCommonBridgePlugin {
         crate::plugins::toolpkg::ToolPkgHostEventHookBridge::ToolPkgHostEventHookBridge::register(
             self.runtime.clone(),
         );
-        let manager = self.runtime.package_manager();
         let runtime = self.runtime.clone();
-        manager.addToolPkgRuntimeChangeListener(Arc::new(move |activeContainers| {
-            syncToolPkgRegistrations(&runtime, activeContainers);
-        }));
+        if let Some(manager) = self.runtime.package_manager() {
+            manager.addToolPkgRuntimeChangeListener(Arc::new(move |activeContainers| {
+                syncToolPkgRegistrations(&runtime, activeContainers);
+            }));
+        }
     }
 }
 

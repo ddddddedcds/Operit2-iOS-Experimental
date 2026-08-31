@@ -1060,6 +1060,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "image",
+ "libc",
  "operit-host-api",
  "operit-host-apple-native",
  "operit-host-native-common",
@@ -1147,6 +1148,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
  "tokio",
 ]
 

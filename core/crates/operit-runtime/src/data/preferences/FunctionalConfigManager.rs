@@ -50,6 +50,20 @@ pub enum FunctionalConfigError {
     UnknownFunctionType(String),
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): a *local* error type
+// converts into the foreign, unified `operit_util::OperitError` via the orphan
+// rule, so `?` propagates this crate's errors across crate boundaries.
+impl From<FunctionalConfigError> for operit_util::OperitError {
+    fn from(value: FunctionalConfigError) -> operit_util::OperitError {
+        match value {
+            FunctionalConfigError::Json(error) => error.into(),
+            FunctionalConfigError::Store(error) => operit_util::OperitError::Message(error.to_string()),
+            FunctionalConfigError::ModelConfigManager(message) => operit_util::OperitError::Message(message),
+            FunctionalConfigError::UnknownFunctionType(message) => operit_util::OperitError::Message(message),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct FunctionalConfigManager {
     functionalConfigDataStore: PreferencesDataStore,

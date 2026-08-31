@@ -271,9 +271,9 @@ fn dispatch_prompt_hooks(
     let mut current = context.clone();
     let mut mutation = PromptHookMutation::default();
     let mut changed = false;
-    let package_manager = runtime.package_manager();
-    let budget = ToolPkgPreHookTimeout::fromPreferences();
-    for hook in snapshot {
+        let budget = ToolPkgPreHookTimeout::fromPreferences();
+        if let Some(package_manager) = runtime.package_manager() {
+            for hook in snapshot {
         let Some(timeoutMillis) = budget.remainingTimeoutMillis() else {
             report_prompt_hook_timeout(&current, &hook);
             ChainLogger::error(
@@ -383,6 +383,7 @@ fn dispatch_prompt_hooks(
             );
         }
     }
+        }
     if changed {
         Some(mutation)
     } else {

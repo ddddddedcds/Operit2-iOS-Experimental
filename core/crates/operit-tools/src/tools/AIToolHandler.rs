@@ -25,7 +25,7 @@ use operit_tools::tools::ToolResultDataClasses::{stringResultData, ToolResultDat
 use operit_tools::ConversationMarkupManager::ToolResult;
 use operit_tools::ToolExecutionManager::{
     AITool, ToolAccessSpec, ToolBoundary, ToolEffect, ToolExecutionManager, ToolExecutor,
-    ToolParameter, ToolValidationResult,
+    ToolParameter, ToolRuntimeContextGuard, ToolValidationResult,
 };
 use operit_util::ChainLogger::{self, TOOL_CHAIN};
 use operit_util::LocaleUtils::LocaleUtils;
@@ -54,7 +54,22 @@ pub struct AIToolHandler {
     nestedExecutionAuthorization: PackageNestedExecutionAuthorizationState,
 }
 
+/// Default hard timeout (ms) for one tool invocation, mirroring operit1's
+/// `JsTimeoutConfig` (`MAIN_TIMEOUT_SECONDS = 1800` -> `TOOL_CALL_TIMEOUT_MS`).
+///
+/// Semantic difference worth knowing: operit1 pairs this bound with cooperative
+/// cancellation (`ensureActive()` checkpoints), so a hung script unwinds and
+/// frees its thread. Here the bound only stops the *caller* from waiting — the
+/// worker thread is NOT aborted (Rust std has no thread cancellation) and keeps
+/// running to completion. True cancellation still needs the async-runtime
+/// migration (§14.3 / §15.1).
+pub const DEFAULT_TOOL_EXECUTION_TIMEOUT_MS: u64 = 1_800_000;
+
 pub struct AIToolHandlerState {
+    /// Hard timeout (ms) applied to a single `ToolExecutor::invokeAndStream`
+    /// call. Defaults to [`DEFAULT_TOOL_EXECUTION_TIMEOUT_MS`] (operit1 parity);
+    /// `0` disables the bound entirely.
+    toolExecutionTimeoutMs: u64,
     availableTools: BTreeMap<String, Box<dyn ToolExecutor>>,
     toolVisibility: BTreeMap<String, ToolRegistrationVisibility>,
     unavailableBuiltinTools: BTreeMap<BuiltinToolName, String>,
@@ -94,6 +109,44 @@ impl AsyncToolExecutionScope {
     /// Reports whether the current thread is executing an approved async tool stack.
     fn isActive() -> bool {
         ASYNC_TOOL_EXECUTION_SCOPE_DEPTH.with(|depth| depth.get() > 0)
+    }
+
+    /// Reads this thread's scope depth so it can be carried into a worker thread.
+    ///
+    /// Thread-locals are **not** inherited by spawned threads, so anything that
+    /// moves tool execution onto another thread (see `run_with_timeout`) must
+    /// propagate the depth explicitly or nested package authorization silently
+    /// stops being inherited.
+    fn currentDepth() -> usize {
+        ASYNC_TOOL_EXECUTION_SCOPE_DEPTH.with(|depth| depth.get())
+    }
+
+    /// Installs `depth` on this thread, restoring the previous value on drop.
+    fn restoreDepth(depth: usize) -> AsyncToolExecutionScopeDepthGuard {
+        AsyncToolExecutionScopeDepthGuard::new(depth)
+    }
+}
+
+/// Installs an async-tool-execution depth on one thread and restores the previous
+/// value on drop. Lets a worker thread inherit the caller's authorization depth.
+struct AsyncToolExecutionScopeDepthGuard {
+    previous: usize,
+}
+
+impl AsyncToolExecutionScopeDepthGuard {
+    fn new(depth: usize) -> Self {
+        let previous = ASYNC_TOOL_EXECUTION_SCOPE_DEPTH.with(|value| {
+            let previous = value.get();
+            value.set(depth);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for AsyncToolExecutionScopeDepthGuard {
+    fn drop(&mut self) {
+        ASYNC_TOOL_EXECUTION_SCOPE_DEPTH.with(|value| value.set(self.previous));
     }
 }
 
@@ -180,6 +233,7 @@ impl AIToolHandler {
     pub fn new(context: HostManager, runtimeDependencies: ToolRuntimeDependencies) -> Self {
         Self {
             inner: Arc::new(Mutex::new(AIToolHandlerState {
+                toolExecutionTimeoutMs: DEFAULT_TOOL_EXECUTION_TIMEOUT_MS,
                 availableTools: BTreeMap::new(),
                 toolVisibility: BTreeMap::new(),
                 unavailableBuiltinTools: BTreeMap::new(),
@@ -1317,7 +1371,53 @@ impl AIToolHandler {
         let _inheritedExecutionScope = self
             .hasNestedExecutionAuthorization()
             .then(AsyncToolExecutionScope::enter);
-        let collected = executor.invokeAndStream(&tool);
+        // Bounded wait: the executor is owned (it was removed from
+        // `availableTools` above) and `ToolExecutor: Send`, so it can move into
+        // the watchdog thread. On timeout the executor is *not* returned — the
+        // tool stays absent from `availableTools` until the next call re-activates
+        // it via `getToolExecutorOrActivate` -> `registerDefaultTools`.
+        let timeoutMs = self
+            .inner
+            .lock()
+            .expect("AIToolHandler mutex poisoned")
+            .toolExecutionTimeoutMs;
+        // Thread-locals are NOT inherited by the spawned thread, so the caller's
+        // async-execution depth (nested package authorization) and tool runtime
+        // context must be carried across explicitly — otherwise enabling a
+        // timeout would silently strip both from every tool invocation.
+        let inheritedDepth = AsyncToolExecutionScope::currentDepth();
+        let inheritedContext = ToolExecutionManager::currentToolRuntimeContext();
+        let invocationTool = tool.clone();
+        let invocation = run_with_timeout(timeoutMs, move || {
+            let _depthGuard = AsyncToolExecutionScope::restoreDepth(inheritedDepth);
+            let _contextGuard = ToolRuntimeContextGuard::install(inheritedContext);
+            (executor.invokeAndStream(&invocationTool), executor)
+        });
+        let (collected, restoredExecutor) = match invocation {
+            Some((results, executor)) => (results, Some(executor)),
+            None => {
+                ChainLogger::error(
+                    TOOL_CHAIN,
+                    "tool.execute.timeout",
+                    &[
+                        ("tool", tool.name.clone()),
+                        ("timeoutMs", timeoutMs.to_string()),
+                    ],
+                );
+                (
+                    vec![ToolResult {
+                        toolName: tool.name.clone(),
+                        success: false,
+                        result: stringResultData(""),
+                        error: Some(format!(
+                            "Tool execution timed out after {timeoutMs}ms: {}",
+                            tool.name
+                        )),
+                    }],
+                    None,
+                )
+            }
+        };
         if collected.is_empty() {
             ChainLogger::error(
                 TOOL_CHAIN,
@@ -1371,12 +1471,35 @@ impl AIToolHandler {
                 );
             }
         }
+        // Only re-register when the invocation returned; on timeout the executor
+        // is still owned by the leaked watchdog thread.
+        if let Some(executor) = restoredExecutor {
+            self.inner
+                .lock()
+                .expect("AIToolHandler mutex poisoned")
+                .availableTools
+                .insert(tool.name.clone(), executor);
+        }
+        result
+    }
+
+    /// Sets the hard timeout (ms) for a single tool invocation. `0` disables it
+    /// (default), preserving the pre-existing unbounded behaviour.
+    #[allow(non_snake_case)]
+    pub fn setToolExecutionTimeoutMs(&self, timeoutMs: u64) {
         self.inner
             .lock()
             .expect("AIToolHandler mutex poisoned")
-            .availableTools
-            .insert(tool.name.clone(), executor);
-        result
+            .toolExecutionTimeoutMs = timeoutMs;
+    }
+
+    /// Returns the configured hard timeout (ms) for a single tool invocation.
+    #[allow(non_snake_case)]
+    pub fn getToolExecutionTimeoutMs(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("AIToolHandler mutex poisoned")
+            .toolExecutionTimeoutMs
     }
 
     #[allow(non_snake_case)]
@@ -1722,5 +1845,72 @@ mod tests {
         assert!(!isolated_on_worker);
         drop(authorization);
         assert!(!authorized_state.isActive());
+    }
+}
+
+/// Best-effort timeout wrapper for a blocking closure.
+///
+/// Runs `work` on a spawned thread and waits up to `timeout_ms`. Returns `None`
+/// if `work` does not finish in time. The spawned thread is **not** aborted
+/// (Rust std has no thread cancellation); on timeout it leaks until `work`
+/// returns on its own. Use this only where the caller must not block forever —
+/// e.g. a tool execution that may hang. True cancellation requires migrating
+/// tool execution to a tokio runtime so the future can be dropped.
+///
+/// This is the timeout discipline foundation for tool execution, and it **is**
+/// wired into `executeTool` (gated by `toolExecutionTimeoutMs`, default `0` =
+/// disabled so behaviour is unchanged until a caller opts in).
+///
+/// Correcting an earlier claim: `Box<dyn ToolExecutor>` is *not* `!Send`.
+/// `ToolExecutor` already declares `Send` as a supertrait
+/// (`ToolExecutionManager.rs`: `pub trait ToolExecutor: Send`), so the trait
+/// object is `Send` and can move into this thread with no change to the 14 impls.
+/// What still needs the async-runtime migration (§14.3 / §15.1) is *true
+/// cancellation* — dropping a future — not merely bounding the wait.
+pub fn run_with_timeout<F, T>(timeout_ms: u64, work: F) -> Option<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    if timeout_ms == 0 {
+        return Some(work());
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<T>();
+    let handle = std::thread::spawn(move || {
+        let value = work();
+        let _ = tx.send(value);
+    });
+    match rx.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+        Ok(value) => {
+            let _ = handle.join();
+            Some(value)
+        }
+        Err(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod timeout_foundation_tests {
+    use super::run_with_timeout;
+
+    #[test]
+    fn returns_value_when_work_finishes_in_time() {
+        let result = run_with_timeout(1000, || 42u32);
+        assert_eq!(result, Some(42));
+    }
+
+    #[test]
+    fn returns_none_when_work_exceeds_timeout() {
+        let result = run_with_timeout(80, || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            1u32
+        });
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn zero_timeout_runs_inline() {
+        let result = run_with_timeout(0, || "inline".to_string());
+        assert_eq!(result, Some("inline".to_string()));
     }
 }

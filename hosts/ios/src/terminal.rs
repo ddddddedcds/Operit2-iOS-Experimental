@@ -42,7 +42,32 @@ fn iosAndroidCompatRoot() -> std::path::PathBuf {
     std::path::Path::new("/var/mobile/.operit/runtime").join("android-compat")
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Maps one requested terminal implementation/type pair onto a backend.
+///
+/// Extracted as a pure function so the selection rules can be unit-tested
+/// without constructing a terminal host (whose constructor probes for a real
+/// PTY). Errors are plain `String` to keep the assertions readable.
+fn decideRequestedBackend(
+    terminal: &str,
+    terminalType: &str,
+    systemShellAvailable: bool,
+) -> Result<IosTerminalBackend, String> {
+    match (terminal.trim(), terminalType.trim()) {
+        (ISH_TERMINAL, SHELL_TERMINAL_TYPE) => Ok(IosTerminalBackend::Ish),
+        (SYSTEM_SHELL_TERMINAL, SHELL_TERMINAL_TYPE) if systemShellAvailable => {
+            Ok(IosTerminalBackend::SystemShell)
+        }
+        (SYSTEM_SHELL_TERMINAL, SHELL_TERMINAL_TYPE) => Err(
+            "iOS system /bin/sh is unavailable because this host cannot start a privileged PTY"
+                .to_string(),
+        ),
+        (implementation, kind) => Err(format!(
+            "Unsupported iOS terminal implementation and type: {implementation}/{kind}"
+        )),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IosTerminalBackend {
     Ish,
     SystemShell,
@@ -135,18 +160,8 @@ impl IosTerminalHost {
         terminal: &str,
         terminalType: &str,
     ) -> HostResult<IosTerminalBackend> {
-        match (terminal.trim(), terminalType.trim()) {
-            (ISH_TERMINAL, SHELL_TERMINAL_TYPE) => Ok(IosTerminalBackend::Ish),
-            (SYSTEM_SHELL_TERMINAL, SHELL_TERMINAL_TYPE) if self.systemShellAvailable => {
-                Ok(IosTerminalBackend::SystemShell)
-            }
-            (SYSTEM_SHELL_TERMINAL, SHELL_TERMINAL_TYPE) => Err(HostError::new(
-                "iOS system /bin/sh is unavailable because this host cannot start a privileged PTY",
-            )),
-            (implementation, kind) => Err(HostError::new(format!(
-                "Unsupported iOS terminal implementation and type: {implementation}/{kind}"
-            ))),
-        }
+        decideRequestedBackend(terminal, terminalType, self.systemShellAvailable)
+            .map_err(HostError::new)
     }
 
     /// Returns the public terminal implementation name for one iOS backend.
@@ -728,5 +743,68 @@ fn controlSequence(control: &str) -> HostResult<&'static str> {
         value => Err(HostError::new(format!(
             "unsupported iOS terminal control sequence: {value}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::{
+        decideRequestedBackend, iosAndroidCompatRoot, iosShellEnvironment, IosTerminalBackend,
+    };
+
+    #[test]
+    fn shell_environment_includes_jailbreak_dirs_and_shell() {
+        let environment = iosShellEnvironment();
+        let path = environment
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.clone())
+            .expect("PATH must always be injected");
+        // HANDOVER 8.4: the inherited app PATH lacked these, so `uname` failed.
+        for required in ["/usr/bin", "/bin", "/var/jb/bin", "/var/jb/usr/bin"] {
+            assert!(path.contains(required), "PATH missing {required}: {path}");
+        }
+        assert!(environment
+            .iter()
+            .any(|(key, value)| key == "SHELL" && value == "/bin/sh"));
+    }
+
+    #[test]
+    fn android_compat_root_matches_path_mapper_target() {
+        assert_eq!(
+            iosAndroidCompatRoot().to_string_lossy(),
+            "/var/mobile/.operit/runtime/android-compat"
+        );
+    }
+
+    #[test]
+    fn requested_backend_selects_ish() {
+        assert_eq!(
+            decideRequestedBackend("ish", "shell", false),
+            Ok(IosTerminalBackend::Ish)
+        );
+    }
+
+    #[test]
+    fn requested_backend_selects_system_shell_only_when_available() {
+        assert_eq!(
+            decideRequestedBackend("shell", "shell", true),
+            Ok(IosTerminalBackend::SystemShell)
+        );
+        assert!(decideRequestedBackend("shell", "shell", false).is_err());
+    }
+
+    #[test]
+    fn requested_backend_trims_surrounding_whitespace() {
+        assert_eq!(
+            decideRequestedBackend("  ish  ", " shell ", false),
+            Ok(IosTerminalBackend::Ish)
+        );
+    }
+
+    #[test]
+    fn requested_backend_rejects_unknown_combinations() {
+        assert!(decideRequestedBackend("native", "shell", true).is_err());
+        assert!(decideRequestedBackend("ish", "bash", true).is_err());
     }
 }

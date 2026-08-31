@@ -2097,6 +2097,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "image 0.24.9",
+ "libc",
  "operit-host-api",
  "operit-host-apple-native",
  "operit-host-native-common",

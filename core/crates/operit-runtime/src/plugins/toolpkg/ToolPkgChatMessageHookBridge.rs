@@ -21,10 +21,11 @@ impl ToolPkgChatMessageHookBridge {
     /// Registers chat message persistence hooks for one application runtime.
     pub fn register(runtime: ToolPkgBridgeRuntime) {
         CHAT_MESSAGE_RUNTIME.get_or_init(|| runtime.clone());
-        let manager = runtime.package_manager();
-        manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
-            ToolPkgChatMessageHookBridge::syncToolPkgRegistrations(activeContainers);
-        }));
+        if let Some(manager) = runtime.package_manager() {
+            manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
+                ToolPkgChatMessageHookBridge::syncToolPkgRegistrations(activeContainers);
+            }));
+        }
     }
 
     /// Synchronizes active chat message hook registrations from enabled ToolPkg containers.
@@ -83,8 +84,8 @@ impl ToolPkgChatMessageHookBridge {
         );
 
         let eventPayload = buildChatMessagePayload(chatId, message);
-        let manager = runtime.package_manager();
-        for hook in activeHooks {
+        if let Some(manager) = runtime.package_manager() {
+            for hook in activeHooks {
             ChainLogger::info(
                 PLUGIN_CHAIN,
                 "plugin.toolpkg.chat_message.run.start",
@@ -128,6 +129,7 @@ impl ToolPkgChatMessageHookBridge {
                     ],
                 ),
             }
+        }
         }
     }
 }

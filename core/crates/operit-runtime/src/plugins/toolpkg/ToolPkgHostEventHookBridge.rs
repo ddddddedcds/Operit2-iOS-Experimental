@@ -76,8 +76,8 @@ impl ToolPkgHostEventHookBridge {
             ],
         );
 
-        let manager = runtime.package_manager();
-        for hook in hooks {
+        if let Some(manager) = runtime.package_manager() {
+            for hook in hooks {
             if !hook.enabled {
                 continue;
             }
@@ -136,6 +136,7 @@ impl ToolPkgHostEventHookBridge {
                     ],
                 ),
             }
+        }
         }
     }
 }

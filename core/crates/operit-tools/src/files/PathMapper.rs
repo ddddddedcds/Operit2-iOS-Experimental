@@ -711,8 +711,18 @@ mod tests {
         }
         #[cfg(not(target_os = "android"))]
         {
-            assert!(mapper().resolve("/sdcard/Download/Operit").is_err());
-            assert!(mapper().resolve("/data/local/tmp").is_err());
+            // Non-Android (e.g. iOS): Android-compat emulation maps /sdcard and
+            // /data into a sandboxed runtime-store directory instead of erroring
+            // (see androidCompatEnabled / androidCompatPhysicalRoot). The aliases
+            // still resolve but must NOT appear in the "/" root list above.
+            assert_eq!(
+                mapper().resolve("/sdcard/Download/Operit").unwrap().physicalPath,
+                "D:/operit/android-compat/sdcard/Download/Operit"
+            );
+            assert_eq!(
+                mapper().resolve("/data/local/tmp").unwrap().physicalPath,
+                "D:/operit/android-compat/data/local/tmp"
+            );
         }
     }
 

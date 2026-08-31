@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use operit_host_api::{HostError, RuntimeSqliteConnection, RuntimeSqliteTransaction};
+use operit_util::OperitError;
 use thiserror::Error;
 
 use crate::RuntimeStorageHost::defaultRuntimeSqliteHost;
@@ -21,6 +22,27 @@ pub enum SqliteStoreError {
     ObserverMutexPoisoned,
     #[error("{0}")]
     Message(String),
+}
+
+// Worked example of the per-crate unification pattern (architecture study
+// §21.4): `SqliteStoreError` is a *local* type, `OperitError` is foreign, so
+// this `From` is legal under the orphan rule and lets `?` propagate a store
+// error into the unified type without a dependency cycle. Every other crate
+// adds the same one-impl bridge for its own error enum.
+impl From<SqliteStoreError> for OperitError {
+    fn from(value: SqliteStoreError) -> Self {
+        match value {
+            SqliteStoreError::Io(error) => error.into(),
+            SqliteStoreError::Host(error) => error.into(),
+            SqliteStoreError::MutexPoisoned => {
+                OperitError::Message("sqlite connection mutex poisoned".into())
+            }
+            SqliteStoreError::ObserverMutexPoisoned => {
+                OperitError::Message("sqlite invalidation observer mutex poisoned".into())
+            }
+            SqliteStoreError::Message(message) => OperitError::Message(message),
+        }
+    }
 }
 
 #[derive(Clone)]

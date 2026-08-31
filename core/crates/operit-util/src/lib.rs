@@ -43,6 +43,8 @@ pub mod TtsCleaner;
 pub mod TtsSegmenter;
 pub mod UriSerializer;
 pub mod WaifuMessageProcessor;
+pub mod error;
+pub use error::{OperitError, OperitResult};
 pub mod exceptions;
 pub mod stream;
 pub mod streamnative;

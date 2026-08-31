@@ -106,25 +106,7 @@ impl AIToolHook for ToolLifecycleBridge {
                     );
                 }
             };
-            if let Some(Value::Object(object)) = decoded {
-                match object
-                    .get("action")
-                    .and_then(Value::as_str)
-                    .map(|value| value.trim().to_ascii_lowercase())
-                    .as_deref()
-                {
-                    Some("block") => {
-                        let reason = object
-                            .get("reason")
-                            .and_then(Value::as_str)
-                            .filter(|value| !value.trim().is_empty())
-                            .unwrap_or("ToolPkg tool lifecycle hook blocked the tool call.");
-                        return AIToolHookDecision::Block(reason.to_string());
-                    }
-                    Some("allow") | None => {}
-                    Some(_) => {}
-                }
-            }
+            return decide_intercept_action(decoded.as_ref());
         }
         AIToolHookDecision::Allow
     }
@@ -295,5 +277,81 @@ fn deliver_async(runtime: ToolPkgBridgeRuntime, eventName: &str, eventPayload: V
         None => {
             deliver(&runtime, eventName, eventPayload);
         }
+    }
+}
+
+/// Pure decision helper extracted from `onToolCallIntercept` so the
+/// block / allow / unknown branching — the exact branch that made the 60s
+/// worker self-deadlock so painful to debug — is unit-testable without a
+/// runtime or a live package manager.
+fn decide_intercept_action(decoded: Option<&Value>) -> AIToolHookDecision {
+    let Some(object) = decoded.and_then(|value| value.as_object()) else {
+        return AIToolHookDecision::Allow;
+    };
+    match object
+        .get("action")
+        .and_then(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("block") => {
+            let reason = object
+                .get("reason")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("ToolPkg tool lifecycle hook blocked the tool call.");
+            AIToolHookDecision::Block(reason.to_string())
+        }
+        Some("allow") | None | Some(_) => AIToolHookDecision::Allow,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn intercept_allows_when_payload_missing() {
+        assert!(matches!(
+            decide_intercept_action(None),
+            AIToolHookDecision::Allow
+        ));
+    }
+
+    #[test]
+    fn intercept_blocks_with_explicit_reason() {
+        let payload = json!({ "action": "BLOCK", "reason": "denied by policy" });
+        if let AIToolHookDecision::Block(reason) = decide_intercept_action(Some(&payload)) {
+            assert_eq!(reason, "denied by policy");
+        } else {
+            panic!("expected Block decision");
+        }
+    }
+
+    #[test]
+    fn intercept_blocks_with_default_reason_when_reason_empty() {
+        let payload = json!({ "action": "block", "reason": "   " });
+        if let AIToolHookDecision::Block(reason) = decide_intercept_action(Some(&payload)) {
+            assert_eq!(reason, "ToolPkg tool lifecycle hook blocked the tool call.");
+        } else {
+            panic!("expected Block decision");
+        }
+    }
+
+    #[test]
+    fn intercept_allows_on_allow_and_unknown_and_absent_action() {
+        assert!(matches!(
+            decide_intercept_action(Some(&json!({ "action": "allow" }))),
+            AIToolHookDecision::Allow
+        ));
+        assert!(matches!(
+            decide_intercept_action(Some(&json!({ "action": "frobnicate" }))),
+            AIToolHookDecision::Allow
+        ));
+        assert!(matches!(
+            decide_intercept_action(Some(&json!({}))),
+            AIToolHookDecision::Allow
+        ));
     }
 }

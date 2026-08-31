@@ -61,10 +61,11 @@ impl ToolPkgChatInputHookBridge {
     /// Registers chat input hooks for one application runtime.
     pub fn register(runtime: ToolPkgBridgeRuntime) {
         CHAT_INPUT_RUNTIME.get_or_init(|| runtime.clone());
-        let manager = runtime.package_manager();
-        manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
-            ToolPkgChatInputHookBridge::syncToolPkgRegistrations(activeContainers);
-        }));
+        if let Some(manager) = runtime.package_manager() {
+            manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(|activeContainers| {
+                ToolPkgChatInputHookBridge::syncToolPkgRegistrations(activeContainers);
+            }));
+        }
     }
 
     #[allow(non_snake_case)]
@@ -119,11 +120,11 @@ impl ToolPkgChatInputHookBridge {
                 ("textChars", ChainLogger::lenField(&current.text)),
             ],
         );
-        let manager = runtime.package_manager();
         let budget = ToolPkgPreHookTimeout::fromPreferences();
         let mut timedOut = false;
         let mut timeoutNoticeMessage: Option<String> = None;
-        for hook in activeHooks {
+        if let Some(manager) = runtime.package_manager() {
+            for hook in activeHooks {
             let Some(timeoutMillis) = budget.remainingTimeoutMillis() else {
                 timedOut = true;
                 if current.eventName == CHAT_INPUT_EVENT_SUBMIT_REQUESTED {
@@ -253,6 +254,7 @@ impl ToolPkgChatInputHookBridge {
                 }
                 _ => {}
             }
+        }
         }
 
         if current.eventName == CHAT_INPUT_EVENT_SUBMIT_REQUESTED {

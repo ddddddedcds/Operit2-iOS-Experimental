@@ -58,6 +58,27 @@ pub struct AITool {
     pub parameters: Vec<ToolParameter>,
 }
 
+/// Installs a tool runtime context on one thread and restores the previous value
+/// on drop. Lets a worker thread inherit the caller's runtime context.
+pub struct ToolRuntimeContextGuard {
+    previous: Option<ToolRuntimeContext>,
+}
+
+impl ToolRuntimeContextGuard {
+    /// Installs `context` on the current thread, remembering the previous value.
+    pub fn install(context: Option<ToolRuntimeContext>) -> Self {
+        let previous = ToolExecutionManager::currentToolRuntimeContext();
+        ToolExecutionManager::setToolRuntimeContext(context);
+        Self { previous }
+    }
+}
+
+impl Drop for ToolRuntimeContextGuard {
+    fn drop(&mut self) {
+        ToolExecutionManager::setToolRuntimeContext(self.previous.take());
+    }
+}
+
 /// Parsed tool invocation plus its source text location in the assistant response.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolInvocation {
@@ -80,6 +101,18 @@ impl ToolExecutionManager {
     /// Returns the runtime context for the currently executing tool batch.
     pub fn currentToolRuntimeContext() -> Option<ToolRuntimeContext> {
         TOOL_RUNTIME_CONTEXT.with(|value| value.borrow().clone())
+    }
+
+    /// Overrides the runtime context for the current thread.
+    ///
+    /// Thread-locals are not inherited by spawned threads, so a caller that moves
+    /// tool execution onto a worker thread must propagate the context explicitly.
+    /// Prefer [`ToolRuntimeContextGuard::install`], which restores the previous
+    /// value on drop.
+    pub fn setToolRuntimeContext(context: Option<ToolRuntimeContext>) {
+        TOOL_RUNTIME_CONTEXT.with(|value| {
+            *value.borrow_mut() = context;
+        });
     }
 
     /// Extracts XML-like tool invocations from an assistant response.

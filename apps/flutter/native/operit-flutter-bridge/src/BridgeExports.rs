@@ -1,10 +1,71 @@
 use super::*;
 
+/// Unresponsiveness threshold for the Flutter↔Rust dispatch thread. If that
+/// thread stops beating for this long, the ANR watchdog (Fix C) dumps its last
+/// sampled stack into operit.log. Tunable: normal dispatch calls return in
+/// milliseconds, so 10s flags a real freeze without noisy false positives.
+const ANR_DISPATCH_THRESHOLD_SECS: u64 = 10;
+
+/// Boots the ANR watchdog (Fix C) against the Flutter↔Rust dispatch thread.
+/// Idempotent — `start_monitoring` only spawns its thread once, so calling this
+/// from every `create*` entry point is safe.
+///
+/// NOTE: `operit-util` has a module `AnrMonitor` that also contains a struct
+/// `AnrMonitor`, so the associated functions live at
+/// `operit_util::AnrMonitor::AnrMonitor::*` (module::struct::fn), not
+/// `operit_util::AnrMonitor::*`.
+fn start_anr_watchdog() {
+    operit_util::AnrMonitor::AnrMonitor::start_monitoring(
+        "flutter-bridge-dispatch",
+        std::time::Duration::from_secs(ANR_DISPATCH_THRESHOLD_SECS),
+    );
+}
+
+/// Wraps an FFI body that returns an `OperitByteBuffer` so a panic becomes a
+/// `FATAL_CORE_PANIC` byte-buffer error instead of undefined behaviour across
+/// the `extern "C"` boundary (see §16.1 / Fix B of the architecture study).
+macro_rules! catch_ffi_buffer {
+    ($body:expr) => {{
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body)) {
+            Ok(value) => value,
+            Err(payload) => bytes_to_buffer(native_core_panic_result(payload.as_ref())),
+        }
+    }};
+}
+
+/// Wraps an FFI body that returns a `*mut c_char` JSON error/result string so a
+/// panic becomes a JSON error string instead of undefined behaviour.
+macro_rules! catch_ffi_string {
+    ($body:expr) => {{
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body)) {
+            Ok(value) => value,
+            Err(payload) => string_to_ptr(
+                serde_json::json!({
+                    "ok": false,
+                    "error": format!("FATAL_CORE_PANIC: {}", panic_payload_message(payload.as_ref())),
+                })
+                .to_string(),
+            ),
+        }
+    }};
+}
+
+/// Wraps an FFI body that returns nothing so a panic is swallowed (preventing
+/// undefined behaviour across the `extern "C"` boundary) instead of aborting.
+macro_rules! catch_ffi_void {
+    ($body:expr) => {{
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body));
+    }};
+}
+
 #[no_mangle]
 #[cfg(not(target_env = "ohos"))]
 pub extern "C" fn operit_flutter_bridge_create() -> *mut OperitFlutterBridge {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(OperitFlutterBridge::new)) {
-        Ok(Ok(bridge)) => Box::into_raw(Box::new(bridge)),
+        Ok(Ok(bridge)) => {
+            start_anr_watchdog();
+            Box::into_raw(Box::new(bridge))
+        }
         Ok(Err(error)) => {
             set_last_create_error(error);
             std::ptr::null_mut()
@@ -68,7 +129,10 @@ pub unsafe extern "C" fn operit_flutter_bridge_create_with_storage_roots(
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         OperitFlutterBridge::new_with_storage_roots(runtime_root, workspace_root)
     })) {
-        Ok(Ok(bridge)) => Box::into_raw(Box::new(bridge)),
+        Ok(Ok(bridge)) => {
+            start_anr_watchdog();
+            Box::into_raw(Box::new(bridge))
+        }
         Ok(Err(error)) => {
             set_last_create_error(error);
             std::ptr::null_mut()
@@ -130,14 +194,26 @@ pub unsafe extern "C" fn operit_flutter_bridge_create_with_storage_roots_and_sys
             return std::ptr::null_mut();
         }
     };
-    match OperitFlutterBridge::new_with_storage_roots(
-        runtime_root,
-        workspace_root,
-        system_language_code,
-    ) {
-        Ok(bridge) => Box::into_raw(Box::new(bridge)),
-        Err(error) => {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        OperitFlutterBridge::new_with_storage_roots(
+            runtime_root,
+            workspace_root,
+            system_language_code,
+        )
+    })) {
+        Ok(Ok(bridge)) => {
+            start_anr_watchdog();
+            Box::into_raw(Box::new(bridge))
+        }
+        Ok(Err(error)) => {
             set_last_create_error(error);
+            std::ptr::null_mut()
+        }
+        Err(payload) => {
+            set_last_create_error(format!(
+                "FATAL_CORE_PANIC: {}",
+                panic_payload_message(payload.as_ref())
+            ));
             std::ptr::null_mut()
         }
     }
@@ -145,19 +221,23 @@ pub unsafe extern "C" fn operit_flutter_bridge_create_with_storage_roots_and_sys
 
 #[no_mangle]
 pub extern "C" fn operit_flutter_bridge_create_error() -> *mut c_char {
-    string_to_ptr(
-        last_create_error()
-            .lock()
-            .expect("create error lock must not be poisoned")
-            .clone(),
-    )
+    catch_ffi_string!({
+        string_to_ptr(
+            last_create_error()
+                .lock()
+                .expect("create error lock must not be poisoned")
+                .clone(),
+        )
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn operit_flutter_bridge_destroy(handle: *mut OperitFlutterBridge) {
-    if !handle.is_null() {
-        drop(Box::from_raw(handle));
-    }
+    catch_ffi_void!({
+        if !handle.is_null() {
+            drop(Box::from_raw(handle));
+        }
+    })
 }
 
 /// Dispatches one compact native CoreProxy call for every native platform channel.
@@ -181,6 +261,7 @@ pub unsafe extern "C" fn operit_flutter_bridge_native_call(
         ));
     }
     let request_bytes = std::slice::from_raw_parts(request_ptr, request_len);
+    operit_util::AnrMonitor::AnrMonitor::beat();
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         bridge_native_call(&*handle, request_bytes)
     })) {
@@ -453,16 +534,18 @@ pub unsafe extern "C" fn operit_flutter_bridge_push_open(
     request_ptr: *const u8,
     request_len: usize,
 ) -> OperitByteBuffer {
-    if handle.is_null() || request_ptr.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-invalid-request",
-            "runtime push open arguments are invalid",
-        ));
-    }
-    bytes_to_buffer(bridge_push_open(
-        &*handle,
-        std::slice::from_raw_parts(request_ptr, request_len),
-    ))
+    catch_ffi_buffer!({
+        if handle.is_null() || request_ptr.is_null() {
+            return bytes_to_buffer(native_result_error_vec(
+                "flutter-bridge-invalid-request",
+                "runtime push open arguments are invalid",
+            ));
+        }
+        bytes_to_buffer(bridge_push_open(
+            &*handle,
+            std::slice::from_raw_parts(request_ptr, request_len),
+        ))
+    })
 }
 
 #[no_mangle]
@@ -472,16 +555,18 @@ pub unsafe extern "C" fn operit_flutter_bridge_push_item(
     item_ptr: *const u8,
     item_len: usize,
 ) -> OperitByteBuffer {
-    if handle.is_null() || item_ptr.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-invalid-request",
-            "runtime push item arguments are invalid",
-        ));
-    }
-    bytes_to_buffer(bridge_push_item(
-        &*handle,
-        std::slice::from_raw_parts(item_ptr, item_len),
-    ))
+    catch_ffi_buffer!({
+        if handle.is_null() || item_ptr.is_null() {
+            return bytes_to_buffer(native_result_error_vec(
+                "flutter-bridge-invalid-request",
+                "runtime push item arguments are invalid",
+            ));
+        }
+        bytes_to_buffer(bridge_push_item(
+            &*handle,
+            std::slice::from_raw_parts(item_ptr, item_len),
+        ))
+    })
 }
 
 #[no_mangle]
@@ -490,22 +575,24 @@ pub unsafe extern "C" fn operit_flutter_bridge_push_close(
     handle: *mut OperitFlutterBridge,
     push_id_ptr: *const c_char,
 ) -> OperitByteBuffer {
-    if handle.is_null() || push_id_ptr.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-invalid-request",
-            "runtime push close arguments are invalid",
-        ));
-    }
-    let pushId = match CStr::from_ptr(push_id_ptr).to_str() {
-        Ok(value) => value,
-        Err(error) => {
+    catch_ffi_buffer!({
+        if handle.is_null() || push_id_ptr.is_null() {
             return bytes_to_buffer(native_result_error_vec(
                 "flutter-bridge-invalid-request",
-                error.to_string(),
+                "runtime push close arguments are invalid",
             ));
         }
-    };
-    bytes_to_buffer(native_result_vec((*handle).pushClose(pushId)))
+        let pushId = match CStr::from_ptr(push_id_ptr).to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                return bytes_to_buffer(native_result_error_vec(
+                    "flutter-bridge-invalid-request",
+                    error.to_string(),
+                ));
+            }
+        };
+        bytes_to_buffer(native_result_vec((*handle).pushClose(pushId)))
+    })
 }
 
 #[no_mangle]
@@ -515,20 +602,22 @@ pub unsafe extern "C" fn operit_flutter_bridge_watch_snapshot(
     request_ptr: *const u8,
     request_len: usize,
 ) -> OperitByteBuffer {
-    if handle.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-null",
-            "runtime bridge is not initialized",
-        ));
-    }
-    if request_ptr.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-null-request",
-            "runtime request pointer is null",
-        ));
-    }
-    let request_bytes = std::slice::from_raw_parts(request_ptr, request_len);
-    bytes_to_buffer(bridge_watch_snapshot(&mut *handle, request_bytes))
+    catch_ffi_buffer!({
+        if handle.is_null() {
+            return bytes_to_buffer(native_result_error_vec(
+                "flutter-bridge-null",
+                "runtime bridge is not initialized",
+            ));
+        }
+        if request_ptr.is_null() {
+            return bytes_to_buffer(native_result_error_vec(
+                "flutter-bridge-null-request",
+                "runtime request pointer is null",
+            ));
+        }
+        let request_bytes = std::slice::from_raw_parts(request_ptr, request_len);
+        bytes_to_buffer(bridge_watch_snapshot(&mut *handle, request_bytes))
+    })
 }
 
 #[no_mangle]
@@ -538,20 +627,22 @@ pub unsafe extern "C" fn operit_flutter_bridge_watch_stream(
     request_ptr: *const u8,
     request_len: usize,
 ) -> OperitByteBuffer {
-    if handle.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-null",
-            "runtime bridge is not initialized",
-        ));
-    }
-    if request_ptr.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-null-request",
-            "runtime request pointer is null",
-        ));
-    }
-    let request_bytes = std::slice::from_raw_parts(request_ptr, request_len);
-    bytes_to_buffer(bridge_watch_stream(&mut *handle, request_bytes))
+    catch_ffi_buffer!({
+        if handle.is_null() {
+            return bytes_to_buffer(native_result_error_vec(
+                "flutter-bridge-null",
+                "runtime bridge is not initialized",
+            ));
+        }
+        if request_ptr.is_null() {
+            return bytes_to_buffer(native_result_error_vec(
+                "flutter-bridge-null-request",
+                "runtime request pointer is null",
+            ));
+        }
+        let request_bytes = std::slice::from_raw_parts(request_ptr, request_len);
+        bytes_to_buffer(bridge_watch_stream(&mut *handle, request_bytes))
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -583,13 +674,15 @@ async fn bridge_watch_stream_wasm(
 pub unsafe extern "C" fn operit_flutter_bridge_next_watch_channel_event(
     handle: *mut OperitFlutterBridge,
 ) -> OperitByteBuffer {
-    if handle.is_null() {
-        return OperitByteBuffer::empty();
-    }
-    match (*handle).nextWatchChannelEvent() {
-        Ok(event) => bytes_to_buffer(event),
-        Err(_) => OperitByteBuffer::empty(),
-    }
+    catch_ffi_buffer!({
+        if handle.is_null() {
+            return OperitByteBuffer::empty();
+        }
+        match (*handle).nextWatchChannelEvent() {
+            Ok(event) => bytes_to_buffer(event),
+            Err(_) => OperitByteBuffer::empty(),
+        }
+    })
 }
 
 /// Wakes the native watch-channel reader during host shutdown.
@@ -598,9 +691,11 @@ pub unsafe extern "C" fn operit_flutter_bridge_next_watch_channel_event(
 pub unsafe extern "C" fn operit_flutter_bridge_close_watch_channel(
     handle: *mut OperitFlutterBridge,
 ) {
-    if !handle.is_null() {
-        (*handle).watchChannel.close();
-    }
+    catch_ffi_void!({
+        if !handle.is_null() {
+            (*handle).watchChannel.close();
+        }
+    })
 }
 
 #[no_mangle]
@@ -608,29 +703,31 @@ pub unsafe extern "C" fn operit_flutter_bridge_close_watch_stream(
     handle: *mut OperitFlutterBridge,
     subscription_ptr: *const c_char,
 ) -> OperitByteBuffer {
-    if handle.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-null",
-            "runtime bridge is not initialized",
-        ));
-    }
-    if subscription_ptr.is_null() {
-        return bytes_to_buffer(native_result_error_vec(
-            "flutter-bridge-null-request",
-            "watch subscription pointer is null",
-        ));
-    }
-    let subscription_id = match CStr::from_ptr(subscription_ptr).to_str() {
-        Ok(value) => value,
-        Err(error) => {
+    catch_ffi_buffer!({
+        if handle.is_null() {
             return bytes_to_buffer(native_result_error_vec(
-                "flutter-bridge-invalid-request",
-                error.to_string(),
+                "flutter-bridge-null",
+                "runtime bridge is not initialized",
             ));
         }
-    };
-    (*handle).closeWatchStream(subscription_id);
-    bytes_to_buffer(native_result_vec(Ok::<(), CoreLinkError>(())))
+        if subscription_ptr.is_null() {
+            return bytes_to_buffer(native_result_error_vec(
+                "flutter-bridge-null-request",
+                "watch subscription pointer is null",
+            ));
+        }
+        let subscription_id = match CStr::from_ptr(subscription_ptr).to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                return bytes_to_buffer(native_result_error_vec(
+                    "flutter-bridge-invalid-request",
+                    error.to_string(),
+                ));
+            }
+        };
+        (*handle).closeWatchStream(subscription_id);
+        bytes_to_buffer(native_result_vec(Ok::<(), CoreLinkError>(())))
+    })
 }
 
 #[no_mangle]
@@ -645,15 +742,16 @@ pub unsafe extern "C" fn operit_flutter_bridge_start_web_access_server(
     enable_web_access: *const c_char,
     enable_discovery: *const c_char,
 ) -> *mut c_char {
-    if handle.is_null() {
-        return string_to_ptr(
-            serde_json::to_string(&CoreLinkError::internal(
-                "runtime bridge is not initialized",
-            ))
-            .expect("CoreLinkError must serialize"),
-        );
-    }
-    let args = [
+    catch_ffi_string!({
+        if handle.is_null() {
+            return string_to_ptr(
+                serde_json::to_string(&CoreLinkError::internal(
+                    "runtime bridge is not initialized",
+                ))
+                .expect("CoreLinkError must serialize"),
+            );
+        }
+        let args = [
         ("bind address", bind_address),
         ("token", token),
         ("shutdown token", shutdown_token),
@@ -715,6 +813,7 @@ pub unsafe extern "C" fn operit_flutter_bridge_start_web_access_server(
                 .expect("CoreLinkError must serialize"),
         ),
     }
+    })
 }
 
 #[no_mangle]
@@ -722,16 +821,18 @@ pub unsafe extern "C" fn operit_flutter_bridge_start_web_access_server(
 pub unsafe extern "C" fn operit_flutter_bridge_stop_web_access_server(
     handle: *mut OperitFlutterBridge,
 ) -> *mut c_char {
-    if handle.is_null() {
-        return string_to_ptr(
-            serde_json::to_string(&CoreLinkError::internal(
-                "runtime bridge is not initialized",
-            ))
-            .expect("CoreLinkError must serialize"),
-        );
-    }
-    (*handle).stopWebAccessServer();
-    string_to_ptr("{\"ok\":true}")
+    catch_ffi_string!({
+        if handle.is_null() {
+            return string_to_ptr(
+                serde_json::to_string(&CoreLinkError::internal(
+                    "runtime bridge is not initialized",
+                ))
+                .expect("CoreLinkError must serialize"),
+            );
+        }
+        (*handle).stopWebAccessServer();
+        string_to_ptr("{\"ok\":true}")
+    })
 }
 
 /// Decodes and reads one compact native CoreProxy watch snapshot.
@@ -772,44 +873,48 @@ pub unsafe extern "C" fn operit_flutter_bridge_emit_runtime_event(
     handle: *mut OperitFlutterBridge,
     event_json: *const c_char,
 ) -> *mut c_char {
-    if handle.is_null() {
-        return string_to_ptr(
-            serde_json::json!({
-                "ok": false,
-                "error": "runtime bridge is not initialized",
-            })
-            .to_string(),
-        );
-    }
-    if event_json.is_null() {
-        return string_to_ptr(
-            serde_json::json!({
-                "ok": false,
-                "error": "runtime event pointer is null",
-            })
-            .to_string(),
-        );
-    }
-    let eventJson = match CStr::from_ptr(event_json).to_str() {
-        Ok(value) => value,
-        Err(error) => {
+    catch_ffi_string!({
+        if handle.is_null() {
             return string_to_ptr(
                 serde_json::json!({
                     "ok": false,
-                    "error": format!("runtime event is not valid UTF-8: {error}"),
+                    "error": "runtime bridge is not initialized",
                 })
                 .to_string(),
             );
         }
-    };
-    string_to_ptr((*handle).emitRuntimeEvent(eventJson))
+        if event_json.is_null() {
+            return string_to_ptr(
+                serde_json::json!({
+                    "ok": false,
+                    "error": "runtime event pointer is null",
+                })
+                .to_string(),
+            );
+        }
+        let eventJson = match CStr::from_ptr(event_json).to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                return string_to_ptr(
+                    serde_json::json!({
+                        "ok": false,
+                        "error": format!("runtime event is not valid UTF-8: {error}"),
+                    })
+                    .to_string(),
+                );
+            }
+        };
+        string_to_ptr((*handle).emitRuntimeEvent(eventJson))
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn operit_flutter_bridge_free_string(value: *mut c_char) {
-    if !value.is_null() {
-        drop(CString::from_raw(value));
-    }
+    catch_ffi_void!({
+        if !value.is_null() {
+            drop(CString::from_raw(value));
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -883,11 +988,13 @@ fn bytes_to_buffer(value: Vec<u8>) -> OperitByteBuffer {
 
 #[no_mangle]
 pub unsafe extern "C" fn operit_flutter_bridge_free_bytes(value: OperitByteBuffer) {
-    if !value.ptr.is_null() {
-        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-            value.ptr, value.len,
-        )));
-    }
+    catch_ffi_void!({
+        if !value.ptr.is_null() {
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                value.ptr, value.len,
+            )));
+        }
+    })
 }
 
 fn json_to_ptr(value: &impl serde::Serialize) -> *mut c_char {

@@ -62,6 +62,37 @@ pub enum ModelConfigError {
     BuiltInProvider(String),
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): local error type →
+// foreign `operit_util::OperitError` via the orphan rule, so `?` propagates
+// across crate boundaries.
+impl From<ModelConfigError> for operit_util::OperitError {
+    fn from(value: ModelConfigError) -> operit_util::OperitError {
+        match value {
+            ModelConfigError::Json(error) => error.into(),
+            ModelConfigError::Store(error) => operit_util::OperitError::Message(error.to_string()),
+            ModelConfigError::ProviderNotFound(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::ProviderNameAlreadyExists(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::ModelNotFound(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::ModelAlreadyExists { providerId, modelId } => {
+                operit_util::OperitError::Message(format!("{providerId}:{modelId}"))
+            }
+            ModelConfigError::CatalogModelNotFound { providerTypeId, modelId } => {
+                operit_util::OperitError::Message(format!("{providerTypeId}:{modelId}"))
+            }
+            ModelConfigError::MissingModelContext(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::MissingModelCapabilities(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::MissingModelRequestSpec(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::InvalidProviderType(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::AvailableProviderModelNotFound { providerId, modelId } => {
+                operit_util::OperitError::Message(format!("{providerId}:{modelId}"))
+            }
+            ModelConfigError::ModelListFetch(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::ConnectionTest(m) => operit_util::OperitError::Message(m),
+            ModelConfigError::BuiltInProvider(m) => operit_util::OperitError::Message(m),
+        }
+    }
+}
+
 /// Stores provider profiles, model profiles, and resolved model configuration.
 #[derive(Clone)]
 pub struct ModelConfigManager {

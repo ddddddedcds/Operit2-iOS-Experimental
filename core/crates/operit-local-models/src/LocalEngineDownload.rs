@@ -46,6 +46,28 @@ pub enum LocalEngineDownloadError {
     Registry(String),
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): local → foreign
+// `operit_util::OperitError` via the orphan rule.
+impl From<LocalEngineDownloadError> for operit_util::OperitError {
+    fn from(value: LocalEngineDownloadError) -> operit_util::OperitError {
+        match value {
+            LocalEngineDownloadError::Storage(m)
+            | LocalEngineDownloadError::Http(m)
+            | LocalEngineDownloadError::ArtifactUnavailable(m)
+            | LocalEngineDownloadError::InvalidArchiveEntry(m)
+            | LocalEngineDownloadError::RuntimeFileMissing(m)
+            | LocalEngineDownloadError::EngineNotInstalled(m)
+            | LocalEngineDownloadError::Registry(m) => operit_util::OperitError::Message(m),
+            LocalEngineDownloadError::SizeMismatch => {
+                operit_util::OperitError::Message("engine archive size mismatch".into())
+            }
+            LocalEngineDownloadError::ChecksumMismatch => {
+                operit_util::OperitError::Message("engine archive checksum mismatch".into())
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct LocalEngineInstallRequest {

@@ -52,6 +52,21 @@ pub enum AiServiceError {
     TokenCalculationFailed(String),
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): local → foreign
+// `operit_util::OperitError` via the orphan rule. `RequestCancelled` maps to
+// the typed `Cancelled` variant (aligns with Fix J cancellation semantics).
+impl From<AiServiceError> for operit_util::OperitError {
+    fn from(value: AiServiceError) -> operit_util::OperitError {
+        match value {
+            AiServiceError::ProviderNotImplemented(m)
+            | AiServiceError::ConnectionFailed(m)
+            | AiServiceError::RequestFailed(m)
+            | AiServiceError::TokenCalculationFailed(m) => operit_util::OperitError::Message(m),
+            AiServiceError::RequestCancelled => operit_util::OperitError::Cancelled,
+        }
+    }
+}
+
 /// Creates a revisable response stream from already collected chunks.
 pub fn response_stream_from_chunks(chunks: Vec<String>) -> Box<dyn RevisableTextStreamLike> {
     let event_channel = empty_revisable_event_channel();

@@ -626,6 +626,10 @@ pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
     base_url: *const c_char,
     model: *const c_char,
 ) {
+    // Guard the FFI boundary: a panic here must never unwind into Obj-C
+    // (undefined behaviour). Mirrors the catch_unwind wrapping applied to the
+    // BridgeExports entry points (Fix B).
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let read = |p: *const c_char| -> String {
         if p.is_null() {
             String::new()
@@ -675,6 +679,7 @@ pub unsafe extern "C" fn operit_flutter_bridge_sync_daemon_config(
     // the daemon will later fall back to reading this plist file, which works on
     // rootless / non-jb where the two processes share the same data_root().
     push_config_to_daemon(&api_key, &provider, &base_url, &model);
+    }));
 }
 
 /// Pushes LLM credentials to the on-device agent daemon over a Unix domain

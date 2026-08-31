@@ -148,7 +148,9 @@ mod tests {
                 output: "direct-package-ok\n".to_string(),
                 exitCode: 0,
                 sessionId: "session-1".to_string(),
-                terminalType: "powershell".to_string(),
+                platform: "windows".to_string(),
+                terminal: operit_plugin_sdk::js_sdk::results::TerminalImplementation::Native,
+                terminalType: operit_plugin_sdk::js_sdk::results::TerminalType::Powershell,
                 timedOut: false,
             }),
             error: None,
@@ -237,5 +239,19 @@ mod tests {
         let formatted = ConversationMarkupManager::formatToolResultForMessage(&result);
 
         assert!(formatted.contains(payload));
+    }
+
+    #[test]
+    fn truncate_payload_caps_output_and_appends_suffix() {
+        let payload: String = "a".repeat(2000);
+        let max_chars = 50;
+        let truncated = ConversationMarkupManager::truncatePayload(&payload, max_chars);
+        assert!(
+            truncated.chars().count() <= max_chars,
+            "truncated length {} exceeds cap {}",
+            truncated.chars().count(),
+            max_chars
+        );
+        assert!(truncated.contains("[工具结果过长，已截断]"));
     }
 }

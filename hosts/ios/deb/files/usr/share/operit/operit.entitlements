@@ -49,10 +49,10 @@
          keychain-access-groups entitlements") at launch -> uncaught NSException -> silent
          SIGABRT right after Flutter startup. Honored under AppSync Unified ad-hoc sign. -->
     <key>application-identifier</key>
-    <string>com.ai.assistance.operit2</string>
+    <string>com.ai.assistance.operit.jb</string>
     <key>keychain-access-groups</key>
     <array>
-        <string>com.ai.assistance.operit2</string>
+        <string>com.ai.assistance.operit.jb</string>
     </array>
 </dict>
 </plist>

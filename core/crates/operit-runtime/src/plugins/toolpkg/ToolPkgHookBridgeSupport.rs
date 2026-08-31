@@ -19,12 +19,23 @@ impl ToolPkgBridgeRuntime {
     }
 
     /// Returns a snapshot of this runtime's package manager.
-    pub fn package_manager(&self) -> RuntimePackageManager {
+    ///
+    /// **Non-blocking.** Returns `None` instead of blocking when the
+    /// package-manager mutex is currently held by another thread (e.g. during a
+    /// `compose_dsl` script execution that itself borrowed the manager). The
+    /// old blocking implementation (`.lock().expect(..)`) froze the WASM worker
+    /// thread for up to 60s: a tool/lifecycle hook fired inline on the same
+    /// worker thread while that mutex was already owned elsewhere, so the
+    /// re-entrant lock waited forever. Callers must treat `None` as
+    /// "best-effort snapshot unavailable this call" and skip the package-dependent
+    /// work rather than deadlocking. Use [`try_package_manager`] only when a
+    /// typed `Option` is not needed.
+    pub fn package_manager(&self) -> Option<RuntimePackageManager> {
         self.tool_handler
             .getOrCreatePackageManager()
-            .lock()
-            .expect("package manager mutex poisoned")
-            .clone()
+            .try_lock()
+            .ok()
+            .map(|guard| guard.clone())
     }
 
     /// Non-blocking variant of [`package_manager`].

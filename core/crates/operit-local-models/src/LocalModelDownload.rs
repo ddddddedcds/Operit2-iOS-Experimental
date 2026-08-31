@@ -51,6 +51,31 @@ pub enum LocalModelDownloadError {
     Json(String),
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): local → foreign
+// `operit_util::OperitError` via the orphan rule.
+impl From<LocalModelDownloadError> for operit_util::OperitError {
+    fn from(value: LocalModelDownloadError) -> operit_util::OperitError {
+        match value {
+            LocalModelDownloadError::Storage(m)
+            | LocalModelDownloadError::Http(m)
+            | LocalModelDownloadError::InvalidStoragePath(m)
+            | LocalModelDownloadError::Json(m) => operit_util::OperitError::Message(m),
+            LocalModelDownloadError::SourceNotFound { sourceId } => {
+                operit_util::OperitError::Message(format!("source not found: {sourceId}"))
+            }
+            LocalModelDownloadError::ModelNotInstalled { modelId, version } => {
+                operit_util::OperitError::Message(format!("model not installed: {modelId}@{version}"))
+            }
+            LocalModelDownloadError::SizeMismatch { path }
+            | LocalModelDownloadError::ChecksumMismatch { path }
+            | LocalModelDownloadError::InvalidArchiveEntry { path }
+            | LocalModelDownloadError::InvalidFileName { path } => {
+                operit_util::OperitError::Message(format!("invalid file: {path}"))
+            }
+        }
+    }
+}
+
 impl From<LocalModelStorageError> for LocalModelDownloadError {
     /// Converts a storage path validation error into a download error.
     fn from(value: LocalModelStorageError) -> Self {

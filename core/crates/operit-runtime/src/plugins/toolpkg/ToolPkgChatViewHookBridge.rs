@@ -46,13 +46,14 @@ impl ToolPkgChatViewHookBridge {
     /// Registers chat view hooks for one application runtime.
     pub fn register(runtime: ToolPkgBridgeRuntime) {
         CHAT_VIEW_RUNTIME.get_or_init(|| runtime.clone());
-        let manager = runtime.package_manager();
-        manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(move |activeContainers| {
-            ToolPkgChatViewHookBridge::syncAndReplayToolPkgRegistrations(
-                &runtime,
-                activeContainers,
-            );
-        }));
+        if let Some(manager) = runtime.package_manager() {
+            manager.addToolPkgRuntimeChangeListener(std::sync::Arc::new(move |activeContainers| {
+                ToolPkgChatViewHookBridge::syncAndReplayToolPkgRegistrations(
+                    &runtime,
+                    activeContainers,
+                );
+            }));
+        }
     }
 
     #[allow(non_snake_case)]
@@ -202,7 +203,6 @@ fn runChatViewHook(
     eventName: &str,
     eventPayload: Value,
 ) {
-    let manager = runtime.package_manager();
     ChainLogger::info(
         PLUGIN_CHAIN,
         "plugin.toolpkg.chat_view.run.start",
@@ -213,7 +213,8 @@ fn runChatViewHook(
             ("function", hook.functionName.clone()),
         ],
     );
-    match manager.runToolPkgMainHook(
+    if let Some(manager) = runtime.package_manager() {
+        match manager.runToolPkgMainHook(
         &hook.containerPackageName,
         &hook.functionName,
         TOOLPKG_EVENT_CHAT_VIEW,
@@ -245,6 +246,7 @@ fn runChatViewHook(
                 ("error", error),
             ],
         ),
+    }
     }
 }
 

@@ -15,8 +15,10 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use libc;
 
 use operit_host_ios_native::device_agent::{run_device_agent_loop, DeviceAgentConfig};
 use operit_host_ios_native::device_automation::IosDeviceAutomationHost;
@@ -55,6 +57,18 @@ static CACHED_CONFIG: LazyLock<Mutex<Option<CachedConfig>>> =
 /// every JSON file each tick.
 static SCHEDULED_WORKFLOWS: LazyLock<Mutex<HashMap<String, operit_model::Workflow::Workflow>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Shutdown flag shared by the accept loop, the scheduler loop and the SIGTERM
+/// handler. Set on SIGTERM so the long-lived loops exit cleanly instead of
+/// being killed mid-write by launchd.
+static DAEMON_STOP: LazyLock<Arc<AtomicBool>> =
+    LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+
+/// Handle of the scheduler thread, retained so `main` can join it during a
+/// graceful shutdown. Previously the thread was spawned fire-and-forget with no
+/// handle, so it could not be stopped or joined (see §18.1).
+static SCHEDULER_HANDLE: LazyLock<Mutex<Option<JoinHandle<()>>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 fn now_hms() -> String {
     let secs = SystemTime::now()
@@ -449,7 +463,11 @@ fn daemon_pref_bool(key: &str, default_value: bool) -> bool {
 /// Hydrates the cache once from disk on the first tick (a daemon restart must
 /// pick up previously scheduled workflows without re-reading files every tick).
 fn workflow_scheduler_loop() {
-    thread::spawn(|| loop {
+    let stop = DAEMON_STOP.clone();
+    let handle = thread::spawn(move || loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         let now_ms = operit_host_api::TimeUtils::currentTimeMillis();
         {
             let mut cache = SCHEDULED_WORKFLOWS.lock().unwrap();
@@ -508,6 +526,7 @@ fn workflow_scheduler_loop() {
         }
         std::thread::sleep(std::time::Duration::from_secs(10));
     });
+    *SCHEDULER_HANDLE.lock().unwrap() = Some(handle);
 }
 
 fn handle_client(mut stream: UnixStream) {
@@ -536,7 +555,23 @@ fn handle_client(mut stream: UnixStream) {
 
 const AGENT_SOCK_NAME: &str = "agent.sock";
 
+/// SIGTERM handler: launchd sends SIGTERM when stopping the daemon. We only
+/// set the shutdown flag (async-signal-safe); the accept loop and scheduler
+/// loop notice it and exit cleanly.
+extern "C" fn daemon_signal_handler(_sig: libc::c_int) {
+    DAEMON_STOP.store(true, Ordering::Relaxed);
+}
+
+/// Installs the SIGTERM handler so the daemon shuts down gracefully instead of
+/// being killed mid-write.
+fn install_signal_handlers() {
+    unsafe {
+        libc::signal(libc::SIGTERM, daemon_signal_handler as *const () as libc::sighandler_t);
+    }
+}
+
 fn main() {
+    install_signal_handlers();
     let _ = fs::create_dir_all(operit_ios_env::data_root().join("logs"));
     let sock_path = operit_ios_env::data_root().join(AGENT_SOCK_NAME);
     log_line(&format!(
@@ -554,10 +589,27 @@ fn main() {
     }
     let listener = bind_agent_sock();
     for conn in listener.incoming() {
-        if let Ok(stream) = conn {
-            thread::spawn(move || handle_client(stream));
+        if DAEMON_STOP.load(Ordering::Relaxed) {
+            break;
+        }
+        match conn {
+            Ok(stream) => {
+                thread::spawn(move || handle_client(stream));
+            }
+            // With a non-blocking listener (see bind_agent_sock) `incoming()`
+            // yields `Err` when no connection is pending; pause briefly and
+            // re-check the shutdown flag so we don't busy-loop.
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
         }
     }
+    // Graceful shutdown: make sure the scheduler loop stops and wait for it.
+    DAEMON_STOP.store(true, Ordering::Relaxed);
+    if let Some(handle) = SCHEDULER_HANDLE.lock().unwrap().take() {
+        let _ = handle.join();
+    }
+    log_line("operit-agent daemon 优雅关闭");
 }
 
 /// Bind the agent control socket as a Unix domain socket under the daemon's
@@ -580,6 +632,10 @@ fn bind_agent_sock() -> UnixListener {
         Ok(l) => {
             // Restrict to the mobile user only.
             let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            // Make the listener non-blocking so the accept loop can observe the
+            // shutdown flag promptly (see `main`); a blocking listener would
+            // hang in `incoming()` until the next connection arrives.
+            let _ = l.set_nonblocking(true);
             l
         }
         Err(e) => {

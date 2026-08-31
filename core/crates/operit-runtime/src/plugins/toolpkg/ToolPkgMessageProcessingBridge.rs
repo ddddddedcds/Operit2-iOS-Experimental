@@ -95,8 +95,8 @@ impl MessageProcessingPlugin for MessageProcessingBridge {
             ],
         );
         let probeEventPayload = buildMessageEventPayload(params, true);
-        let manager = self.runtime.package_manager();
-        for hook in hooks {
+        if let Some(manager) = self.runtime.package_manager() {
+            for hook in hooks {
             ChainLogger::info(
                 PLUGIN_CHAIN,
                 "plugin.toolpkg.message_processing.probe.start",
@@ -221,6 +221,7 @@ impl MessageProcessingPlugin for MessageProcessingBridge {
                 }),
                 stream,
             });
+        }
         }
         None
     }

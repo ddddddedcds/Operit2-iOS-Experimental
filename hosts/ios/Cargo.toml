@@ -19,6 +19,7 @@ image = { version = "0.24", default-features = false, features = ["jpeg", "png"]
 plist = "1"
 sha2 = "0.10"
 operit-util = { path = "../../core/crates/operit-util" }
+libc = "0.2"
 
 [[bin]]
 name = "operit_agent_daemon"

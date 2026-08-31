@@ -14,6 +14,21 @@ pub enum LocalModelStorageError {
     InvalidSegment { field: &'static str, value: String },
 }
 
+// Unification bridge (architecture study §21.4 / Fix K): local → foreign
+// `operit_util::OperitError` via the orphan rule.
+impl From<LocalModelStorageError> for operit_util::OperitError {
+    fn from(value: LocalModelStorageError) -> operit_util::OperitError {
+        match value {
+            LocalModelStorageError::EmptySegment { field } => {
+                operit_util::OperitError::Message(format!("{field} is empty"))
+            }
+            LocalModelStorageError::InvalidSegment { field, value } => {
+                operit_util::OperitError::Message(format!("{field} has invalid characters: {value}"))
+            }
+        }
+    }
+}
+
 /// Builds the runtime storage path for one local engine platform target.
 pub fn buildLocalEngineStoragePath(
     engineId: &str,
